@@ -74,4 +74,4 @@
 
 | 日期 | 平台/环境 | 透明 | 置顶 | 穿透 | 编辑模式 | 多屏 | 热插拔 | 备注 |
 |------|-----------|------|------|------|----------|------|--------|------|
-| (TBD) | | | | | | | | |
+| 2026-08-13 | Windows 11，DWM 合成桌面，GPU 由 Slint 默认后端（dev 构建，commit 待定） | 🧪 窗口按透明属性创建，ex-style 显示 `WS_EX_TRANSPARENT`+`WS_EX_LAYERED` 可正确切换；视觉 Alpha 混合需截图确认 | ✅ 探测返回 `always_on_top=true`，实测 ex-style 含 `WS_EX_TOPMOST`，窗口盖过普通窗口 | 🧪 `set_click_through` 实测：启用后 ex=0xC0138（TRANSPARENT+LAYERED），禁用后 ex=0xC0118（保留 LAYERED）；编辑/展示模式接入前由宿主显式控制 | 🗺️ 未实现 | 未测 | 未测 | 探测日志：`kind=Windows click_through=true always_on_top=true`；窗口进程存活无崩溃；穿透的视觉/输入效果需结合模式切换做最终验收 |

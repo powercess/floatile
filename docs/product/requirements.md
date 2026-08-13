@@ -52,13 +52,13 @@ Floatile 要让用户在桌面上长期运行轻量、可布局的浮动 Widget�
 | 范围 | 状态 | 主要差距 |
 |---|---|---|
 | Workspace/核心类型 | 部分实现 | 多数 crate 仍为模板，依赖边界尚缺架构测试 |
-| S1 窗口与原生时钟 | 部分实现 | 仅本地基础路径；透明、置顶、拖拽尚无平台实测；当前时钟按 UTC 秒数计算且未标注时区 |
-| 平台抽象 | 部分实现 | 当前主要是环境变量推断，没有 OS-specific trait 实现与真实探测 |
+| S1 窗口与原生时钟 | 部分实现 | 透明、置顶、拖拽已有 Windows 实测证据；点击穿透 API 已落地待模式接入；时钟按 UTC 秒数计算且未标注时区 |
+| 平台抽象 | 部分实现 | Windows 能力探测已落地；X11/Wayland 仍是环境变量推断，没有 OS-specific trait 实现 |
 | 布局/存储 | 未实现 | SQLite migration、DPI/monitor 模型与恢复流程缺失 |
 | WASM/WIT/SDK | 未实现 | `wit/`、runtime、guest 示例和契约测试缺失 |
 | Permission Broker | 未实现 | grants、配额、审计和恶意插件 fixture 缺失 |
 | 包工具链 | 未实现 | validate/build、schema、路径与 zip-bomb 防护缺失 |
-| 跨平台/性能证据 | 未验证 | 平台矩阵仍是设计预期，不是实测结论 |
+| 跨平台/性能证据 | 部分验证 | Windows 能力矩阵已回填首条证据；macOS/X11/Wayland 仍是设计预期 |
 
 ## 6. 阶段门槛与未决策
 
