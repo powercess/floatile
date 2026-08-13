@@ -21,8 +21,24 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: wasm32-wasip2
+      - name: Enforce LF and UTF-8 (no CRLF/BOM)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=
+          if git ls-files --eol | grep -Eq '^i/(crlf|mixed)'; then
+            bad=yes
+            echo "::error::CRLF/mixed line endings in the git index; run 'git add --renormalize .' and commit." >&2
+            git ls-files --eol | grep -E '^i/(crlf|mixed)' | sed 's/^/  /'
+          fi
+          while IFS= read -r -d '' f; do
+            if head -c 3 "$f" | od -An -tx1 | grep -q 'ef bb bf'; then
+              bad=yes
+              echo "::error::UTF-8 BOM in tracked file: $f" >&2
+            fi
+          done < <(git ls-files -z)
+          test -z "$bad"
       - name: Format
-        if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
       - name: Check
         run: cargo check --workspace --all-targets --locked

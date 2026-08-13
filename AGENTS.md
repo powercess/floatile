@@ -55,6 +55,8 @@
 ## 代码与验证
 
 - 遵循 `docs/development/coding-standards.md`；依赖统一声明在根 `Cargo.toml`。
+- 文本文件统一 LF + UTF-8（无 BOM），由 `.gitattributes` 强制；不得提交 CRLF 或依赖本机
+  `core.autocrlf`/`core.eol` 的隐式转换。涉及脚本、CI 矩阵或编码的变更必须同步该规则。
 - 生产代码不使用 `unwrap`/`expect`/`panic!` 处理可恢复错误；测试中的使用必须局部、清晰。
 - `unsafe` 必须最小作用域并写 `// SAFETY:`，且只在 `floatile-platform` 中出现。
 - 每次交付至少运行与变更相称的检查；默认完整门禁见 `docs/development/workflow.md`。
