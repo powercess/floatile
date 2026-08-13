@@ -1,12 +1,12 @@
-//! 平台能力探测：运行环境（X11 / Wayland / 未知）与降级所需的可用性信息。
+//! 平台能力探测：运行环境（Windows / X11 / Wayland / 未知）与降级所需的可用性信息。
 //!
 //! 探测结果驱动 `docs/platform-matrix/platform-matrix.md` 中的降级策略。
-
-use std::env;
 
 /// 当前运行环境。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformKind {
+    /// Windows（DWM 合成桌面）。
+    Windows,
     /// X11（含 XWayland）。
     X11,
     /// 原生 Wayland。
@@ -27,14 +27,33 @@ pub struct PlatformCapabilities {
     pub always_on_top: bool,
 }
 
-/// 探测当前平台能力（纯 env 探测，无 I/O 副作用失败时归为 Unknown）。
+/// 探测当前平台能力。
+///
+/// Windows 走 DWM 合成桌面路径：Windows 8.1+ 的 DWM 始终合成，透明、点击穿透
+/// （`WS_EX_TRANSPARENT`）与置顶（`HWND_TOPMOST`）由 `floatile-platform::window` 落地。
+/// 其余平台沿用 env 推断，无 I/O 副作用，失败时归为 Unknown。
 pub fn probe() -> PlatformCapabilities {
-    let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
-    let has_wayland_display = env::var("WAYLAND_DISPLAY").is_ok();
-    let has_x11_display = env::var("DISPLAY").is_ok();
+    #[cfg(target_os = "windows")]
+    {
+        PlatformCapabilities {
+            kind: PlatformKind::Windows,
+            compositing: true,
+            click_through: true,
+            always_on_top: true,
+        }
+    }
 
-    let kind =
-        if has_wayland_display || (session.eq_ignore_ascii_case("wayland") && !has_x11_display) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::env;
+
+        let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        let has_wayland_display = env::var("WAYLAND_DISPLAY").is_ok();
+        let has_x11_display = env::var("DISPLAY").is_ok();
+
+        let kind = if has_wayland_display
+            || (session.eq_ignore_ascii_case("wayland") && !has_x11_display)
+        {
             PlatformKind::Wayland
         } else if has_x11_display || session.eq_ignore_ascii_case("x11") {
             PlatformKind::X11
@@ -42,27 +61,28 @@ pub fn probe() -> PlatformCapabilities {
             PlatformKind::Unknown
         };
 
-    match kind {
-        PlatformKind::Wayland => PlatformCapabilities {
-            kind,
-            compositing: true,
-            click_through: false,
-            always_on_top: false,
-        },
-        PlatformKind::X11 => PlatformCapabilities {
-            kind,
-            // X11 下无法仅凭 env 确知合成器；S2 真实探测落地前保守降级为不透明。
-            compositing: false,
-            // S2 的 XShape 实现落地前不得把设计预期报告为可用能力。
-            click_through: false,
-            always_on_top: true,
-        },
-        PlatformKind::Unknown => PlatformCapabilities {
-            kind,
-            compositing: false,
-            click_through: false,
-            always_on_top: false,
-        },
+        match kind {
+            PlatformKind::Wayland => PlatformCapabilities {
+                kind,
+                compositing: true,
+                click_through: false,
+                always_on_top: false,
+            },
+            PlatformKind::X11 => PlatformCapabilities {
+                kind,
+                // X11 下无法仅凭 env 确知合成器；S2 真实探测落地前保守降级为不透明。
+                compositing: false,
+                // S2 的 XShape 实现落地前不得把设计预期报告为可用能力。
+                click_through: false,
+                always_on_top: true,
+            },
+            PlatformKind::Unknown => PlatformCapabilities {
+                kind,
+                compositing: false,
+                click_through: false,
+                always_on_top: false,
+            },
+        }
     }
 }
 
@@ -70,12 +90,18 @@ pub fn probe() -> PlatformCapabilities {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "windows"))]
     use std::ffi::OsString;
+    #[cfg(not(target_os = "windows"))]
     use std::sync::Mutex;
 
+    #[cfg(not(target_os = "windows"))]
     static DISPLAY_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(not(target_os = "windows"))]
     fn restore_env(key: &str, value: Option<OsString>) {
+        use std::env;
         // SAFETY: Callers hold DISPLAY_ENV_LOCK for the complete mutation/probe/restore sequence.
         unsafe {
             match value {
@@ -85,8 +111,20 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_dwm_capabilities_reported() {
+        let caps = probe();
+        assert_eq!(caps.kind, PlatformKind::Windows);
+        assert!(caps.compositing);
+        assert!(caps.click_through);
+        assert!(caps.always_on_top);
+    }
+
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn wayland_env_detected() {
+        use std::env;
         let _guard = DISPLAY_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -107,8 +145,10 @@ mod tests {
         assert!(!caps.always_on_top);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn x11_env_detected() {
+        use std::env;
         let _guard = DISPLAY_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
