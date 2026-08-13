@@ -55,7 +55,7 @@ Floatile 要让用户在桌面上长期运行轻量、可布局的浮动 Widget�
 | S1 窗口与原生时钟 | 部分实现 | 透明、置顶、拖拽已有 Windows 实测证据；时钟按 UTC 秒数计算且未标注时区 |
 | S2 桌面交互 | 部分实现 | Edit/Show 模式、点击穿透联动、拖拽与缩放已在 Windows 实测；多显示器与 DPI 降级（F7/F8）未实现 |
 | 平台抽象 | 部分实现 | Windows 能力探测、点击穿透、全局热键、窗口 resize 已落地；X11/Wayland 仍是环境变量推断，没有 OS-specific trait 实现 |
-| 布局/存储 | 未实现 | SQLite migration、DPI/monitor 模型与恢复流程缺失 |
+| 布局/存储 | 部分实现 | SQLite 打开/迁移/布局 CRUD 已落地并实测；Canvas 多实例编排、恢复流程、DPI/monitor 模型缺失 |
 | WASM/WIT/SDK | 未实现 | `wit/`、runtime、guest 示例和契约测试缺失 |
 | Permission Broker | 未实现 | grants、配额、审计和恶意插件 fixture 缺失 |
 | 包工具链 | 未实现 | validate/build、schema、路径与 zip-bomb 防护缺失 |

@@ -48,7 +48,7 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 窗口拖拽 | 🧪 | 已接入窗口管理器拖拽；Windows 可运行，多平台行为仍待验证 |
 | 平台能力探测与降级 | 🧪 | Windows 探测已落地；X11/Wayland 仍以环境变量保守推断，OS-specific 真实探测待实现 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show 模式、点击穿透联动、拖拽缩放已在 Windows 实测；多屏与 DPI 降级（F7/F8）未实现 |
-| SQLite 布局持久化 | 🗺️ | 计划保存位置、尺寸、层级、模式与显示器标识 |
+| SQLite 布局持久化 | 🧪 | layout 表迁移与 CRUD 已落地并实测（保存/恢复/列表/删除）；Canvas 多实例恢复编排待实现 |
 | `.slint + .wasm` Widget | 🗺️ | Wasmtime、Component Model、WIT host/guest 链路尚未接入 |
 | Permission Broker 与审计 | 🗺️ | 默认零权限、scope/配额、参数脱敏与恶意插件测试尚未实现 |
 | 插件 SDK 与打包 CLI | 🗺️ | 计划提供 validate/build/dev、包路径和大小安全校验 |
@@ -174,7 +174,7 @@ flowchart TB
 | `floatile-plugin-api` | WIT host bindings 与契约类型 | 🗺️ |
 | `floatile-runtime` | Slint 动态 UI 与 Wasmtime 执行 | 🗺️ |
 | `floatile-services` | 经 Broker 授权的宿主服务 | 🗺️ |
-| `floatile-store` | SQLite、migration 与事务 | 🗺️ |
+| `floatile-store` | SQLite、migration 与事务 | 🧪 |
 | `floatile-sdk` | WASI guest SDK 与 bindings | 🗺️ |
 | `floatile-cli` | 插件校验、构建与开发工具 | 🗺️ |
 
@@ -197,7 +197,7 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 
 - **S1 · 浮窗基线（进行中）**：参考时钟、透明/无边框/置顶、拖拽和真实平台探测
 - **S2 · 桌面交互（进行中）**：Edit/Show、点击穿透（Windows 已实测）、缩放；多屏与 DPI 降级待做
-- **S3 · 布局持久化（规划中）**：SQLite migration、恢复与显示器热插拔
+- **S3 · 布局持久化（进行中）**：SQLite 迁移与布局 CRUD 已落地；Canvas 多实例恢复与热插拔待做
 - **S4 · 插件契约（规划中）**：WIT 单一源、manifest、SDK 与包校验
 - **S5 · 沙箱运行时（规划中）**：Wasmtime、动态 Slint、Broker、配额与恶意插件测试
 - **P0 验收（规划中）**：Windows/macOS/X11/Wayland 证据、性能数据、风险复盘与许可 ADR

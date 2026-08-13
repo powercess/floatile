@@ -12,7 +12,7 @@
 | 插件 ABI | WIT + WASM Component Model，guest `wasm32-wasip2` | 版本化接口、无原生句柄；`wit/` 为唯一源。 |
 | 插件 runtime | Wasmtime（计划在 S5 引入） | Component Model、异步调用、fuel 与资源限制；引入时固定兼容版本组。 |
 | 异步 | Tokio（计划在需要后台服务时引入） | 后台 I/O/runtime；Slint 主线程只跑事件循环。 |
-| 存储 | SQLite + rusqlite bundled（计划在 S3 引入） | 单文件、事务、跨平台；migration 前向追加。 |
+| 存储 | SQLite + rusqlite bundled | 单文件、事务、跨平台；migration 前向追加（v1 layout 表已落地） |
 | 序列化/错误 | serde、serde_json、thiserror | 契约类型、结构化校验错误；应用入口可统一报告。 |
 | 可观测性 | tracing、tracing-subscriber | 结构化 span；审计使用独立 target 并脱敏。 |
 | 包与接口工具 | `wasm-tools`、`wit-bindgen`、zip、semver（按阶段引入） | 组件校验、绑定生成、包校验和版本兼容。 |
