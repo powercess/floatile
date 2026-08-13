@@ -1,0 +1,22 @@
+[package]
+name = "floatile-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "floatile-shell"
+path = "src/main.rs"
+
+[dependencies]
+floatile-core = { workspace = true }
+floatile-platform = { workspace = true }
+slint = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

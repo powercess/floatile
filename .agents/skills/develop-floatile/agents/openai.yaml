@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop Floatile"
+  short_description: "Implement Floatile changes within its architecture rules"
+  default_prompt: "Use $develop-floatile to implement a scoped Floatile change and verify it."

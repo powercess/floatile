@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Floatile"
+  short_description: "Validate Floatile quality, architecture, and P0 evidence"
+  default_prompt: "Use $verify-floatile to validate this Floatile change and report evidence."

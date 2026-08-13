@@ -1,0 +1,47 @@
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "aarch64-apple-darwin",
+  "wasm32-wasip2",
+]
+all-features = true
+
+[advisories]
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "Transitive ttf-parser 0.25.1 via Slint 1.17.1 has no safe upgrade; internal S1 exception only, remove before S5 accepts untrusted plugin UI/assets" },
+  { id = "RUSTSEC-2026-0206", reason = "Transitive rustybuzz 0.20.1 via Slint 1.17.1 has no safe upgrade; internal S1 exception only, remove before S5 accepts untrusted plugin UI/assets" },
+]
+
+# Keep Slint licensing deliberately unresolved until the licensing ADR is accepted.
+# `cargo deny check licenses` is therefore a release gate, not yet a green CI check.
+[licenses]
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
