@@ -72,6 +72,18 @@ pub fn start_window_drag(window: &winit::window::Window) -> Result<(), PlatformE
         .map_err(|e| PlatformError::Platform(format!("drag_window: {e}")))
 }
 
+/// 调整窗口内容区尺寸（逻辑像素）。
+///
+/// 尺寸上限以 winit 的 max inner size 为准；调用方应先按 `SizeConstraints` 钳制，
+/// 再传入期望尺寸。winit 0.30 使用 `request_inner_size` 请求调整。
+pub fn resize_window(
+    window: &winit::window::Window,
+    size: floatile_core::LogicalSize,
+) -> Result<(), PlatformError> {
+    let _ = window.request_inner_size(winit::dpi::LogicalSize::new(size.width, size.height));
+    Ok(())
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 /// Windows 点击穿透扩展样式位（不参与 hit-test）。
 const WS_EX_TRANSPARENT: isize = 0x0000_0020;
@@ -116,6 +128,27 @@ pub fn set_click_through(
     }
 }
 
+/// 强制移除窗口标题栏与边框。
+///
+/// winit 0.30 对顶层窗口的 `with_decorations(false)` 不生效（已实测仍保留
+/// `WS_CAPTION`），因此这里在窗口创建后直接修改 Win32 样式：清除标题栏/边框/
+/// 系统菜单/尺寸边框并切换为 `WS_POPUP`。仅 Windows 需要；其他平台返回
+/// `PlatformError::Unsupported`。
+pub fn remove_window_decorations(window: &winit::window::Window) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows_impl::remove_window_decorations(window)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Err(PlatformError::Unsupported(
+            "window decorations removal is only needed on Windows",
+        ))
+    }
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows_impl {
@@ -155,6 +188,60 @@ mod windows_impl {
                 "SetWindowLongPtrW(GWL_EXSTYLE) failed: {err}"
             )));
         }
+        Ok(())
+    }
+
+    pub(super) fn remove_window_decorations(
+        window: &winit::window::Window,
+    ) -> Result<(), PlatformError> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWL_STYLE, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            SetWindowPos, ShowWindow, WS_BORDER, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+            WS_POPUP, WS_SIZEBOX, WS_SYSMENU,
+        };
+
+        let handle = window
+            .window_handle()
+            .map_err(|e| PlatformError::Platform(format!("window handle unavailable: {e}")))?;
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return Err(PlatformError::Unsupported(
+                "window handle is not a Win32 HWND on Windows",
+            ));
+        };
+        let hwnd: HWND = handle.hwnd.get();
+
+        // SAFETY: hwnd 是当前 winit 窗口的有效原始句柄，GWL_STYLE 是合法索引；
+        // 这里只清除标题栏/边框相关样式位并切换 WS_POPUP，不改窗口所有权或类。
+        let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+        let borderless = (style as u32 | WS_POPUP)
+            & !(WS_CAPTION | WS_BORDER | WS_SYSMENU | WS_SIZEBOX | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
+
+        // SAFETY: 同一有效 hwnd；仅修改样式位。先清零上次错误码。
+        unsafe { SetLastError(0) };
+        let _prev = unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, borderless as isize) };
+        // SAFETY: 读取本调用产生的错误码。
+        let err = unsafe { GetLastError() };
+        if err != 0 {
+            return Err(PlatformError::Platform(format!(
+                "SetWindowLongPtrW(GWL_STYLE) failed: {err}"
+            )));
+        }
+
+        // SAFETY: 通知窗口管理器样式已变化并强制重绘；保留位置/尺寸/z-order。
+        let _ = unsafe {
+            SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            )
+        };
+        // SAFETY: 重显窗口应用新样式。
+        let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         Ok(())
     }
 }
