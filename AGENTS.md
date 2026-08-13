@@ -8,7 +8,7 @@
 
 - `main` 是正式版本分支，只接收通过发布门禁的 release PR 或紧急 hotfix；`dev` 是主要开发与集成
   分支。禁止直接在 `main` 或 `dev` 上开发、提交或 push。
-- 普通任务从最新 `dev` 创建独立分支并通过 PR 合回 `dev`。Agent 分支使用 `codex/<topic>`；人工
+- 普通任务从最新 `dev` 创建独立分支并通过 PR 合回 `dev`。Agent 分支使用 `agent/<topic>`；人工
   分支使用 `feat/`、`fix/`、`refactor/`、`test/`、`docs/`、`ci/` 或 `chore/` 前缀。
 - 一个分支只承载一个需求、修复或治理目标。依赖升级单独成分支；不得夹带无关重构、格式化或
   其他协作者的修改。

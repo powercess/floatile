@@ -10,7 +10,7 @@ Floatile 当前处于 P0，变更应优先形成小而完整的垂直切片。
   分支，必须始终保持可编译且基础 CI 通过。
 - 禁止直接在 `main` 或 `dev` 上开发、提交或 push。普通任务分支必须从最新 `dev` 创建，并通过
   PR 合回 `dev`。
-- Agent 分支使用 `codex/<topic>`；人工分支使用 `feat/<topic>`、`fix/<topic>`、
+- Agent 分支使用 `agent/<topic>`；人工分支使用 `feat/<topic>`、`fix/<topic>`、
   `refactor/<topic>`、`test/<topic>`、`docs/<topic>`、`ci/<topic>` 或 `chore/<topic>`；紧急修复使用
   `hotfix/<topic>` 并从 `main` 创建。
 - 一个分支只解决一个需求、缺陷或治理目标。依赖升级必须单独成分支，并保留 `Cargo.lock`。
@@ -31,7 +31,7 @@ Agent 未经用户明确授权不得创建或切换分支、stage、commit、pus
 正常开发路径为：
 
 ```text
-feat/* | fix/* | codex/*
+feat/* | fix/* | agent/*
               │ squash PR
               ▼
              dev
