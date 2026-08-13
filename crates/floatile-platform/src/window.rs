@@ -72,11 +72,14 @@ pub fn start_window_drag(window: &winit::window::Window) -> Result<(), PlatformE
         .map_err(|e| PlatformError::Platform(format!("drag_window: {e}")))
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 /// Windows 点击穿透扩展样式位（不参与 hit-test）。
 const WS_EX_TRANSPARENT: isize = 0x0000_0020;
+#[cfg_attr(not(windows), allow(dead_code))]
 /// Windows 分层窗口扩展样式位（每像素 Alpha，配合透明背景）。
 const WS_EX_LAYERED: isize = 0x0008_0000;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 /// 计算启用/禁用点击穿透后的 Windows 扩展窗口样式。
 ///
 /// 启用时叠加 `WS_EX_TRANSPARENT`（穿透）与 `WS_EX_LAYERED`（分层，保证 Alpha 生效）；

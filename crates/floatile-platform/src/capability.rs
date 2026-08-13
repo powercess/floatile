@@ -82,6 +82,13 @@ pub fn probe() -> PlatformCapabilities {
                 click_through: false,
                 always_on_top: false,
             },
+            // 非 Windows 分支永远构造不出 Windows；此分支只为穷尽匹配。
+            PlatformKind::Windows => PlatformCapabilities {
+                kind,
+                compositing: false,
+                click_through: false,
+                always_on_top: false,
+            },
         }
     }
 }
