@@ -14,10 +14,12 @@ use std::rc::Rc;
 
 use floatile_core::{LogicalSize, SizeConstraints, WidgetMode};
 use floatile_platform::capability::probe;
+#[cfg(windows)]
+use floatile_platform::extract_hotkey_id;
 use floatile_platform::{
-    Hotkey, HotkeyModifiers, PlatformError, WindowOptions, apply_window_options, extract_hotkey_id,
-    register_hotkey, remove_window_decorations, resize_window, set_click_through,
-    start_window_drag, unregister_hotkey,
+    Hotkey, HotkeyModifiers, PlatformError, WindowOptions, apply_window_options, register_hotkey,
+    remove_window_decorations, resize_window, set_click_through, start_window_drag,
+    unregister_hotkey,
 };
 use slint::Timer;
 use slint::winit_030::{WinitWindowAccessor, winit};
@@ -257,7 +259,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )));
     let hotkey_app = Rc::new(RefCell::new(None::<Clock>));
 
+    #[cfg(windows)]
     let mut event_loop_builder =
+        winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+    #[cfg(not(windows))]
+    let event_loop_builder =
         winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
     #[cfg(windows)]
     {
@@ -279,7 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     floatile_shell::ModeEffect::Show { .. } => WidgetMode::Show,
                 };
                 if let Some(app) = app_for_hotkey.borrow().as_ref() {
-                    apply_mode(app, mode, app_for_hotkey_caps());
+                    apply_mode(app, mode, app_caps());
                 }
                 true
             });
@@ -475,9 +481,5 @@ fn apply_mode(app: &Clock, mode: WidgetMode, click_through_supported: bool) {
 }
 
 fn app_caps() -> bool {
-    probe().click_through
-}
-
-fn app_for_hotkey_caps() -> bool {
     probe().click_through
 }
