@@ -21,6 +21,11 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: wasm32-wasip2
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Enforce LF and UTF-8 (no CRLF/BOM)
         shell: bash
         run: |
