@@ -1,0 +1,38 @@
+# 换行与编码策略：仓库内所有文本文件统一 LF + UTF-8（无 BOM）。
+# 禁止依赖各开发者本机 core.autocrlf / core.eol 的隐式转换；
+# 变更后需运行 `git add --renormalize .` 一次性归一化基线。
+
+* text=auto eol=lf
+
+# 脚本按平台执行约定保留换行
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制产物禁止任何文本归一化，避免内容被改写
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.bmp binary
+*.webp binary
+*.svg text eol=lf
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.wasm binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so binary
+*.a binary
+*.lib binary
+*.pdb binary

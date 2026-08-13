@@ -43,6 +43,10 @@ cargo check -p floatile-sdk --target wasm32-wasip2 --locked
 cargo deny --locked check advisories bans sources
 ```
 
+文本换行与编码门禁：`git ls-files --eol` 必须全部为 `i/lf`，且被追踪文件不得含 UTF-8 BOM
+（CI 已执行此检查；本地可用同款命令自查）。CRLF/BOM 提交视为未通过门禁，先执行
+`git add --renormalize .` 归一化基线再提交。
+
 `cargo deny --locked check licenses` 在许可 ADR 完成前预期阻断；它是发布门，不得通过忽略 Slint 或
 放宽所有 copyleft 许可证来绕过。
 

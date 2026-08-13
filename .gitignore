@@ -6,3 +6,21 @@
 .idea/
 .vscode/
 coverage/
+
+# Windows 资源管理器与 IDE 产物
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opendb
+*.VC.db
+
+# 编辑器与备份
+*~
+*.swp
+*.swo
+
