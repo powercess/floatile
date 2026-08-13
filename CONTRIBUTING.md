@@ -14,7 +14,12 @@ Floatile 当前处于 P0，变更应优先形成小而完整的垂直切片。
   `refactor/<topic>`、`test/<topic>`、`docs/<topic>`、`ci/<topic>` 或 `chore/<topic>`；紧急修复使用
   `hotfix/<topic>` 并从 `main` 创建。
 - 一个分支只解决一个需求、缺陷或治理目标。依赖升级必须单独成分支，并保留 `Cargo.lock`。
-- 创建或切换分支前必须检查工作区；不得让未提交修改意外跟随分支，也不得覆盖其他协作者的修改。
+- 任何 Git 修改操作（创建/切换分支、暂存、提交、rebase、删除分支、合并）执行前都要先核对
+  `git status`、`git branch --show-current` 与相关 diff，确认当前分支、基线和工作区状态符合预期；
+  共享工作区可能被并发操作改变，操作之间不得假设分支或文件状态不变。新建分支必须显式指定基线
+  （普通任务 `git checkout -b <name> dev`，hotfix `git checkout -b hotfix/<name> main`），不得依赖
+  当前 HEAD 的隐式状态。发现不属于当前任务的修改、预期外的分支/提交或并发写入时，先保留并避让，
+  再继续。
 - 私有、尚未共享的普通任务分支可以基于最新 `dev` rebase；hotfix 则基于最新 `main`。共享分支
   不得改写历史；需要同步基线时使用 merge，或先获得所有协作者明确同意再 rebase。
 - 禁止直接 force-push。确需修复个人分支历史时，只能在明确确认无人基于该历史开发后使用

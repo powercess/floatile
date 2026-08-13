@@ -17,8 +17,9 @@ wasm-tools --version
 
 分支创建、提交时机、commit message、PR 与合并必须遵循仓库根目录的 `CONTRIBUTING.md`。
 
-1. 检查工作区和分支；普通任务确认从最新 `dev` 分出，hotfix 确认从最新 `main` 分出，并确保没有
-   夹带其他协作者的修改。
+1. 核对 `git status`、`git branch --show-current` 和基线：任何 Git 修改操作前不假设共享工作区状态；
+   普通任务显式从最新 `dev` 分出（`git checkout -b <name> dev`），hotfix 显式从最新 `main` 分出，并
+   确保没有夹带其他协作者的修改或预期外提交。
 2. 关联 `product/requirements.md` 的需求 ID 和 P0 验收项。
 3. 读取对应事实源，确认 crate 归属、安全和平台影响。
 4. 先写失败测试或明确手工复现，再实现最小完整切片。
