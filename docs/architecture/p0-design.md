@@ -68,9 +68,12 @@ floatile-shell (bin)
 
 ## 5. 布局模型与持久化
 
-- 逻辑坐标（逻辑像素）+ 所属 monitor（以 EDID/product 指纹标识）+ scale factor。
-- 持久化到 SQLite（`floatile-store`）：`layout` 表（instance_id, plugin_id, monitor_key, x, y, w, h, z, mode, updated_at）。
-- 热插拔恢复：启动与 `MonitorListChanged` 事件时重算；找不到原 monitor 时落到主屏并标记 `lost_monitor`。
+- 持久化坐标是相对于期望 monitor 工作区原点的逻辑像素；monitor 使用 EDID/product 指纹
+  标识，并记录保存时的 scale factor 与物理尺寸。
+- `floatile-store` 的 `layout` v2 表保存 `instance_id, plugin_id, monitor_key, x, y, w, h,
+  physical_w, physical_h, scale_factor, lost_monitor, z, mode, version, updated_at`。
+- 启动与 `MonitorListChanged` 时重算；原 monitor 缺失时运行态落到主屏并标记
+  `lost_monitor`，但不得覆盖原 `monitor_key` 或 monitor-local 矩形，确保原屏重新接入后可恢复。
 
 ## 6. 插件加载管线（P0 最小）
 

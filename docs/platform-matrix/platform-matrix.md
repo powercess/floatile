@@ -67,7 +67,7 @@
 | X11 WM 不声明 `_NET_WM_STATE_ABOVE` | 置顶降级为普通窗口；记录 `WindowManagerUnsupported` |
 | 纯 Wayland 无 layer-shell | 点击穿透禁用、置顶降级为普通窗口；提供手动置顶控件 |
 | 无 GPU / 驱动异常 | Slint 软件渲染器回退；记录 GPU 信息到诊断日志 |
-| 显示器热插拔找不到原屏 | 布局落回主屏并标记 `lost_monitor`，不丢数据 |
+| 显示器热插拔找不到原屏 | 运行态落回主屏并标记 `lost_monitor`；持久化保留原 monitor key 与 monitor-local 矩形，原屏重新接入后恢复，不丢数据 |
 | 高 DPI 混合 | 以窗口所在屏的 scale factor 为准，跨屏拖动时重算逻辑尺寸 |
 
 ## 5. P0 实测回填栏
