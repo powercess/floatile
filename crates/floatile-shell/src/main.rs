@@ -667,9 +667,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 注册全局热键（Windows 展示模式下切回编辑）。winit 窗口在事件循环首次迭代后
-    // 才创建，因此用 Repeated Timer 重试直到注册成功（成功后置标志跳过）。
+    // 才创建，因此用 Repeated Timer 重试直到注册成功。装饰移除与热键注册各自
+    // 一次性收敛：成功后不再重复执行，避免每次 tick 重改窗口样式
+    // （SetWindowLongPtrW + ShowWindow 隐藏/重现）造成持续频闪。
     #[cfg(windows)]
     let register_timer = {
+        // 200 ms × 25 = 5 s 的窗口就绪与热键注册预算；耗尽后按降级模型停止重试。
+        const MAX_RETRIES: u32 = 25;
         let hotkey = Hotkey {
             id: HOTKEY_ID,
             modifiers: HotkeyModifiers {
@@ -679,43 +683,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             virtual_key: KEY_E,
         };
-        let registered = Rc::new(RefCell::new(false));
         let weak = app.as_weak();
-        let reg_flag = Rc::clone(&registered);
         let controller_for_registration = Arc::clone(&controller);
-        let register_timer = Timer::default();
+        let register_timer = Rc::new(Timer::default());
+        let timer_for_callback = Rc::clone(&register_timer);
+        let decorations_done = Rc::new(RefCell::new(false));
+        let hotkey_done = Rc::new(RefCell::new(false));
+        let retries = Rc::new(RefCell::new(0u32));
         register_timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(200),
             move || {
-                if *reg_flag.borrow() {
-                    return;
-                }
                 let Some(app) = weak.upgrade() else { return };
                 use slint::winit_030::winit::window::Window;
-                // winit 0.30 顶层窗口的 with_decorations(false) 不生效，需创建后强制移除。
-                let deco_result = app
-                    .window()
-                    .with_winit_window(|w: &Window| remove_window_decorations(w))
-                    .unwrap_or(Err(PlatformError::WindowNotReady));
-                match deco_result {
-                    Ok(()) => tracing::info!("window decorations removed"),
-                    Err(e) => tracing::debug!("remove_window_decorations retry: {e}"),
+
+                let attempts = *retries.borrow();
+                if attempts >= MAX_RETRIES {
+                    tracing::error!(
+                        "window decorations/hotkey setup failed after {attempts} retries; \
+                         click-through stays disabled, Show mode keeps an interactive window"
+                    );
+                    timer_for_callback.stop();
+                    return;
                 }
-                let hotkey_result = app
-                    .window()
-                    .with_winit_window(|w: &Window| register_hotkey(w, hotkey))
-                    .unwrap_or(Err(PlatformError::WindowNotReady));
-                match hotkey_result {
-                    Ok(()) => {
-                        controller_for_registration
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .click_through_supported = true;
-                        tracing::info!("global hotkey registered (Ctrl+Shift+E)");
-                        *reg_flag.borrow_mut() = true;
+
+                let mut pending = false;
+                if !*decorations_done.borrow() {
+                    // winit 0.30 顶层窗口的 with_decorations(false) 不生效，需创建后强制移除；
+                    // 首次成功后不再重放，防止隐藏/重现窗口导致频闪。
+                    let deco_result = app
+                        .window()
+                        .with_winit_window(|w: &Window| remove_window_decorations(w))
+                        .unwrap_or(Err(PlatformError::WindowNotReady));
+                    match deco_result {
+                        Ok(()) => {
+                            tracing::info!("window decorations removed");
+                            *decorations_done.borrow_mut() = true;
+                        }
+                        Err(error) => {
+                            pending = true;
+                            tracing::debug!("remove_window_decorations retry: {error}");
+                        }
                     }
-                    Err(e) => tracing::debug!("hotkey registration retry: {e}"),
+                }
+
+                if !*hotkey_done.borrow() {
+                    let hotkey_result = app
+                        .window()
+                        .with_winit_window(|w: &Window| register_hotkey(w, hotkey))
+                        .unwrap_or(Err(PlatformError::WindowNotReady));
+                    match hotkey_result {
+                        Ok(()) => {
+                            controller_for_registration
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .click_through_supported = true;
+                            tracing::info!("global hotkey registered (Ctrl+Shift+E)");
+                            *hotkey_done.borrow_mut() = true;
+                        }
+                        Err(error) => {
+                            pending = true;
+                            tracing::debug!("hotkey registration retry {attempts}: {error}");
+                        }
+                    }
+                }
+
+                if pending {
+                    *retries.borrow_mut() = attempts + 1;
+                } else {
+                    timer_for_callback.stop();
                 }
             },
         );
