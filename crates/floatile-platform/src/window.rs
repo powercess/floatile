@@ -99,6 +99,31 @@ pub fn resize_window(
     Ok(())
 }
 
+/// 设置窗口外框位置（虚拟桌面逻辑像素）。
+///
+/// 调用方传入逻辑像素坐标；本函数按 winit 当前 scale factor 换算为物理像素后
+/// 调用 `set_outer_position`，与 `resize_window` 保持同一坐标约定。
+///
+/// 原生 Wayland 下窗口位置由合成器决定，winit 无法设置；返回显式
+/// `Unsupported` 以便调用方记录降级，而不是静默忽略。
+pub fn set_window_position(
+    window: &winit::window::Window,
+    position: floatile_core::LogicalPosition,
+) -> Result<(), PlatformError> {
+    if crate::capability::probe().kind == crate::capability::PlatformKind::Wayland {
+        return Err(PlatformError::Unsupported(
+            "window position is controlled by the compositor on Wayland",
+        ));
+    }
+    let scale = window.scale_factor();
+    let physical = winit::dpi::PhysicalPosition::new(
+        (f64::from(position.x) * scale).round(),
+        (f64::from(position.y) * scale).round(),
+    );
+    window.set_outer_position(physical);
+    Ok(())
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 /// Windows 点击穿透扩展样式位（不参与 hit-test）。
 const WS_EX_TRANSPARENT: isize = 0x0000_0020;

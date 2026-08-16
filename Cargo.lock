@@ -1226,6 +1226,7 @@ version = "0.1.0"
 dependencies = [
  "floatile-core",
  "floatile-platform",
+ "floatile-store",
  "slint",
  "tracing",
  "tracing-subscriber",

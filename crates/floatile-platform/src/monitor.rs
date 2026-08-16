@@ -2,7 +2,10 @@
 //!
 //! 平台层返回原生物理像素；逻辑像素与 DPI 换算由后续布局恢复流程统一处理。
 
-use floatile_core::{MonitorKey, PhysicalPosition, PhysicalSize};
+use floatile_core::{
+    LogicalPosition, LogicalRect, LogicalSize, MonitorKey, MonitorLayout, PhysicalPosition,
+    PhysicalSize, ScaleFactor,
+};
 
 use crate::capability::{PlatformKind, probe};
 use crate::window::PlatformError;
@@ -57,5 +60,95 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, PlatformError> {
         PlatformKind::X11 => Err(PlatformError::Unsupported(
             "X11 monitor enumeration is only implemented on Linux",
         )),
+    }
+}
+
+/// 将平台显示器快照归一为布局恢复使用的逻辑布局。
+///
+/// X11 RandR 报告物理像素；逻辑像素 = 物理像素 / scale factor。scale factor 由
+/// 调用方按窗口所在屏提供（winit `Window::scale_factor`）；X11 无统一每屏 DPI，
+/// 常态为 1.0，此时逻辑与物理数值一致。`ScaleFactor` 保证有限正数，因此结果
+/// 必然为有限值。
+pub fn to_monitor_layout(info: &MonitorInfo, scale_factor: ScaleFactor) -> MonitorLayout {
+    let sf = scale_factor.get() as f32;
+    MonitorLayout {
+        key: info.key.clone(),
+        bounds: LogicalRect {
+            position: LogicalPosition {
+                x: info.position.x as f32 / sf,
+                y: info.position.y as f32 / sf,
+            },
+            size: LogicalSize {
+                width: info.size.width as f32 / sf,
+                height: info.size.height as f32 / sf,
+            },
+        },
+        scale_factor,
+        primary: info.primary,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_monitor_layout_scales_physical_to_logical() {
+        let info = MonitorInfo {
+            key: MonitorKey("DP-1".into()),
+            key_source: MonitorKeySource::ConnectorName,
+            name: "DP-1".into(),
+            position: PhysicalPosition { x: 1920, y: 0 },
+            size: PhysicalSize {
+                width: 2560,
+                height: 1440,
+            },
+            physical_size_mm: None,
+            primary: false,
+        };
+        let layout = to_monitor_layout(&info, ScaleFactor::new(2.0).unwrap());
+        assert_eq!(layout.key, MonitorKey("DP-1".into()));
+        assert_eq!(layout.bounds.position, LogicalPosition { x: 960.0, y: 0.0 });
+        assert_eq!(
+            layout.bounds.size,
+            LogicalSize {
+                width: 1280.0,
+                height: 720.0
+            }
+        );
+        assert!(!layout.primary);
+    }
+
+    #[test]
+    fn to_monitor_layout_unit_scale_preserves_values() {
+        let info = MonitorInfo {
+            key: MonitorKey("eDP-1".into()),
+            key_source: MonitorKeySource::Edid,
+            name: "eDP-1".into(),
+            position: PhysicalPosition { x: -1600, y: 0 },
+            size: PhysicalSize {
+                width: 1600,
+                height: 900,
+            },
+            physical_size_mm: Some(PhysicalSize {
+                width: 344,
+                height: 194,
+            }),
+            primary: true,
+        };
+        let layout = to_monitor_layout(&info, ScaleFactor::new(1.0).unwrap());
+        assert_eq!(
+            layout.bounds.position,
+            LogicalPosition { x: -1600.0, y: 0.0 }
+        );
+        assert_eq!(
+            layout.bounds.size,
+            LogicalSize {
+                width: 1600.0,
+                height: 900.0
+            }
+        );
+        assert!(layout.primary);
     }
 }

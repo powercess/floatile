@@ -55,7 +55,7 @@ Floatile 要让用户在桌面上长期运行轻量、可布局的浮动 Widget�
 | S1 窗口与原生时钟 | 部分验证 | 透明、无边框、置顶、拖拽已有 Windows、Linux Xvfb 与 VMware Xfce/Xorg 证据；Wayland、macOS 未验证；时钟按 UTC 秒数计算且未标注时区 |
 | S2 桌面交互 | 部分验证 | Edit/Show、Windows 与 X11 点击穿透、恢复热键、拖拽与缩放已落地；Linux Xvfb 与 VMware Xfce/Xorg 已验证穿透往返，Xfce 已验证窗口重映射后的输入区重同步；物理多显示器、DPI 与热插拔降级（F7/F8）未验证 |
 | 平台抽象 | 部分实现 | 能力状态包含明确降级原因；Windows 窗口能力与 X11 compositor/SHAPE/EWMH/RandR 探测已落地；尚无统一四平台 trait、Wayland 协议探测及 macOS 实现 |
-| 布局/存储 | 部分实现 | 核心层已有强类型 monitor/DPI/物理坐标模型和平台无关恢复算法；SQLite v2 migration 已持久化物理尺寸、scale factor 与 `lost_monitor`，含 v1 升级和失败回滚测试；尚未接入 shell Canvas、Slint/winit DPI 归一与热插拔事件 |
+| 布局/存储 | 部分验证 | 核心层已有强类型 monitor/DPI/物理坐标模型和平台无关恢复算法；SQLite v2 migration 已持久化物理尺寸、scale factor 与 `lost_monitor`；shell 已接入启动保存/恢复（位置/尺寸/模式）、拖动/缩放/模式/热键/退出保存与显示器变化重恢复，Xvfb+Openbox 下重启恢复与删除已实测；真实多屏/DPI/热插拔与 Windows/macOS 实机验证待做 |
 | WASM/WIT/SDK | 未实现 | `wit/`、runtime、guest 示例和契约测试缺失 |
 | Permission Broker | 未实现 | grants、配额、审计和恶意插件 fixture 缺失 |
 | 包工具链 | 未实现 | validate/build、schema、路径与 zip-bomb 防护缺失 |

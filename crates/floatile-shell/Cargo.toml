@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 floatile-core = { workspace = true }
 floatile-platform = { workspace = true }
+floatile-store = { workspace = true }
 slint = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

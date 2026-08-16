@@ -38,6 +38,11 @@ impl ScaleFactor {
         }
     }
 
+    /// 恒等缩放因子（1.0），用于未知 DPI 的保守回退。
+    pub const fn one() -> Self {
+        Self(1.0)
+    }
+
     pub fn get(self) -> f64 {
         self.0
     }

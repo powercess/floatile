@@ -52,7 +52,7 @@ Legend: ✅ basic implementation exists · 🧪 in development or awaiting compl
 | Window dragging | 🧪 | Runtime evidence exists for Windows, Linux Xvfb, and VMware Xfce/Xorg; macOS/Wayland remain unverified |
 | Capability probing and degradation | 🧪 | Native Windows probes and X11 compositor/SHAPE/EWMH/RandR probes are implemented; Wayland has explicit protocol degradation and the macOS implementation remains unimplemented |
 | Edit/show modes, resize, and multi-display layout | 🧪 | Edit/show, click-through coordination, dragging, and resizing are implemented on the Windows and Linux X11 paths; platform-neutral primary-display fallback/original-display recovery is implemented, while Canvas integration and real multi-display/DPI/hot-plug evidence remain |
-| SQLite layout persistence | 🧪 | Layout schema v2, CRUD, v1 upgrade/rollback, and reopen persistence tests are implemented; multi-instance Canvas restoration remains |
+| SQLite layout persistence | 🧪 | Layout schema v2, CRUD, v1 upgrade/rollback, and reopen persistence tests are implemented; the shell now wires startup save/restore and display-change re-apply (verified on Xvfb+Openbox); real multi-display/hot-plug validation and multi-instance orchestration remain |
 | `.slint + .wasm` widgets | 🗺️ | Wasmtime, Component Model, and WIT host/guest path are not integrated yet |
 | Permission Broker and audit trail | 🗺️ | Default-deny grants, quotas, redaction, and hostile-plugin tests remain |
 | Plugin SDK and packaging CLI | 🗺️ | Planned validate/build/dev commands and package safety checks |
@@ -205,7 +205,7 @@ Crate dependency rules are security and portability boundaries, not suggestions.
 - **S1 · Floating-window baseline (in progress):** reference clock, transparent/borderless/AOT window,
   dragging, and real platform probes
 - **S2 · Desktop interaction (in progress):** edit/show, click-through, resizing, and Linux X11 monitor enumeration; real multi-display/DPI evidence remains
-- **S3 · Layout persistence (in progress):** monitor-local recovery, SQLite v2, and reopen persistence are implemented; Canvas and hot-plug event integration remain
+- **S3 · Layout persistence (in progress):** monitor-local recovery, SQLite v2, shell startup save/restore, and display-change re-apply are implemented; real multi-display/hot-plug validation and multi-instance orchestration remain
 - **S4 · Plugin contract (planned):** one WIT source, manifest, SDK, and package validation
 - **S5 · Sandboxed runtime (planned):** Wasmtime, dynamic Slint, Broker, quotas, and hostile-plugin tests
 - **P0 acceptance (planned):** Windows/macOS/X11/Wayland evidence, performance measurements, risk review,
