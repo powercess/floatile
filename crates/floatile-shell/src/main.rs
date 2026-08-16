@@ -325,6 +325,7 @@ fn schedule_always_on_top(app: slint::Weak<Clock>, delay: Duration) {
 const HOTKEY_ID: u32 = 0x0001;
 #[cfg(any(windows, target_os = "linux"))]
 const KEY_E: u32 = 0x45;
+const KEY_F12: u32 = 0x7B;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let process_started = Instant::now();
@@ -537,6 +538,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            // Show 模式退出：穿透开启时靠全局热键；降级态（热键候选全部注册失败、
+            // 未开启穿透）时窗口仍可获得键盘焦点，按 Esc 退出展示模式。
+            // 鼠标点击只做正常的窗口激活，绝不作为模式切换入口。
+            if let winit::event::WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } = event
+                && key_event.state == winit::event::ElementState::Pressed
+                && key_event.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+            {
+                let mut controller = controller_for_window_events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if controller.mode == WidgetMode::Show {
+                    let effect = controller.restore_edit_mode();
+                    drop(controller);
+                    if let Some(app) = weak.upgrade() {
+                        apply_mode_effect(&app, effect);
+                    }
+                    tracing::info!("show mode exited by Escape");
+                    return EventResult::PreventDefault;
+                }
+            }
+
             if matches!(
                 event,
                 winit::event::WindowEvent::Focused(true)
@@ -674,21 +699,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let register_timer = {
         // 200 ms × 25 = 5 s 的窗口就绪与热键注册预算；耗尽后按降级模型停止重试。
         const MAX_RETRIES: u32 = 25;
-        let hotkey = Hotkey {
-            id: HOTKEY_ID,
-            modifiers: HotkeyModifiers {
-                control: true,
-                shift: true,
-                ..HotkeyModifiers::none()
+        // 恢复热键候选组合，按顺序尝试。默认 Ctrl+Shift+E 被其他程序全局占用
+        // （RegisterHotKey 返回 ERROR_HOTKEY_ALREADY_REGISTERED）时自动换下一组，
+        // 保证 Show 模式总有可用的恢复热键。
+        let hotkey_candidates: [Hotkey; 3] = [
+            Hotkey {
+                id: HOTKEY_ID,
+                modifiers: HotkeyModifiers {
+                    control: true,
+                    shift: true,
+                    ..HotkeyModifiers::none()
+                },
+                virtual_key: KEY_E,
             },
-            virtual_key: KEY_E,
-        };
+            Hotkey {
+                id: HOTKEY_ID,
+                modifiers: HotkeyModifiers {
+                    control: true,
+                    alt: true,
+                    ..HotkeyModifiers::none()
+                },
+                virtual_key: KEY_E,
+            },
+            Hotkey {
+                id: HOTKEY_ID,
+                modifiers: HotkeyModifiers {
+                    control: true,
+                    shift: true,
+                    ..HotkeyModifiers::none()
+                },
+                virtual_key: KEY_F12,
+            },
+        ];
         let weak = app.as_weak();
         let controller_for_registration = Arc::clone(&controller);
         let register_timer = Rc::new(Timer::default());
         let timer_for_callback = Rc::clone(&register_timer);
         let decorations_done = Rc::new(RefCell::new(false));
         let hotkey_done = Rc::new(RefCell::new(false));
+        let candidate_index = Rc::new(RefCell::new(0usize));
         let retries = Rc::new(RefCell::new(0u32));
         register_timer.start(
             slint::TimerMode::Repeated,
@@ -701,7 +750,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if attempts >= MAX_RETRIES {
                     tracing::error!(
                         "window decorations/hotkey setup failed after {attempts} retries; \
-                         click-through stays disabled, Show mode keeps an interactive window"
+                         click-through stays disabled, Show mode exits by pressing Escape"
                     );
                     timer_for_callback.stop();
                     return;
@@ -728,22 +777,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if !*hotkey_done.borrow() {
-                    let hotkey_result = app
-                        .window()
-                        .with_winit_window(|w: &Window| register_hotkey(w, hotkey))
-                        .unwrap_or(Err(PlatformError::WindowNotReady));
-                    match hotkey_result {
-                        Ok(()) => {
-                            controller_for_registration
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .click_through_supported = true;
-                            tracing::info!("global hotkey registered (Ctrl+Shift+E)");
-                            *hotkey_done.borrow_mut() = true;
-                        }
-                        Err(error) => {
-                            pending = true;
-                            tracing::debug!("hotkey registration retry {attempts}: {error}");
+                    let index = *candidate_index.borrow();
+                    if index >= hotkey_candidates.len() {
+                        tracing::error!(
+                            "no global hotkey candidate registered \
+                             (Ctrl+Shift+E, Ctrl+Alt+E, Ctrl+Shift+F12 all unavailable); \
+                             click-through stays disabled, Show mode exits by pressing Escape"
+                        );
+                        *hotkey_done.borrow_mut() = true;
+                    } else {
+                        let hotkey_result = app
+                            .window()
+                            .with_winit_window(|w: &Window| {
+                                register_hotkey(w, hotkey_candidates[index])
+                            })
+                            .unwrap_or(Err(PlatformError::WindowNotReady));
+                        match hotkey_result {
+                            Ok(()) => {
+                                controller_for_registration
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .click_through_supported = true;
+                                tracing::info!(
+                                    "global hotkey registered ({})",
+                                    hotkey_label(index)
+                                );
+                                *hotkey_done.borrow_mut() = true;
+                            }
+                            Err(error) => {
+                                *candidate_index.borrow_mut() = index + 1;
+                                pending = true;
+                                tracing::debug!(
+                                    "hotkey {} registration retry {attempts}: {error}",
+                                    hotkey_label(index)
+                                );
+                            }
                         }
                     }
                 }
@@ -790,6 +858,17 @@ fn current_size(app: &Clock) -> LogicalSize {
     LogicalSize {
         width: size.width as f32,
         height: size.height as f32,
+    }
+}
+
+/// 恢复热键候选的人类可读标签，与 `register_timer` 中候选数组下标一一对应。
+#[cfg(windows)]
+fn hotkey_label(index: usize) -> &'static str {
+    match index {
+        0 => "Ctrl+Shift+E",
+        1 => "Ctrl+Alt+E",
+        2 => "Ctrl+Shift+F12",
+        _ => "unknown",
     }
 }
 
