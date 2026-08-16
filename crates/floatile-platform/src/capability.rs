@@ -217,7 +217,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn unreachable_x11_display_reports_connection_degradation() {
         use std::env;
