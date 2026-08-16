@@ -52,14 +52,14 @@ Floatile 要让用户在桌面上长期运行轻量、可布局的浮动 Widget�
 | 范围 | 状态 | 主要差距 |
 |---|---|---|
 | Workspace/核心类型 | 部分实现 | 多数 crate 仍为模板，依赖边界尚缺架构测试 |
-| S1 窗口与原生时钟 | 部分验证 | 透明、无边框、置顶、拖拽已有 Windows 与 Linux Xvfb 证据；物理 X11、Wayland、macOS 未验证；时钟按 UTC 秒数计算且未标注时区 |
-| S2 桌面交互 | 部分实现 | Edit/Show、Windows 点击穿透、拖拽与缩放已落地；Linux Xvfb 拖拽已验证；X11 点击穿透、多显示器与 DPI 降级（F7/F8）未实现 |
-| 平台抽象 | 部分实现 | Windows 能力/热键/窗口操作与 X11 合成器 selection-owner 探测已落地；尚无统一四平台 trait、X11 monitor/XShape 与 Wayland 协议探测 |
-| 布局/存储 | 部分实现 | SQLite 打开/迁移/布局 CRUD 已落地并实测；Canvas 多实例编排、恢复流程、DPI/monitor 模型缺失 |
+| S1 窗口与原生时钟 | 部分验证 | 透明、无边框、置顶、拖拽已有 Windows、Linux Xvfb 与 VMware Xfce/Xorg 证据；Wayland、macOS 未验证；时钟按 UTC 秒数计算且未标注时区 |
+| S2 桌面交互 | 部分验证 | Edit/Show、Windows 与 X11 点击穿透、恢复热键、拖拽与缩放已落地；Linux Xvfb 与 VMware Xfce/Xorg 已验证穿透往返，Xfce 已验证窗口重映射后的输入区重同步；物理多显示器、DPI 与热插拔降级（F7/F8）未验证 |
+| 平台抽象 | 部分实现 | 能力状态包含明确降级原因；Windows 窗口能力与 X11 compositor/SHAPE/EWMH/RandR 探测已落地；尚无统一四平台 trait、Wayland 协议探测及 macOS 实现 |
+| 布局/存储 | 部分实现 | SQLite 打开/迁移/布局 CRUD 已落地并实测；X11 活动输出可枚举并生成 EDID/connector key，但尚未接入 Canvas 恢复、DPI 换算与热插拔流程 |
 | WASM/WIT/SDK | 未实现 | `wit/`、runtime、guest 示例和契约测试缺失 |
 | Permission Broker | 未实现 | grants、配额、审计和恶意插件 fixture 缺失 |
 | 包工具链 | 未实现 | validate/build、schema、路径与 zip-bomb 防护缺失 |
-| 跨平台/性能证据 | 部分验证 | Windows 与 Linux Xvfb 已回填 S1/S2 子集；物理 X11、Wayland、macOS 未验证；Xvfb release 首帧/CPU/RSS 已记录 |
+| 跨平台/性能证据 | 部分验证 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已回填 S1/S2 子集，两个 Linux X11 环境的 F3 穿透往返通过；Wayland、macOS 未验证；Xvfb release 首帧/CPU/RSS 已记录 |
 
 ## 6. 阶段门槛与未决策
 

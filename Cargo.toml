@@ -31,7 +31,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 slint = { version = "1.17", features = ["backend-winit", "unstable-winit-030"] }
 winit = "0.30"
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.13", default-features = false, features = ["randr", "shape"] }
 windows-sys = "0.52"
 rusqlite = { version = "0.32", features = ["bundled"] }
 

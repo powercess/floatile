@@ -9,7 +9,7 @@
 |---|---|---|
 | 语言 | Rust 2024，MSRV 1.97 | 原生跨平台、WASM guest 同语言；工具链固定到 `rust-toolchain.toml`。 |
 | UI | Slint 1.17.x + winit 0.30.x | 原生后端、透明窗口与运行时 `.slint` 解释能力；许可和动态编译性能是 P0 风险。 |
-| 平台 API | windows-sys 0.52.x + x11rb 0.13.x | 平台句柄、Windows 窗口操作与 X11 selection-owner 探测；只允许 `floatile-platform` 直接依赖。 |
+| 平台 API | windows-sys 0.52.x + x11rb 0.13.x（`randr`、`shape`） | 平台句柄、Windows 窗口操作，以及 X11 compositor/SHAPE/EWMH/RandR/热键探测与操作；只允许 `floatile-platform` 直接依赖。 |
 | 插件 ABI | WIT + WASM Component Model，guest `wasm32-wasip2` | 版本化接口、无原生句柄；`wit/` 为唯一源。 |
 | 插件 runtime | Wasmtime（计划在 S5 引入） | Component Model、异步调用、fuel 与资源限制；引入时固定兼容版本组。 |
 | 异步 | Tokio（计划在需要后台服务时引入） | 后台 I/O/runtime；Slint 主线程只跑事件循环。 |

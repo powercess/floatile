@@ -37,6 +37,7 @@
 - 做：`Platform` trait + 四平台 impl（穿透/置顶/模式切换/监视器枚举）；`CapabilityProbe`。
 - 验收：F3（穿透/编辑模式）、F7（多屏）。Wayland 走降级路径，产出矩阵回填。
 - 工程约束：业务 crate 不得出现平台 API。
+- 当前进度：Linux X11 子路径已实现 compositor/SHAPE/EWMH/RandR 实探测、点击穿透与幂等恢复热键；Xvfb 和 VMware Xfce/Xorg 单输出证据已回填，Xfce 已验证窗口重映射后的输入区重同步；真实多屏/DPI/热插拔与 Wayland 仍未验证。
 
 ### S3 — 画布 + 布局持久化
 - 做：floatile-store（SQLite 迁移 v1：layout/kv/audit_log）、画布坐标模型、拖拽/缩放、热插拔恢复。
@@ -90,6 +91,6 @@ wasm-tools validate logic/plugin.wasm    # 校验组件
 
 ## 6. 下一步
 
-完成 S2 的 Linux 路径：在 `floatile-platform` 实现 X11 XShape 点击穿透、监视器枚举和明确的
-能力/降级原因，并在物理 X11 与 Wayland（sway、GNOME）复核 S1/S2。窗口风险完成实测前不扩展
-到 S5 插件层。
+在物理 X11 多屏环境验证 RandR 的 EDID key、负坐标、主屏与 DPI，并把枚举结果接入布局恢复；
+随后在 sway 与 GNOME/Wayland 验证协议降级并决定 layer-shell 范围。补齐 Windows/macOS monitor
+实现和统一平台 trait 前，S2 仍是部分实现；窗口风险完成实测前不扩展到 S5 插件层。

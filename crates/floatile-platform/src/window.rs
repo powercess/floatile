@@ -121,10 +121,11 @@ fn ex_style_with_click_through(ex_style: isize, enabled: bool) -> isize {
 
 /// 启用或禁用点击穿透。
 ///
-/// - Windows：通过 `WS_EX_TRANSPARENT` + `WS_EX_LAYERED` 实现，鼠标事件穿透到底层应用；
-///   编辑模式等需要交互时调用方必须传入 `false` 恢复。
-/// - 其他平台：返回 `PlatformError::Unsupported`，调用方必须按能力矩阵降级，
-///   不得静默跳过。
+/// - Windows：通过 `WS_EX_TRANSPARENT` + `WS_EX_LAYERED` 实现，鼠标事件穿透到底层应用。
+/// - Linux X11：通过 SHAPE 扩展把 Input region 设为空；禁用时以 `None` 恢复默认区域。
+/// - 原生 Wayland/其他平台：返回 `PlatformError::Unsupported`。
+///
+/// 编辑模式等需要交互时调用方必须传入 `false` 恢复；不得静默跳过失败。
 pub fn set_click_through(
     window: &winit::window::Window,
     enabled: bool,
@@ -134,11 +135,32 @@ pub fn set_click_through(
         windows_impl::set_click_through(window, enabled)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let handle = window.window_handle().map_err(|error| {
+            PlatformError::Platform(format!("window handle unavailable: {error}"))
+        })?;
+        let window_id = match handle.as_raw() {
+            RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).map_err(|_| {
+                PlatformError::Platform("Xlib window ID exceeds X11 protocol width".into())
+            })?,
+            RawWindowHandle::Xcb(handle) => handle.window.get(),
+            _ => {
+                return Err(PlatformError::Unsupported(
+                    "click-through requires an X11 window handle on Linux",
+                ));
+            }
+        };
+        crate::x11::set_click_through(window_id, enabled)
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     {
         let _ = (window, enabled);
         Err(PlatformError::Unsupported(
-            "click-through is only implemented on Windows",
+            "click-through is not implemented on this platform",
         ))
     }
 }
