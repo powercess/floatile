@@ -5,6 +5,84 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct PluginId(pub String);
 
+/// 显示器稳定标识（优先使用 EDID/product 指纹，平台不可用时使用明确的降级键）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MonitorKey(pub String);
+
+impl MonitorKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for MonitorKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// 逻辑像素到物理像素的缩放因子。
+///
+/// 该类型只允许有限正数，避免无效 DPI 数据进入布局换算。
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct ScaleFactor(f64);
+
+impl ScaleFactor {
+    pub fn new(value: f64) -> Result<Self, ScaleFactorError> {
+        if value.is_finite() && value > 0.0 {
+            Ok(Self(value))
+        } else {
+            Err(ScaleFactorError(value))
+        }
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for ScaleFactor {
+    type Error = ScaleFactorError;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ScaleFactor> for f64 {
+    fn from(value: ScaleFactor) -> Self {
+        value.get()
+    }
+}
+
+/// 无效缩放因子。
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("scale factor 必须为有限正数，实际为 {0}")]
+pub struct ScaleFactorError(pub f64);
+
+/// 虚拟桌面中的物理像素坐标。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PhysicalPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// 物理像素或毫米尺寸。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PhysicalSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// 虚拟桌面中的物理像素矩形。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PhysicalRect {
+    pub position: PhysicalPosition,
+    pub size: PhysicalSize,
+}
+
 /// 运行时组件实例 ID，宿主分配，全局唯一。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -122,6 +200,23 @@ mod tests {
         assert_eq!(json, "\"dev.floatile.clock\"");
         let back: PluginId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, back);
+    }
+
+    #[test]
+    fn scale_factor_accepts_finite_positive_values() {
+        let scale = ScaleFactor::new(1.25).unwrap();
+        assert_eq!(scale.get(), 1.25);
+        let json = serde_json::to_string(&scale).unwrap();
+        assert_eq!(serde_json::from_str::<ScaleFactor>(&json).unwrap(), scale);
+    }
+
+    #[test]
+    fn scale_factor_rejects_invalid_values_and_deserialization() {
+        assert!(ScaleFactor::new(0.0).is_err());
+        assert!(ScaleFactor::new(-1.0).is_err());
+        assert!(ScaleFactor::new(f64::NAN).is_err());
+        assert!(ScaleFactor::new(f64::INFINITY).is_err());
+        assert!(serde_json::from_str::<ScaleFactor>("0").is_err());
     }
 
     #[test]

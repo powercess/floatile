@@ -6,7 +6,8 @@ use crate::PlatformError;
 use crate::capability::{
     CapabilityState, CapabilityUnavailableReason, PlatformCapabilities, PlatformKind,
 };
-use crate::monitor::{MonitorInfo, MonitorKeySource, PhysicalPosition, PhysicalSize};
+use crate::monitor::{MonitorInfo, MonitorKeySource};
+use floatile_core::{MonitorKey, PhysicalPosition, PhysicalSize};
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::{Connection as RandrConnection, ConnectionExt as _, SetConfig};
 use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
@@ -197,11 +198,13 @@ fn edid_fingerprint(edid: &[u8]) -> String {
     format!("edid-{hash:016x}")
 }
 
-fn monitor_key(name: &str, edid: Option<&[u8]>) -> (String, MonitorKeySource) {
+fn monitor_key(name: &str, edid: Option<&[u8]>) -> (MonitorKey, MonitorKeySource) {
     match edid {
-        Some(edid) if !edid.is_empty() => (edid_fingerprint(edid), MonitorKeySource::Edid),
+        Some(edid) if !edid.is_empty() => {
+            (MonitorKey(edid_fingerprint(edid)), MonitorKeySource::Edid)
+        }
         _ => (
-            format!("x11-output-{name}"),
+            MonitorKey(format!("x11-output-{name}")),
             MonitorKeySource::ConnectorName,
         ),
     }
@@ -355,7 +358,7 @@ mod tests {
     #[test]
     fn missing_edid_falls_back_to_connector_name() {
         let (key, source) = monitor_key("DP-1", None);
-        assert_eq!(key, "x11-output-DP-1");
+        assert_eq!(key.as_str(), "x11-output-DP-1");
         assert_eq!(source, MonitorKeySource::ConnectorName);
     }
 }

@@ -42,6 +42,9 @@
 ### S3 — 画布 + 布局持久化
 - 做：floatile-store（SQLite 迁移 v1：layout/kv/audit_log）、画布坐标模型、拖拽/缩放、热插拔恢复。
 - 验收：F5/F6/F8/F9。
+- 当前进度：核心层 monitor-local 布局恢复、主屏降级/原屏回归和边界钳制已实现；SQLite v1
+  `layout` 可前向迁移到 v2 的 DPI/物理尺寸/`lost_monitor` 字段。尚未接入 shell 启动恢复、
+  热插拔事件，`kv/audit_log` 仍未实现。
 
 ### S4 — 硬编码时钟（Reference Widget）
 - 做：内建时钟组件 + 每秒更新 + 编辑模式控件。
@@ -91,6 +94,8 @@ wasm-tools validate logic/plugin.wasm    # 校验组件
 
 ## 6. 下一步
 
-在物理 X11 多屏环境验证 RandR 的 EDID key、负坐标、主屏与 DPI，并把枚举结果接入布局恢复；
-随后在 sway 与 GNOME/Wayland 验证协议降级并决定 layer-shell 范围。补齐 Windows/macOS monitor
-实现和统一平台 trait 前，S2 仍是部分实现；窗口风险完成实测前不扩展到 S5 插件层。
+先将平台显示器快照与 Slint/winit scale factor 归一为核心 `MonitorLayout`，接入 shell 启动
+保存/恢复和显示器变化事件；随后在物理 X11 多屏环境验证 RandR 的 EDID key、负坐标、主屏、
+DPI 与拔插回归。再在 sway 与 GNOME/Wayland 验证协议降级并决定 layer-shell 范围。补齐
+Windows/macOS monitor 实现和统一平台 trait 前，S2/S3 仍是部分实现；窗口风险完成实测前
+不扩展到 S5 插件层。

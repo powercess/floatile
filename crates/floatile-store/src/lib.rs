@@ -22,7 +22,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -53,6 +53,9 @@ impl Store {
         if current < 1 {
             self.migration_v1()?;
         }
+        if current < 2 {
+            self.migration_v2()?;
+        }
         Ok(())
     }
 
@@ -79,6 +82,28 @@ impl Store {
             .map_err(|e| StoreError::Migration(format!("v1 提交失败: {e}")))
     }
 
+    fn migration_v2(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE layout
+                ADD COLUMN scale_factor REAL NOT NULL DEFAULT 1.0;
+            ALTER TABLE layout
+                ADD COLUMN physical_w INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE layout
+                ADD COLUMN physical_h INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE layout
+                ADD COLUMN lost_monitor INTEGER NOT NULL DEFAULT 0
+                    CHECK (lost_monitor IN (0, 1));
+            UPDATE layout SET
+                physical_w = MAX(1, CAST(ROUND(w) AS INTEGER)),
+                physical_h = MAX(1, CAST(ROUND(h) AS INTEGER));
+            PRAGMA user_version = 2;",
+        )
+        .map_err(|e| StoreError::Migration(format!("v2 增加 DPI/恢复状态失败: {e}")))?;
+        tx.commit()
+            .map_err(|e| StoreError::Migration(format!("v2 提交失败: {e}")))
+    }
+
     /// 布局存储接口。
     pub fn layout(&self) -> LayoutStore<'_> {
         LayoutStore { conn: &self.conn }
@@ -100,9 +125,15 @@ impl<'a> LayoutStore<'a> {
             floatile_core::WidgetMode::Edit => "edit",
             floatile_core::WidgetMode::Show => "show",
         };
+        let instance_id = sqlite_i64(layout.instance_id.0, "instance_id")?;
+        let updated_at = sqlite_i64(layout.updated_at, "updated_at")?;
         self.conn.execute(
-            "INSERT INTO layout (instance_id, plugin_id, monitor_key, x, y, w, h, z, mode, version, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO layout (
+                instance_id, plugin_id, monitor_key, x, y, w, h,
+                physical_w, physical_h, scale_factor, lost_monitor,
+                z, mode, version, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(instance_id) DO UPDATE SET
                  plugin_id = excluded.plugin_id,
                  monitor_key = excluded.monitor_key,
@@ -110,22 +141,33 @@ impl<'a> LayoutStore<'a> {
                  y = excluded.y,
                  w = excluded.w,
                  h = excluded.h,
+                 physical_w = excluded.physical_w,
+                 physical_h = excluded.physical_h,
+                 scale_factor = excluded.scale_factor,
+                 lost_monitor = excluded.lost_monitor,
                  z = excluded.z,
                  mode = excluded.mode,
                  version = excluded.version,
                  updated_at = excluded.updated_at",
             rusqlite::params![
-                layout.instance_id.0 as i64,
+                instance_id,
                 layout.plugin_id.0,
-                layout.monitor_key,
-                layout.rect.position.x as f64,
-                layout.rect.position.y as f64,
-                layout.rect.size.width as f64,
-                layout.rect.size.height as f64,
-                layout.z as i64,
+                layout
+                    .monitor_key
+                    .as_ref()
+                    .map(floatile_core::MonitorKey::as_str),
+                f64::from(layout.rect.position.x),
+                f64::from(layout.rect.position.y),
+                f64::from(layout.rect.size.width),
+                f64::from(layout.rect.size.height),
+                i64::from(layout.physical_size.width),
+                i64::from(layout.physical_size.height),
+                layout.scale_factor.get(),
+                layout.lost_monitor,
+                i64::from(layout.z),
                 mode,
-                layout.version as i64,
-                layout.updated_at as i64,
+                i64::from(layout.version),
+                updated_at,
             ],
         )?;
         Ok(())
@@ -133,90 +175,113 @@ impl<'a> LayoutStore<'a> {
 
     /// 按实例 ID 读取布局记录。
     pub fn get(&self, instance_id: u64) -> Result<Option<WidgetLayout>, StoreError> {
+        let instance_id = sqlite_i64(instance_id, "instance_id")?;
         let mut stmt = self.conn.prepare(
-            "SELECT instance_id, plugin_id, monitor_key, x, y, w, h, z, mode, version, updated_at
+            "SELECT
+                instance_id, plugin_id, monitor_key, x, y, w, h,
+                physical_w, physical_h, scale_factor, lost_monitor,
+                z, mode, version, updated_at
              FROM layout WHERE instance_id = ?1",
         )?;
-        let mut rows = stmt.query(rusqlite::params![instance_id as i64])?;
-        let row = rows.next()?;
-        let Some(row) = row else { return Ok(None) };
-        let mode = row.get::<_, String>(8)?;
-        let mode = match mode.as_str() {
-            "edit" => floatile_core::WidgetMode::Edit,
-            "show" => floatile_core::WidgetMode::Show,
-            other => return Err(StoreError::Corrupt(format!("未知 mode: {other}"))),
+        let mut rows = stmt.query(rusqlite::params![instance_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
         };
-        Ok(Some(WidgetLayout {
-            instance_id: floatile_core::InstanceId(row.get::<_, i64>(0)? as u64),
-            plugin_id: floatile_core::PluginId(row.get(1)?),
-            monitor_key: row.get(2)?,
-            rect: floatile_core::LogicalRect {
-                position: floatile_core::LogicalPosition {
-                    x: row.get::<_, f64>(3)? as f32,
-                    y: row.get::<_, f64>(4)? as f32,
-                },
-                size: floatile_core::LogicalSize {
-                    width: row.get::<_, f64>(5)? as f32,
-                    height: row.get::<_, f64>(6)? as f32,
-                },
-            },
-            z: row.get::<_, i64>(7)? as u32,
-            mode,
-            version: row.get::<_, i64>(9)? as u32,
-            updated_at: row.get::<_, i64>(10)? as u64,
-        }))
+        Ok(Some(row_to_layout(row)?))
     }
 
     /// 列出全部布局记录（按 z 升序）。
     pub fn list(&self) -> Result<Vec<WidgetLayout>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT instance_id, plugin_id, monitor_key, x, y, w, h, z, mode, version, updated_at
+            "SELECT
+                instance_id, plugin_id, monitor_key, x, y, w, h,
+                physical_w, physical_h, scale_factor, lost_monitor,
+                z, mode, version, updated_at
              FROM layout ORDER BY z ASC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let mode = row.get::<_, String>(8)?;
-            let mode = match mode.as_str() {
-                "edit" => floatile_core::WidgetMode::Edit,
-                "show" => floatile_core::WidgetMode::Show,
-                _ => {
-                    return Err(rusqlite::Error::FromSqlConversionFailure(
-                        8,
-                        rusqlite::types::Type::Text,
-                        Box::new(StoreError::Corrupt(format!("未知 mode: {mode}"))),
-                    ));
-                }
-            };
-            Ok(WidgetLayout {
-                instance_id: floatile_core::InstanceId(row.get::<_, i64>(0)? as u64),
-                plugin_id: floatile_core::PluginId(row.get(1)?),
-                monitor_key: row.get(2)?,
-                rect: floatile_core::LogicalRect {
-                    position: floatile_core::LogicalPosition {
-                        x: row.get::<_, f64>(3)? as f32,
-                        y: row.get::<_, f64>(4)? as f32,
-                    },
-                    size: floatile_core::LogicalSize {
-                        width: row.get::<_, f64>(5)? as f32,
-                        height: row.get::<_, f64>(6)? as f32,
-                    },
-                },
-                z: row.get::<_, i64>(7)? as u32,
-                mode,
-                version: row.get::<_, i64>(9)? as u32,
-                updated_at: row.get::<_, i64>(10)? as u64,
-            })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let mut rows = stmt.query([])?;
+        let mut layouts = Vec::new();
+        while let Some(row) = rows.next()? {
+            layouts.push(row_to_layout(row)?);
+        }
+        Ok(layouts)
     }
 
     /// 删除布局记录。
     pub fn delete(&self, instance_id: u64) -> Result<(), StoreError> {
+        let instance_id = sqlite_i64(instance_id, "instance_id")?;
         self.conn.execute(
             "DELETE FROM layout WHERE instance_id = ?1",
-            rusqlite::params![instance_id as i64],
+            rusqlite::params![instance_id],
         )?;
         Ok(())
     }
+}
+
+fn sqlite_i64(value: u64, field: &'static str) -> Result<i64, StoreError> {
+    i64::try_from(value)
+        .map_err(|_| StoreError::Corrupt(format!("{field} 超出 SQLite INTEGER 范围: {value}")))
+}
+
+fn row_to_layout(row: &rusqlite::Row<'_>) -> Result<WidgetLayout, StoreError> {
+    let mode = row.get::<_, String>(12)?;
+    let mode = match mode.as_str() {
+        "edit" => floatile_core::WidgetMode::Edit,
+        "show" => floatile_core::WidgetMode::Show,
+        _ => return Err(StoreError::Corrupt(format!("未知 mode: {mode}"))),
+    };
+    let scale_factor = floatile_core::ScaleFactor::new(row.get(9)?)
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    let lost_monitor = match row.get::<_, i64>(10)? {
+        0 => false,
+        1 => true,
+        value => {
+            return Err(StoreError::Corrupt(format!(
+                "lost_monitor 必须为 0 或 1，实际为 {value}"
+            )));
+        }
+    };
+    let layout = WidgetLayout {
+        instance_id: floatile_core::InstanceId(read_u64(row, 0, "instance_id")?),
+        plugin_id: floatile_core::PluginId(row.get(1)?),
+        monitor_key: row
+            .get::<_, Option<String>>(2)?
+            .map(floatile_core::MonitorKey),
+        rect: floatile_core::LogicalRect {
+            position: floatile_core::LogicalPosition {
+                x: row.get::<_, f64>(3)? as f32,
+                y: row.get::<_, f64>(4)? as f32,
+            },
+            size: floatile_core::LogicalSize {
+                width: row.get::<_, f64>(5)? as f32,
+                height: row.get::<_, f64>(6)? as f32,
+            },
+        },
+        physical_size: floatile_core::PhysicalSize {
+            width: read_u32(row, 7, "physical_w")?,
+            height: read_u32(row, 8, "physical_h")?,
+        },
+        scale_factor,
+        lost_monitor,
+        z: read_u32(row, 11, "z")?,
+        mode,
+        version: read_u32(row, 13, "version")?,
+        updated_at: read_u64(row, 14, "updated_at")?,
+    };
+    layout
+        .validate()
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    Ok(layout)
+}
+
+fn read_u32(row: &rusqlite::Row<'_>, index: usize, field: &'static str) -> Result<u32, StoreError> {
+    let value = row.get::<_, i64>(index)?;
+    u32::try_from(value).map_err(|_| StoreError::Corrupt(format!("{field} 超出 u32 范围: {value}")))
+}
+
+fn read_u64(row: &rusqlite::Row<'_>, index: usize, field: &'static str) -> Result<u64, StoreError> {
+    let value = row.get::<_, i64>(index)?;
+    u64::try_from(value).map_err(|_| StoreError::Corrupt(format!("{field} 不得为负数: {value}")))
 }
 
 #[cfg(test)]
@@ -224,14 +289,15 @@ impl<'a> LayoutStore<'a> {
 mod tests {
     use super::*;
     use floatile_core::{
-        InstanceId, LogicalPosition, LogicalRect, LogicalSize, PluginId, WidgetMode,
+        InstanceId, LogicalPosition, LogicalRect, LogicalSize, MonitorKey, PhysicalSize, PluginId,
+        ScaleFactor, WidgetMode,
     };
 
     fn sample(id: u64) -> WidgetLayout {
         WidgetLayout {
             instance_id: InstanceId(id),
             plugin_id: PluginId("dev.floatile.clock".into()),
-            monitor_key: Some("edid-abc123".into()),
+            monitor_key: Some(MonitorKey("edid-abc123".into())),
             rect: LogicalRect {
                 position: LogicalPosition { x: 120.0, y: 80.0 },
                 size: LogicalSize {
@@ -239,10 +305,44 @@ mod tests {
                     height: 120.0,
                 },
             },
+            physical_size: PhysicalSize {
+                width: 325,
+                height: 150,
+            },
+            scale_factor: ScaleFactor::new(1.25).unwrap(),
+            lost_monitor: false,
             z: 10,
             mode: WidgetMode::Edit,
             version: 1,
             updated_at: 1_700_000_000,
+        }
+    }
+
+    fn v1_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store
+    }
+
+    struct TempDb(std::path::PathBuf);
+
+    impl TempDb {
+        fn new() -> Self {
+            static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "floatile-store-test-{}-{id}.sqlite",
+                std::process::id()
+            )))
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(self.0.with_extension("sqlite-shm"));
+            let _ = std::fs::remove_file(self.0.with_extension("sqlite-wal"));
         }
     }
 
@@ -257,6 +357,80 @@ mod tests {
     }
 
     #[test]
+    fn migration_is_idempotent_at_current_schema() {
+        let mut store = open(":memory:").unwrap();
+        store.migrate().unwrap();
+        store.migrate().unwrap();
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v2_preserves_v1_layout_and_derives_physical_size() {
+        let mut store = v1_store();
+        store
+            .conn
+            .execute(
+                "INSERT INTO layout (
+                    instance_id, plugin_id, monitor_key, x, y, w, h, z, mode, version, updated_at
+                 ) VALUES (1, 'dev.floatile.clock', 'edid-v1', 12, 34, 260, 120, 10, 'edit', 1, 1700000000)",
+                [],
+            )
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        let migrated = store.layout().get(1).unwrap().unwrap();
+        assert_eq!(migrated.monitor_key, Some(MonitorKey("edid-v1".into())));
+        assert_eq!(migrated.rect.position, LogicalPosition { x: 12.0, y: 34.0 });
+        assert_eq!(
+            migrated.physical_size,
+            PhysicalSize {
+                width: 260,
+                height: 120
+            }
+        );
+        assert_eq!(migrated.scale_factor, ScaleFactor::new(1.0).unwrap());
+        assert!(!migrated.lost_monitor);
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn migration_v2_failure_rolls_back_added_columns_and_version() {
+        let mut store = v1_store();
+        store
+            .conn
+            .execute(
+                "ALTER TABLE layout ADD COLUMN physical_w INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .unwrap();
+
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        let mut stmt = store.conn.prepare("PRAGMA table_info(layout)").unwrap();
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "physical_w"));
+        assert!(!columns.iter().any(|column| column == "scale_factor"));
+    }
+
+    #[test]
     fn save_get_roundtrip() {
         let store = open(":memory:").unwrap();
         store.layout().save(&sample(1)).unwrap();
@@ -265,14 +439,33 @@ mod tests {
     }
 
     #[test]
+    fn file_database_persists_layout_across_reopen() {
+        let path = TempDb::new();
+        {
+            let store = open(&path.0).unwrap();
+            store.layout().save(&sample(42)).unwrap();
+        }
+        {
+            let store = open(&path.0).unwrap();
+            assert_eq!(store.layout().get(42).unwrap(), Some(sample(42)));
+        }
+    }
+
+    #[test]
     fn save_upserts_same_instance() {
         let store = open(":memory:").unwrap();
         store.layout().save(&sample(1)).unwrap();
         let mut updated = sample(1);
         updated.mode = WidgetMode::Show;
+        updated.lost_monitor = true;
+        updated.scale_factor = ScaleFactor::new(2.0).unwrap();
+        updated.physical_size = PhysicalSize {
+            width: 520,
+            height: 240,
+        };
         store.layout().save(&updated).unwrap();
         let got = store.layout().get(1).unwrap().unwrap();
-        assert_eq!(got.mode, WidgetMode::Show);
+        assert_eq!(got, updated);
         assert_eq!(store.layout().list().unwrap().len(), 1);
     }
 
@@ -317,6 +510,20 @@ mod tests {
             .conn
             .execute(
                 "UPDATE layout SET mode = 'garbage' WHERE instance_id = 1",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(store.layout().get(1), Err(StoreError::Corrupt(_))));
+    }
+
+    #[test]
+    fn corrupt_dpi_data_fails_load() {
+        let store = open(":memory:").unwrap();
+        store.layout().save(&sample(1)).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE layout SET scale_factor = 0 WHERE instance_id = 1",
                 [],
             )
             .unwrap();

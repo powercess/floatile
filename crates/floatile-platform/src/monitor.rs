@@ -2,6 +2,8 @@
 //!
 //! 平台层返回原生物理像素；逻辑像素与 DPI 换算由后续布局恢复流程统一处理。
 
+use floatile_core::{MonitorKey, PhysicalPosition, PhysicalSize};
+
 use crate::capability::{PlatformKind, probe};
 use crate::window::PlatformError;
 
@@ -14,25 +16,11 @@ pub enum MonitorKeySource {
     ConnectorName,
 }
 
-/// 虚拟桌面中的物理像素位置。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhysicalPosition {
-    pub x: i32,
-    pub y: i32,
-}
-
-/// 物理像素或毫米尺寸。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhysicalSize {
-    pub width: u32,
-    pub height: u32,
-}
-
 /// 平台显示器描述。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorInfo {
     /// 布局持久化使用的稳定键。
-    pub key: String,
+    pub key: MonitorKey,
     /// 稳定键来源；调用方可据此记录降级。
     pub key_source: MonitorKeySource,
     /// 平台报告的 connector/显示器名称。
