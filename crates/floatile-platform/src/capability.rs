@@ -26,12 +26,41 @@ pub struct PlatformCapabilities {
     /// 置顶是否可用（Wayland 非 layer-shell 不可用）。
     pub always_on_top: bool,
 }
+#[cfg(target_os = "linux")]
+fn x11_compositor_available() -> bool {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    let Ok((connection, screen_number)) = x11rb::connect(None) else {
+        return false;
+    };
+    let selection_name = format!("_NET_WM_CM_S{screen_number}");
+    let Ok(atom_cookie) = connection.intern_atom(false, selection_name.as_bytes()) else {
+        return false;
+    };
+    let Ok(atom_reply) = atom_cookie.reply() else {
+        return false;
+    };
+    let Ok(owner_cookie) = connection.get_selection_owner(atom_reply.atom) else {
+        return false;
+    };
+    let Ok(owner_reply) = owner_cookie.reply() else {
+        return false;
+    };
+
+    owner_reply.owner != x11rb::NONE
+}
+
+#[cfg(not(target_os = "linux"))]
+fn x11_compositor_available() -> bool {
+    false
+}
 
 /// 探测当前平台能力。
 ///
 /// Windows 走 DWM 合成桌面路径：Windows 8.1+ 的 DWM 始终合成，透明、点击穿透
 /// （`WS_EX_TRANSPARENT`）与置顶（`HWND_TOPMOST`）由 `floatile-platform::window` 落地。
-/// 其余平台沿用 env 推断，无 I/O 副作用，失败时归为 Unknown。
+/// Linux X11 查询 `_NET_WM_CM_Sn` selection owner；连接或查询失败时保守判定为无合成器。
+/// 其余平台使用显示环境识别会话类型，不把 OS 名称当作能力证明。
 pub fn probe() -> PlatformCapabilities {
     #[cfg(target_os = "windows")]
     {
@@ -70,8 +99,7 @@ pub fn probe() -> PlatformCapabilities {
             },
             PlatformKind::X11 => PlatformCapabilities {
                 kind,
-                // X11 下无法仅凭 env 确知合成器；S2 真实探测落地前保守降级为不透明。
-                compositing: false,
+                compositing: x11_compositor_available(),
                 // S2 的 XShape 实现落地前不得把设计预期报告为可用能力。
                 click_through: false,
                 always_on_top: true,
@@ -154,7 +182,7 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn x11_env_detected() {
+    fn x11_without_reachable_compositor_degrades() {
         use std::env;
         let _guard = DISPLAY_ENV_LOCK
             .lock()
@@ -165,7 +193,7 @@ mod tests {
         // SAFETY: Display-variable tests serialize mutation through DISPLAY_ENV_LOCK.
         unsafe {
             env::remove_var("WAYLAND_DISPLAY");
-            env::set_var("DISPLAY", ":0");
+            env::set_var("DISPLAY", "floatile-invalid-display");
         }
         let caps = probe();
         restore_env("WAYLAND_DISPLAY", old_wayland);

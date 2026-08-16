@@ -54,14 +54,15 @@
 
 ## 3. 与 Slint 的关系
 
-- 透明背景、窗口标志、Always-on-top 等基础项尽量通过 winit 的 `WindowAttributesExt*` 设置。
+- 透明与初始窗口标志通过 winit `WindowAttributes` 设置；Slint 的组件属性同步会重写窗口级别，
+  因此 Always-on-top 还需在原生窗口创建后由 `floatile-platform` 再次应用。
 - 无法在 winit 表达的（Windows click-through、macOS ignoresMouseEvents、X11 XShape）通过 `raw-window-handle` 获取原始窗口句柄后，在 `floatile-platform` 内用平台 API 直接调用，**不得外泄到业务层**。
 
 ## 4. 降级策略汇总
 
 | 场景 | 降级行为 |
 |------|---------|
-| 无合成器（X11） | 背景不透明、置顶不可用、无动画；记录环境标记 |
+| 无合成器（X11） | 背景不透明；置顶仍按 WM/EWMH 能力处理；记录 `reason="compositor_not_detected"` |
 | 纯 Wayland 无 layer-shell | 点击穿透禁用、置顶降级为普通窗口；提供手动置顶控件 |
 | 无 GPU / 驱动异常 | Slint 软件渲染器回退；记录 GPU 信息到诊断日志 |
 | 显示器热插拔找不到原屏 | 布局落回主屏并标记 `lost_monitor`，不丢数据 |
@@ -75,3 +76,4 @@
 | 日期 | 平台/环境 | 透明 | 置顶 | 穿透 | 编辑模式 | 多屏 | 热插拔 | 备注 |
 |------|-----------|------|------|------|----------|------|--------|------|
 | 2026-08-13 | Windows 11，DWM 合成桌面，GPU 由 Slint 默认后端（dev 构建，commit 待定） | ✅ 无边框实测（`WS_POPUP`，`CAPTION/BORDER/SYSMENU` 清除）；圆角外角落像素 Alpha=0 透明生效 | ✅ 探测返回 `always_on_top=true`，实测 ex-style 含 `WS_EX_TOPMOST`，窗口盖过普通窗口 | ✅ Edit 模式 `TRANSPARENT=false`、Show 模式 `TRANSPARENT=true`（+LAYERED）；模式切换与全局热键 Ctrl+Shift+E 实测联动 | ✅ 编辑控件（边框/设置/展示/删除/缩放手柄）显示，Show 模式隐藏；拖拽（WM 拖动）与缩放（手柄 274x158→442x222）实测 | 未测 | 未测 | 探测日志：`kind=Windows click_through=true always_on_top=true`；窗口进程存活无崩溃；winit 0.30 顶层窗口 `with_decorations(false)` 不生效，由 `floatile-platform` 创建后强制移除（已记录）；穿透的视觉 Alpha 混合需在真实使用场景复核 |
+| 2026-08-16 | Arch Linux，Xvfb 21.1.24（1280×720）、Openbox 3.6.1、picom 13/xrender；Mesa llvmpipe 26.1.7（非加速）；VMware 4 vCPU；release，`agent/s1-x11-validation`（base `0403fde` + 未提交变更） | ✅ picom 的 `_NET_WM_CM_S0` owner 被 `x11rb` 探测；无标题栏，洋红背景从圆角外与 0.92 Alpha 内容透出。停止 picom 后探测为 `compositing=false`，背景降级不透明且宿主存活 | ✅ `_NET_WM_STATE_ABOVE`；raise 普通全屏 xmessage 后 Floatile 仍在上层 | 未实现：X11 `click_through=false`，未声称通过 | 编辑控件可见；拖拽 `(0,0)→(200,100)`，尺寸保持 `260×120`；缩放与 Show 模式未测 | 未测 | 未测 | 首帧 `110.10 ms`；稳态 CPU `0.15–0.18%` 单核；交互前 RSS `218.9 MiB`；按需渲染约 `1.98 FPS`。截图：测试机 `~/floatile-test/logs/final-aot-transparent.png`、`final-no-compositor.png`。这是 headless Xvfb 证据，不替代物理 X11、Wayland 或 GPU 加速环境实测 |

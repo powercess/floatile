@@ -16,5 +16,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 winit = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }

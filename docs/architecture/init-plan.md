@@ -3,14 +3,14 @@
 > 状态：Accepted
 > 目标：以最小垂直切片跑通 P0 验收 F1–F13，暴露窗口层与 Wayland 风险。
 > 原则：每次提交都可运行；每步结束跑一次「当前验收项」；三端差异只进 `floatile-platform`。
-> 进度：S0 脚手架已完成；S1 部分实现，尚未形成平台实测证据。
+> 进度：S0 已完成；S1 有 Windows 与 Linux Xvfb 子集证据；S2/S3 部分实现，物理 X11、Wayland 与 macOS 尚未验证。
 
-## 0. 当前基线（2026-08-13）
+## 0. 当前基线（2026-08-16）
 
 - Rust 1.97.1、`wasm32-wasip2`、rustfmt、Clippy、wasm-tools 已可用。
-- Workspace、九个 crate、CI/依赖策略和工程文档已建立；多数 crate 仍是模板。
-- `floatile-shell` 有透明无边框置顶时钟的 S1 骨架；平台行为尚未按验收表实测。
-- 目标环境：Linux 为主开发机；Win/macOS 用 CI 或远程验证。
+- Workspace、九个 crate、CI/依赖策略和工程文档已建立；Windows S2 窗口交互与 S3 SQLite layout CRUD 已部分落地。
+- S1 已有 Windows 实测与 Linux Xvfb/Openbox/picom 证据；X11 合成器探测、无边框、置顶、拖拽和 `--perf` 诊断已落地。
+- 物理 Linux X11、Wayland、macOS 仍未验证；Win/macOS 后续使用实体机、CI 或远程环境补证。
 
 ## 1. 已完成脚手架
 
@@ -90,5 +90,6 @@ wasm-tools validate logic/plugin.wasm    # 校验组件
 
 ## 6. 下一步
 
-完成 S1 的真实 Linux X11/Wayland 验证：透明、置顶、拖拽、无合成器降级和 release 性能基线；
-将环境与结果回填平台矩阵。随后再进入 S2，避免在窗口风险尚未量化前扩展插件层。
+完成 S2 的 Linux 路径：在 `floatile-platform` 实现 X11 XShape 点击穿透、监视器枚举和明确的
+能力/降级原因，并在物理 X11 与 Wayland（sway、GNOME）复核 S1/S2。窗口风险完成实测前不扩展
+到 S5 插件层。

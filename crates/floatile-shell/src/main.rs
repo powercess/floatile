@@ -9,17 +9,22 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::mpsc::{self, SyncSender};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use floatile_core::{LogicalSize, SizeConstraints, WidgetMode};
 use floatile_platform::capability::probe;
 #[cfg(windows)]
-use floatile_platform::extract_hotkey_id;
 use floatile_platform::{
-    Hotkey, HotkeyModifiers, PlatformError, WindowOptions, apply_window_options, register_hotkey,
-    remove_window_decorations, resize_window, set_click_through, start_window_drag,
+    Hotkey, HotkeyModifiers, extract_hotkey_id, register_hotkey, remove_window_decorations,
     unregister_hotkey,
+};
+use floatile_platform::{
+    PlatformError, WindowOptions, apply_window_options, process_metrics, resize_window,
+    set_always_on_top, set_click_through, start_window_drag,
 };
 use slint::Timer;
 use slint::winit_030::{WinitWindowAccessor, winit};
@@ -31,6 +36,7 @@ slint::slint! {
         width: 260px;
         height: 120px;
         background: transparent;
+        no-frame: true;
 
         callback drag-start;
         callback show-mode;
@@ -207,6 +213,74 @@ struct ResizeState {
     start_size: LogicalSize,
     start_pos: (f32, f32),
 }
+struct PerfSampler {
+    stop: SyncSender<()>,
+    worker: JoinHandle<()>,
+}
+
+impl PerfSampler {
+    fn start() -> std::io::Result<Self> {
+        let (stop, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("floatile-perf".into())
+            .spawn(move || {
+                let mut previous = match process_metrics() {
+                    Ok(metrics) => metrics,
+                    Err(error) => {
+                        tracing::warn!(target: "floatile::perf", %error, "process metrics unavailable");
+                        return;
+                    }
+                };
+                let mut sampled_at = Instant::now();
+
+                loop {
+                    match receiver.recv_timeout(Duration::from_secs(1)) {
+                        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let current = match process_metrics() {
+                                Ok(metrics) => metrics,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: "floatile::perf",
+                                        %error,
+                                        "process metrics sample failed"
+                                    );
+                                    continue;
+                                }
+                            };
+                            let now = Instant::now();
+                            let elapsed = now.duration_since(sampled_at);
+                            let cpu_time = current.cpu_time.saturating_sub(previous.cpu_time);
+                            let cpu_percent = if elapsed.is_zero() {
+                                0.0
+                            } else {
+                                cpu_time.as_secs_f64() / elapsed.as_secs_f64() * 100.0
+                            };
+                            let rss_mib = current.rss_bytes as f64 / (1024.0 * 1024.0);
+                            tracing::info!(
+                                target: "floatile::perf",
+                                cpu_percent,
+                                rss_bytes = current.rss_bytes,
+                                rss_mib,
+                                "process metrics sample"
+                            );
+                            previous = current;
+                            sampled_at = now;
+                        }
+                    }
+                }
+            })?;
+
+        Ok(Self { stop, worker })
+    }
+
+    fn stop(self) {
+        let _ = self.stop.try_send(());
+        if self.worker.join().is_err() {
+            tracing::warn!(target: "floatile::perf", "process metrics worker panicked");
+        }
+    }
+}
 
 fn now_hhmmss() -> String {
     let now = std::time::SystemTime::now()
@@ -227,36 +301,69 @@ fn apply_size(app: &Clock, size: LogicalSize) {
         .with_winit_window(|w: &Window| resize_window(w, size))
         .unwrap_or(Err(PlatformError::WindowNotReady));
 }
+fn schedule_always_on_top(app: slint::Weak<Clock>, delay: Duration) {
+    Timer::single_shot(delay, move || {
+        let Some(app) = app.upgrade() else { return };
+        use slint::winit_030::winit::window::Window;
+        match app
+            .window()
+            .with_winit_window(|window: &Window| set_always_on_top(window, true))
+        {
+            Some(Ok(())) => tracing::info!("always-on-top applied"),
+            Some(Err(error)) => tracing::warn!(%error, "always-on-top failed"),
+            None => schedule_always_on_top(app.as_weak(), Duration::from_millis(50)),
+        }
+    });
+}
 
+#[cfg(windows)]
 const HOTKEY_ID: u32 = 0x0001;
+#[cfg(windows)]
 const VK_E: u32 = 0x45; // E 键
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let process_started = Instant::now();
+    let perf_enabled = std::env::args_os().any(|arg| arg == "--perf");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::level_filters::LevelFilter::INFO.into()),
         )
         .init();
+    let perf_sampler = if perf_enabled {
+        Some(PerfSampler::start()?)
+    } else {
+        None
+    };
 
     let caps = probe();
     tracing::info!(
         kind = ?caps.kind,
+        compositing = caps.compositing,
         click_through = caps.click_through,
         always_on_top = caps.always_on_top,
         "platform capability probe"
     );
+    if !caps.compositing {
+        tracing::warn!(
+            kind = ?caps.kind,
+            reason = "compositor_not_detected",
+            "transparent window disabled"
+        );
+    }
 
     let window_options = WindowOptions {
         transparent: caps.compositing,
         always_on_top: caps.always_on_top,
         ..WindowOptions::default()
     };
+    let click_through_supported = caps.click_through;
 
     // 模式控制器（可测试纯逻辑）与热键回调共享。
     let controller = Rc::new(RefCell::new(floatile_shell::ShellController::new(
-        caps.click_through,
+        click_through_supported,
     )));
+    #[cfg(windows)]
     let hotkey_app = Rc::new(RefCell::new(None::<Clock>));
 
     #[cfg(windows)]
@@ -285,7 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     floatile_shell::ModeEffect::Show { .. } => WidgetMode::Show,
                 };
                 if let Some(app) = app_for_hotkey.borrow().as_ref() {
-                    apply_mode(app, mode, app_caps());
+                    apply_mode(app, mode, click_through_supported);
                 }
                 true
             });
@@ -301,7 +408,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Clock::new()?;
     app.set_time_text(now_hhmmss().into());
-    *hotkey_app.borrow_mut() = Some(app.clone_strong());
+    if caps.always_on_top {
+        schedule_always_on_top(app.as_weak(), Duration::ZERO);
+    }
+    #[cfg(windows)]
+    {
+        *hotkey_app.borrow_mut() = Some(app.clone_strong());
+    }
+
+    if perf_enabled {
+        let first_frame_logged = Cell::new(false);
+        let frame_count = Cell::new(0_u64);
+        let sample_started = Cell::new(process_started);
+        app.window().set_rendering_notifier(move |state, _| {
+            if !matches!(state, slint::RenderingState::AfterRendering) {
+                return;
+            }
+            if !first_frame_logged.replace(true) {
+                tracing::info!(
+                    target: "floatile::perf",
+                    first_frame_ms = process_started.elapsed().as_secs_f64() * 1000.0,
+                    "first frame rendered"
+                );
+                frame_count.set(0);
+                sample_started.set(Instant::now());
+                return;
+            }
+
+            let frames = frame_count.get() + 1;
+            frame_count.set(frames);
+            let elapsed = sample_started.get().elapsed();
+            if elapsed >= Duration::from_secs(1) {
+                tracing::info!(
+                    target: "floatile::perf",
+                    fps = frames as f64 / elapsed.as_secs_f64(),
+                    "render rate sample"
+                );
+                frame_count.set(0);
+                sample_started.set(Instant::now());
+            }
+        })?;
+    }
 
     let constraints = SizeConstraints::default();
     let resize_state = Rc::new(RefCell::new(ResizeState {
@@ -339,7 +486,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             floatile_shell::ModeEffect::Show { .. } => WidgetMode::Show,
         };
         tracing::info!(mode = ?mode, "show-mode button");
-        apply_mode(&app, mode, app_caps());
+        apply_mode(&app, mode, click_through_supported);
     });
 
     // 设置/删除：S2 占位，记录事件
@@ -386,7 +533,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timer = Timer::default();
     timer.start(
         slint::TimerMode::Repeated,
-        std::time::Duration::from_secs(1),
+        Duration::from_secs(1),
         move || {
             if let Some(app) = weak.upgrade() {
                 app.set_time_text(now_hhmmss().into());
@@ -394,64 +541,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     );
 
-    // 注册全局热键（展示模式下切回编辑）
-    // 注册全局热键（展示模式下切回编辑）。winit 窗口在事件循环首次迭代后才创建，
-    // 因此用 Repeated Timer 重试直到注册成功（成功后置标志跳过）。
-    let hotkey = Hotkey {
-        id: HOTKEY_ID,
-        modifiers: HotkeyModifiers {
-            control: true,
-            shift: true,
-            ..HotkeyModifiers::none()
-        },
-        virtual_key: VK_E,
-    };
-    let registered = Rc::new(RefCell::new(false));
-    let weak = app.as_weak();
-    let reg_flag = Rc::clone(&registered);
-    let register_timer = Timer::default();
-    register_timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(200),
-        move || {
-            if *reg_flag.borrow() {
-                return;
-            }
-            let Some(app) = weak.upgrade() else { return };
-            use slint::winit_030::winit::window::Window;
-            // winit 0.30 顶层窗口的 with_decorations(false) 不生效，需创建后强制移除。
-            let deco_result = app
-                .window()
-                .with_winit_window(|w: &Window| remove_window_decorations(w))
-                .unwrap_or(Err(PlatformError::WindowNotReady));
-            match deco_result {
-                Ok(()) => tracing::info!("window decorations removed"),
-                Err(e) => tracing::debug!("remove_window_decorations retry: {e}"),
-            }
-            let hotkey_result = app
-                .window()
-                .with_winit_window(|w: &Window| register_hotkey(w, hotkey))
-                .unwrap_or(Err(PlatformError::WindowNotReady));
-            match hotkey_result {
-                Ok(()) => {
-                    tracing::info!("global hotkey registered (Ctrl+Shift+E)");
-                    *reg_flag.borrow_mut() = true;
+    // 注册全局热键（Windows 展示模式下切回编辑）。winit 窗口在事件循环首次迭代后
+    // 才创建，因此用 Repeated Timer 重试直到注册成功（成功后置标志跳过）。
+    #[cfg(windows)]
+    {
+        let hotkey = Hotkey {
+            id: HOTKEY_ID,
+            modifiers: HotkeyModifiers {
+                control: true,
+                shift: true,
+                ..HotkeyModifiers::none()
+            },
+            virtual_key: VK_E,
+        };
+        let registered = Rc::new(RefCell::new(false));
+        let weak = app.as_weak();
+        let reg_flag = Rc::clone(&registered);
+        let register_timer = Timer::default();
+        register_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(200),
+            move || {
+                if *reg_flag.borrow() {
+                    return;
                 }
-                Err(e) => tracing::debug!("hotkey registration retry: {e}"),
-            }
-        },
-    );
+                let Some(app) = weak.upgrade() else { return };
+                use slint::winit_030::winit::window::Window;
+                // winit 0.30 顶层窗口的 with_decorations(false) 不生效，需创建后强制移除。
+                let deco_result = app
+                    .window()
+                    .with_winit_window(|w: &Window| remove_window_decorations(w))
+                    .unwrap_or(Err(PlatformError::WindowNotReady));
+                match deco_result {
+                    Ok(()) => tracing::info!("window decorations removed"),
+                    Err(e) => tracing::debug!("remove_window_decorations retry: {e}"),
+                }
+                let hotkey_result = app
+                    .window()
+                    .with_winit_window(|w: &Window| register_hotkey(w, hotkey))
+                    .unwrap_or(Err(PlatformError::WindowNotReady));
+                match hotkey_result {
+                    Ok(()) => {
+                        tracing::info!("global hotkey registered (Ctrl+Shift+E)");
+                        *reg_flag.borrow_mut() = true;
+                    }
+                    Err(e) => tracing::debug!("hotkey registration retry: {e}"),
+                }
+            },
+        );
+    }
 
     tracing::info!("floatile-shell running");
-    app.run()?;
+    let run_result = app.run();
 
-    // 退出时注销热键
+    if let Some(perf_sampler) = perf_sampler {
+        perf_sampler.stop();
+    }
+
+    // Windows 退出时注销热键。
+    #[cfg(windows)]
     let _ = {
         use slint::winit_030::winit::window::Window;
         app.window()
             .with_winit_window(|w: &Window| unregister_hotkey(w, HOTKEY_ID))
     };
 
+    run_result?;
     Ok(())
 }
 
@@ -478,8 +633,4 @@ fn apply_mode(app: &Clock, mode: WidgetMode, click_through_supported: bool) {
         Ok(()) => tracing::debug!(mode = ?mode, click_through, "mode applied"),
         Err(e) => tracing::warn!("set_click_through failed: {e}"),
     }
-}
-
-fn app_caps() -> bool {
-    probe().click_through
 }

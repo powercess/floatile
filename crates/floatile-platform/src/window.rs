@@ -61,6 +61,21 @@ pub fn apply_window_options(opts: &WindowOptions, attrs: WindowAttributes) -> Wi
         })
         .with_inner_size(winit::dpi::LogicalSize::new(opts.size.0, opts.size.1))
 }
+/// 在窗口创建后应用置顶级别。
+///
+/// Slint 会在组件属性同步时重写创建前的 winit `WindowAttributes`，因此宿主在事件循环
+/// 启动、原生窗口可用后再次调用本函数。禁用时恢复普通窗口级别。
+pub fn set_always_on_top(
+    window: &winit::window::Window,
+    enabled: bool,
+) -> Result<(), PlatformError> {
+    window.set_window_level(if enabled {
+        WindowLevel::AlwaysOnTop
+    } else {
+        WindowLevel::Normal
+    });
+    Ok(())
+}
 
 /// 启动交互式窗口拖拽（WM 拖动，适用于无边框窗口）。
 ///
