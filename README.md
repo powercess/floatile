@@ -48,7 +48,7 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 窗口拖拽 | 🧪 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已运行验证；macOS/Wayland 待验证 |
 | 平台能力探测与降级 | 🧪 | Windows 原生探测与 X11 compositor/SHAPE/EWMH/RandR 实探测已落地；Wayland 仅有显式协议降级，macOS 实现待补 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
-| SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；Canvas 多实例恢复编排待实现 |
+| SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
 | `.slint + .wasm` Widget | 🗺️ | Wasmtime、Component Model、WIT host/guest 链路尚未接入 |
 | Permission Broker 与审计 | 🗺️ | 默认零权限、scope/配额、参数脱敏与恶意插件测试尚未实现 |
 | 插件 SDK 与打包 CLI | 🗺️ | 计划提供 validate/build/dev、包路径和大小安全校验 |
@@ -64,7 +64,7 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 - 透明、无边框、Always-on-top 的 Widget 窗口（🧪）
 - Edit / Show 双模式与按平台能力启用的点击穿透（🧪 Windows 与 Linux X11 已实测，其他平台按能力降级）
 - 拖拽（🧪）、缩放（🧪）、层级管理和逻辑像素布局（🗺️）
-- 多显示器、DPI 缩放、热插拔恢复和显式降级记录（🧪 纯逻辑与持久化；平台接入待完成）
+- 多显示器、DPI 缩放、热插拔恢复和显式降级记录（🧪 逻辑与持久化已接入 shell，Xvfb 实测；真实多屏实机验证待做）
 - 内建参考时钟（✅）与后续插件化时钟示例（🗺️）
 
 ### 安全插件系统
@@ -197,7 +197,7 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 
 - **S1 · 浮窗基线（进行中）**：参考时钟、透明/无边框/置顶、拖拽和真实平台探测
 - **S2 · 桌面交互（进行中）**：Edit/Show、点击穿透和缩放已在 Windows/Linux X11 子路径落地；真实多屏与 DPI 仍待验证
-- **S3 · 布局持久化（进行中）**：monitor-local 恢复算法、SQLite v2 与重启恢复已落地；Canvas 和热插拔事件接入待做
+- **S3 · 布局持久化（进行中）**：monitor-local 恢复算法、SQLite v2、shell 启动恢复/保存与显示器变化重恢复已落地；真实多屏/热插拔实机验证与多实例编排待做
 - **S4 · 插件契约（规划中）**：WIT 单一源、manifest、SDK 与包校验
 - **S5 · 沙箱运行时（规划中）**：Wasmtime、动态 Slint、Broker、配额与恶意插件测试
 - **P0 验收（规划中）**：Windows/macOS/X11/Wayland 证据、性能数据、风险复盘与许可 ADR

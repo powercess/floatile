@@ -3,7 +3,19 @@
 //! 状态机与降级决策与 UI 无关，可在无 Slint 环境单测；`main.rs` 只负责把事件
 //! 接线到这些纯逻辑并驱动 Slint 窗口。
 
-use floatile_core::{LogicalPosition, LogicalSize, SizeConstraints, WidgetMode};
+use floatile_core::layout::LAYOUT_RECORD_VERSION;
+use floatile_core::{
+    InstanceId, LayoutValidationError, LogicalPosition, LogicalRect, LogicalSize, MonitorLayout,
+    PhysicalSize, PluginId, ScaleFactor, SizeConstraints, WidgetLayout, WidgetMode,
+};
+
+/// 单窗口宿主内建参考时钟的实例 ID。
+pub const CLOCK_INSTANCE_ID: InstanceId = InstanceId(1);
+/// 内建参考时钟的插件命名空间（保留前缀，不面向第三方插件）。
+pub const BUILTIN_CLOCK_PLUGIN: &str = "builtin.clock";
+
+/// 单实例宿主的固定层级。
+const SINGLE_WINDOW_Z: u32 = 1;
 
 /// 模式切换后的降级结果，供 UI 层决定是否开启点击穿透。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,9 +118,260 @@ pub fn is_window_drag_region(
     !in_control_strip && !in_resize_handle
 }
 
+/// 窗口当前几何快照（虚拟桌面逻辑矩形 + 物理尺寸 + DPI），供持久化构造使用。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowSnapshot {
+    /// 虚拟桌面逻辑像素矩形（恢复应用与持久化换算的输入）。
+    pub rect: LogicalRect,
+    /// 窗口内容区物理像素尺寸（保存时由 winit 报告）。
+    pub physical_size: PhysicalSize,
+    /// 窗口所在显示器的 scale factor。
+    pub scale_factor: ScaleFactor,
+    /// 保存时的展示模式。
+    pub mode: WidgetMode,
+}
+
+/// 从窗口当前虚拟桌面几何与显示器拓扑构造持久化布局记录。
+///
+/// 保存语义（`WidgetLayout` 契约）：`rect` 必须是 monitor-local——相对期望显示器
+/// 工作区原点的逻辑像素；`monitor_key` 取窗口中心所在的活动显示器，找不到时
+/// 回退主屏。显示器列表为空时返回 `Ok(None)`，由调用方记录并跳过保存。
+pub fn layout_from_window(
+    instance_id: InstanceId,
+    plugin_id: PluginId,
+    snapshot: WindowSnapshot,
+    monitors: &[MonitorLayout],
+    updated_at: u64,
+) -> Result<Option<WidgetLayout>, LayoutValidationError> {
+    let WindowSnapshot {
+        rect: window_rect,
+        physical_size,
+        scale_factor,
+        mode,
+    } = snapshot;
+    let center = LogicalPosition {
+        x: window_rect.position.x + window_rect.size.width / 2.0,
+        y: window_rect.position.y + window_rect.size.height / 2.0,
+    };
+    let monitor = monitors
+        .iter()
+        .find(|monitor| contains(monitor.bounds, center))
+        .or_else(|| monitors.iter().find(|monitor| monitor.primary));
+    let Some(monitor) = monitor else {
+        return Ok(None);
+    };
+    let rect = LogicalRect {
+        position: LogicalPosition {
+            x: window_rect.position.x - monitor.bounds.position.x,
+            y: window_rect.position.y - monitor.bounds.position.y,
+        },
+        size: window_rect.size,
+    };
+    let layout = WidgetLayout {
+        instance_id,
+        plugin_id,
+        monitor_key: Some(monitor.key.clone()),
+        rect,
+        physical_size,
+        scale_factor,
+        lost_monitor: false,
+        z: SINGLE_WINDOW_Z,
+        mode,
+        version: LAYOUT_RECORD_VERSION,
+        updated_at,
+    };
+    layout.validate()?;
+    Ok(Some(layout))
+}
+
+fn contains(bounds: LogicalRect, point: LogicalPosition) -> bool {
+    point.x >= bounds.position.x
+        && point.x < bounds.position.x + bounds.size.width
+        && point.y >= bounds.position.y
+        && point.y < bounds.position.y + bounds.size.height
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use floatile_core::MonitorKey;
+
+    fn monitor(key: &str, x: f32, y: f32, w: f32, h: f32, primary: bool) -> MonitorLayout {
+        MonitorLayout {
+            key: MonitorKey(key.into()),
+            bounds: LogicalRect {
+                position: LogicalPosition { x, y },
+                size: LogicalSize {
+                    width: w,
+                    height: h,
+                },
+            },
+            scale_factor: ScaleFactor::new(1.0).unwrap(),
+            primary,
+        }
+    }
+
+    fn snapshot(rect: LogicalRect, mode: WidgetMode) -> WindowSnapshot {
+        WindowSnapshot {
+            rect,
+            physical_size: PhysicalSize {
+                width: rect.size.width as u32,
+                height: rect.size.height as u32,
+            },
+            scale_factor: ScaleFactor::new(1.0).unwrap(),
+            mode,
+        }
+    }
+
+    #[test]
+    fn layout_is_monitor_local_to_containing_screen() {
+        let monitors = [
+            monitor("eDP-1", 0.0, 0.0, 1920.0, 1080.0, true),
+            monitor("DP-1", 1920.0, 0.0, 2560.0, 1440.0, false),
+        ];
+        let layout = layout_from_window(
+            CLOCK_INSTANCE_ID,
+            PluginId(BUILTIN_CLOCK_PLUGIN.into()),
+            snapshot(
+                LogicalRect {
+                    position: LogicalPosition {
+                        x: 2100.0,
+                        y: 300.0,
+                    },
+                    size: LogicalSize {
+                        width: 260.0,
+                        height: 120.0,
+                    },
+                },
+                WidgetMode::Edit,
+            ),
+            &monitors,
+            1_700_000_000,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(layout.monitor_key, Some(MonitorKey("DP-1".into())));
+        // monitor-local：相对 DP-1 原点（1920,0）
+        assert_eq!(layout.rect.position, LogicalPosition { x: 180.0, y: 300.0 });
+        assert!(!layout.lost_monitor);
+        layout.validate().unwrap();
+    }
+
+    #[test]
+    fn layout_falls_back_to_primary_when_center_outside_all() {
+        let monitors = [monitor("eDP-1", 0.0, 0.0, 1920.0, 1080.0, true)];
+        let layout = layout_from_window(
+            CLOCK_INSTANCE_ID,
+            PluginId(BUILTIN_CLOCK_PLUGIN.into()),
+            snapshot(
+                LogicalRect {
+                    position: LogicalPosition {
+                        x: 5000.0,
+                        y: 5000.0,
+                    },
+                    size: LogicalSize {
+                        width: 260.0,
+                        height: 120.0,
+                    },
+                },
+                WidgetMode::Show,
+            ),
+            &monitors,
+            1_700_000_001,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(layout.monitor_key, Some(MonitorKey("eDP-1".into())));
+        // 相对主屏原点的 monitor-local 矩形
+        assert_eq!(
+            layout.rect.position,
+            LogicalPosition {
+                x: 5000.0,
+                y: 5000.0
+            }
+        );
+    }
+
+    #[test]
+    fn layout_returns_none_without_monitors() {
+        let result = layout_from_window(
+            CLOCK_INSTANCE_ID,
+            PluginId(BUILTIN_CLOCK_PLUGIN.into()),
+            snapshot(
+                LogicalRect {
+                    position: LogicalPosition { x: 100.0, y: 100.0 },
+                    size: LogicalSize {
+                        width: 260.0,
+                        height: 120.0,
+                    },
+                },
+                WidgetMode::Edit,
+            ),
+            &[],
+            1_700_000_002,
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn layout_negative_screen_offset_is_preserved() {
+        let monitors = [monitor("DP-1", -1600.0, 0.0, 1600.0, 900.0, false)];
+        let layout = layout_from_window(
+            CLOCK_INSTANCE_ID,
+            PluginId(BUILTIN_CLOCK_PLUGIN.into()),
+            snapshot(
+                LogicalRect {
+                    position: LogicalPosition {
+                        x: -1500.0,
+                        y: 200.0,
+                    },
+                    size: LogicalSize {
+                        width: 260.0,
+                        height: 120.0,
+                    },
+                },
+                WidgetMode::Edit,
+            ),
+            &monitors,
+            1_700_000_003,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(layout.monitor_key, Some(MonitorKey("DP-1".into())));
+        assert_eq!(layout.rect.position, LogicalPosition { x: 100.0, y: 200.0 });
+    }
+
+    #[test]
+    fn layout_validates_dpi_consistency() {
+        let monitors = [monitor("eDP-1", 0.0, 0.0, 1920.0, 1080.0, true)];
+        let layout = layout_from_window(
+            CLOCK_INSTANCE_ID,
+            PluginId(BUILTIN_CLOCK_PLUGIN.into()),
+            WindowSnapshot {
+                rect: LogicalRect {
+                    position: LogicalPosition { x: 10.0, y: 10.0 },
+                    size: LogicalSize {
+                        width: 260.0,
+                        height: 120.0,
+                    },
+                },
+                physical_size: PhysicalSize {
+                    width: 520,
+                    height: 240,
+                },
+                scale_factor: ScaleFactor::new(2.0).unwrap(),
+                mode: WidgetMode::Edit,
+            },
+            &monitors,
+            1_700_000_004,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(layout.scale_factor, ScaleFactor::new(2.0).unwrap());
+        layout.validate().unwrap();
+    }
 
     #[test]
     fn starts_in_edit_mode() {

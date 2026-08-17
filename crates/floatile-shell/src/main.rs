@@ -16,20 +16,26 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use floatile_core::{LogicalPosition, LogicalSize, SizeConstraints, WidgetMode};
+use floatile_core::layout::recover_layout;
+use floatile_core::{
+    LogicalPosition, LogicalRect, LogicalSize, MonitorLayout, PhysicalSize, PluginId, ScaleFactor,
+    SizeConstraints, WidgetMode,
+};
 use floatile_platform::capability::probe;
 #[cfg(target_os = "linux")]
 use floatile_platform::listen_hotkey;
 #[cfg(any(windows, target_os = "linux"))]
 use floatile_platform::{Hotkey, HotkeyModifiers};
 use floatile_platform::{
-    PlatformError, PlatformKind, WindowOptions, apply_window_options, enumerate_monitors,
-    process_metrics, resize_window, set_always_on_top, set_click_through, start_window_drag,
+    PlatformError, PlatformKind, WindowOptions, apply_window_options, data_dir, enumerate_monitors,
+    process_metrics, resize_window, set_always_on_top, set_click_through, set_window_position,
+    start_window_drag, to_monitor_layout,
 };
 #[cfg(windows)]
 use floatile_platform::{
     install_hotkey_message_hook, register_hotkey, remove_window_decorations, unregister_hotkey,
 };
+use floatile_shell::{BUILTIN_CLOCK_PLUGIN, CLOCK_INSTANCE_ID, layout_from_window};
 use slint::Timer;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
@@ -321,6 +327,249 @@ fn schedule_always_on_top(app: slint::Weak<Clock>, delay: Duration) {
     });
 }
 
+/// 布局持久化共享状态：SQLite store 与归一后的活动显示器快照。
+///
+/// `store` 打开失败（数据库损坏/路径不可写）时为 `None`，持久化整体禁用但宿主
+/// 继续运行；`monitors` 为空时保存被跳过、恢复使用默认位置。
+struct PersistedState {
+    store: Option<floatile_store::Store>,
+    monitors: Vec<MonitorLayout>,
+    scale_factor: f64,
+    /// 恢复流程主动移动窗口后会紧跟一个 `Moved` 事件；置位后跳过紧随的一次
+    /// Moved 保存，防止 openbox/WM 的初始放置位置污染持久化布局。
+    suppress_next_moved_save: bool,
+}
+
+impl PersistedState {
+    /// 重新枚举显示器并归一为逻辑布局快照。
+    ///
+    /// 平台不支持（Wayland/Windows/macOS）或查询失败时清空快照，调用方据此
+    /// 跳过保存并记录降级，而不是使用伪造的单显示器拓扑。
+    fn refresh_monitors(&mut self) {
+        match enumerate_monitors() {
+            Ok(infos) => {
+                let scale_factor = match ScaleFactor::new(self.scale_factor) {
+                    Ok(sf) => sf,
+                    Err(_) => {
+                        // 窗口报告非法 scale factor（不应发生）；回退恒等并留痕。
+                        tracing::warn!(
+                            scale = self.scale_factor,
+                            "invalid window scale factor; assuming 1.0"
+                        );
+                        ScaleFactor::one()
+                    }
+                };
+                self.monitors = infos
+                    .iter()
+                    .map(|info| to_monitor_layout(info, scale_factor))
+                    .collect();
+                tracing::info!(count = self.monitors.len(), "monitor snapshot refreshed");
+            }
+            Err(error) => {
+                self.monitors.clear();
+                tracing::warn!(%error, "monitor enumeration failed; layout persistence disabled");
+            }
+        }
+    }
+}
+
+/// 当前时间（Unix 秒），用作布局记录时间戳。
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 将窗口移动到恢复目标位置；窗口已在该位置时不发送移动请求。
+///
+/// 返回是否实际发出了移动请求。调用方应在移动后置位
+/// `suppress_next_moved_save`，避免恢复产生的 `Moved` 事件覆盖持久化布局；
+/// 位置一致时不置位，防止抑制标志残留吞掉用户下一次拖拽保存。
+fn apply_restored_position(
+    window: &winit::window::Window,
+    position: LogicalPosition,
+) -> Result<bool, PlatformError> {
+    let scale = window.scale_factor();
+    let target = winit::dpi::PhysicalPosition::new(
+        (f64::from(position.x) * scale).round() as i32,
+        (f64::from(position.y) * scale).round() as i32,
+    );
+    let needs_move = match window.outer_position() {
+        Ok(current) => current.x != target.x || current.y != target.y,
+        Err(_) => true,
+    };
+    if needs_move {
+        set_window_position(window, position)?;
+    }
+    Ok(needs_move)
+}
+
+/// 将当前窗口几何与模式写入布局数据库。
+///
+/// 失败只记录不中断（持久化是尽力而为；显示拓扑不可用、位置由合成器控制时
+/// 跳过保存并留痕）。
+fn save_layout(window: &winit::window::Window, state: &PersistedState, mode: WidgetMode) {
+    let Some(store) = &state.store else {
+        tracing::debug!("layout store unavailable; skip save");
+        return;
+    };
+    let scale = window.scale_factor();
+    let Ok(position) = window.outer_position() else {
+        tracing::warn!("window position unavailable (compositor-controlled); layout not saved");
+        return;
+    };
+    let size = window.inner_size();
+    let window_rect = LogicalRect {
+        position: LogicalPosition {
+            x: position.x as f32 / scale as f32,
+            y: position.y as f32 / scale as f32,
+        },
+        size: LogicalSize {
+            width: size.width as f32 / scale as f32,
+            height: size.height as f32 / scale as f32,
+        },
+    };
+    let scale_factor = match ScaleFactor::new(scale) {
+        Ok(sf) => sf,
+        Err(_) => {
+            tracing::warn!(scale, "invalid window scale factor; layout not saved");
+            return;
+        }
+    };
+    let layout = match layout_from_window(
+        CLOCK_INSTANCE_ID,
+        PluginId(BUILTIN_CLOCK_PLUGIN.into()),
+        floatile_shell::WindowSnapshot {
+            rect: window_rect,
+            physical_size: PhysicalSize {
+                width: size.width,
+                height: size.height,
+            },
+            scale_factor,
+            mode,
+        },
+        &state.monitors,
+        unix_now(),
+    ) {
+        Ok(Some(layout)) => layout,
+        Ok(None) => {
+            tracing::warn!("no active monitor contains the window; layout not saved");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "invalid layout; not saved");
+            return;
+        }
+    };
+    match store.layout().save(&layout) {
+        Ok(()) => tracing::info!(
+            instance = layout.instance_id.0,
+            monitor = ?layout.monitor_key,
+            x = layout.rect.position.x,
+            y = layout.rect.position.y,
+            w = layout.rect.size.width,
+            h = layout.rect.size.height,
+            mode = ?layout.mode,
+            "layout saved"
+        ),
+        Err(error) => tracing::warn!(%error, "layout save failed"),
+    }
+}
+
+/// 计算持久化布局在当前显示器拓扑下的落点。
+///
+/// 返回 `(虚拟桌面逻辑矩形, 保存的模式, 是否降级到主屏)`；无记录、记录无效或
+/// 恢复失败时返回 `None`（调用方使用默认位置与当前模式）。
+fn restored_placement(
+    window: &winit::window::Window,
+    state: &PersistedState,
+) -> Option<(LogicalRect, WidgetMode, bool)> {
+    let store = state.store.as_ref()?;
+    let layouts = match store.layout().list() {
+        Ok(layouts) => layouts,
+        Err(error) => {
+            tracing::warn!(%error, "layout load failed");
+            return None;
+        }
+    };
+    let layout = layouts
+        .iter()
+        .find(|layout| layout.instance_id == CLOCK_INSTANCE_ID)?;
+    if let Err(error) = layout.validate() {
+        tracing::warn!(%error, "persisted layout invalid; using defaults");
+        return None;
+    }
+    match recover_layout(layout, &state.monitors) {
+        Ok(recovered) => {
+            if recovered.lost_monitor {
+                tracing::warn!(
+                    key = ?layout.monitor_key,
+                    "expected monitor missing; placed on primary (lost_monitor)"
+                );
+            }
+            let _ = window;
+            Some((recovered.rect, layout.mode, recovered.lost_monitor))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "layout recovery failed; using defaults");
+            None
+        }
+    }
+}
+
+/// 窗口就绪后调度一次布局恢复；窗口尚未创建时按固定间隔重试。
+fn schedule_layout_restore(
+    app: slint::Weak<Clock>,
+    state: Arc<Mutex<PersistedState>>,
+    controller: Arc<Mutex<floatile_shell::ShellController>>,
+    delay: Duration,
+) {
+    Timer::single_shot(delay, move || {
+        let Some(app) = app.upgrade() else { return };
+        use slint::winit_030::winit::window::Window;
+        let result = app.window().with_winit_window(|window: &Window| {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.scale_factor = window.scale_factor();
+            state.refresh_monitors();
+            let placement: Result<Option<(WidgetMode, bool)>, PlatformError> =
+                match restored_placement(window, &state) {
+                    Some((rect, mode, lost)) => {
+                        let moved = apply_restored_position(window, rect.position)?;
+                        resize_window(window, rect.size)?;
+                        if moved {
+                            state.suppress_next_moved_save = true;
+                        }
+                        Ok(Some((mode, lost)))
+                    }
+                    None => Ok(None),
+                };
+            placement
+        });
+        match result {
+            Some(Ok(Some((mode, lost)))) => {
+                tracing::info!(mode = ?mode, lost_monitor = lost, "layout restored");
+                let mut ctrl = controller
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if ctrl.mode != mode {
+                    ctrl.mode = mode;
+                    let effect = ctrl.current_effect();
+                    drop(ctrl);
+                    apply_mode_effect(&app, effect);
+                }
+            }
+            Some(Ok(None)) => {}
+            Some(Err(error)) => tracing::warn!(%error, "layout restore failed"),
+            None => {
+                schedule_layout_restore(app.as_weak(), state, controller, Duration::from_millis(50))
+            }
+        }
+    });
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 const HOTKEY_ID: u32 = 0x0001;
 #[cfg(any(windows, target_os = "linux"))]
@@ -395,6 +644,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 只有底层能力与恢复热键都成功后，模式控制器才允许启用点击穿透。
     let controller = Arc::new(Mutex::new(floatile_shell::ShellController::new(false)));
+
+    // 布局持久化：数据目录 + SQLite（数据库不可用时降级为无持久化运行）。
+    let store = data_dir()
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| PlatformError::Platform(format!("创建数据目录失败: {e}")))?;
+            Ok(dir.join("layout.db"))
+        })
+        .and_then(|path| {
+            floatile_store::open(&path)
+                .map_err(|e| PlatformError::Platform(format!("打开布局数据库失败: {e}")))
+        });
+    let store = match store {
+        Ok(store) => Some(store),
+        Err(error) => {
+            tracing::warn!(%error, "layout store unavailable; persistence disabled");
+            None
+        }
+    };
+    let persisted = Arc::new(Mutex::new(PersistedState {
+        store,
+        monitors: Vec::new(),
+        scale_factor: 1.0,
+        suppress_next_moved_save: false,
+    }));
     #[cfg(windows)]
     let hotkey_app = Rc::new(RefCell::new(None::<Clock>));
 
@@ -408,6 +682,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let controller_for_hotkey = Arc::clone(&controller);
         let app_for_hotkey = Rc::clone(&hotkey_app);
+        let persisted_for_hotkey = Arc::clone(&persisted);
         if click_through_capable {
             install_hotkey_message_hook(&mut event_loop_builder, move |hotkey_id| {
                 if hotkey_id != HOTKEY_ID {
@@ -420,6 +695,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .restore_edit_mode();
                 if let Some(app) = app_for_hotkey.borrow().as_ref() {
                     apply_mode_effect(app, effect);
+                    let _ = app
+                        .window()
+                        .with_winit_window(|window: &winit::window::Window| {
+                            let state = persisted_for_hotkey
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            save_layout(window, &state, WidgetMode::Edit);
+                        });
                 }
                 true
             });
@@ -438,6 +721,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }
+    // 窗口就绪后恢复持久化布局（位置/尺寸/模式），并刷新显示器快照。
+    schedule_layout_restore(
+        app.as_weak(),
+        Arc::clone(&persisted),
+        Arc::clone(&controller),
+        Duration::ZERO,
+    );
     #[cfg(windows)]
     {
         *hotkey_app.borrow_mut() = Some(app.clone_strong());
@@ -456,8 +746,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let weak = app.as_weak();
         let controller_for_hotkey = Arc::clone(&controller);
+        let persisted_for_hotkey = Arc::clone(&persisted);
         match listen_hotkey(hotkey, move || {
             let controller = Arc::clone(&controller_for_hotkey);
+            let persisted = Arc::clone(&persisted_for_hotkey);
             if let Err(error) = weak.upgrade_in_event_loop(move |app| {
                 tracing::info!("global hotkey pressed");
                 let effect = controller
@@ -465,6 +757,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .restore_edit_mode();
                 apply_mode_effect(&app, effect);
+                let _ = app
+                    .window()
+                    .with_winit_window(|window: &winit::window::Window| {
+                        let state = persisted
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        save_layout(window, &state, WidgetMode::Edit);
+                    });
             }) {
                 tracing::debug!(%error, "global hotkey event loop delivery failed");
             }
@@ -491,11 +791,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let weak = app.as_weak();
     let controller_for_window_events = Arc::clone(&controller);
+    let persisted_for_window_events = Arc::clone(&persisted);
     let mut cursor_position = None;
     app.window()
         .on_winit_window_event(move |slint_window, event| {
+            use slint::winit_030::winit::window::Window;
+
             if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
                 cursor_position = Some(*position);
+            }
+
+            // 窗口移动/关闭后持久化布局。恢复流程主动移动窗口产生的 Moved 事件
+            // 由 `suppress_next_moved_save` 跳过，避免 WM 初始放置覆盖用户布局。
+            if matches!(
+                event,
+                winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::CloseRequested
+            ) {
+                let _ = slint_window.with_winit_window(|window: &Window| {
+                    let mut state = persisted_for_window_events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if matches!(event, winit::event::WindowEvent::Moved(_))
+                        && state.suppress_next_moved_save
+                    {
+                        state.suppress_next_moved_save = false;
+                        return;
+                    }
+                    let mode = controller_for_window_events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .mode;
+                    save_layout(window, &state, mode);
+                });
             }
 
             if matches!(
@@ -568,6 +895,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 winit::event::WindowEvent::Focused(true)
                     | winit::event::WindowEvent::Occluded(false)
             ) {
+                // 显示器拓扑可能变化（插拔/分辨率变更）：刷新快照并重新应用恢复结果。
+                let _ = slint_window.with_winit_window(|window: &Window| {
+                    let mut state = persisted_for_window_events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.scale_factor = window.scale_factor();
+                    state.refresh_monitors();
+                    if let Some((rect, mode, lost)) = restored_placement(window, &state) {
+                        let moved = match apply_restored_position(window, rect.position) {
+                            Ok(moved) => moved,
+                            Err(error) => {
+                                tracing::warn!(%error, "layout position re-apply failed");
+                                return;
+                            }
+                        };
+                        let size_result = resize_window(window, rect.size);
+                        if moved {
+                            state.suppress_next_moved_save = true;
+                        }
+                        if size_result.is_ok() {
+                            tracing::info!(
+                                mode = ?mode,
+                                lost_monitor = lost,
+                                "layout re-applied after focus/topology change"
+                            );
+                        } else {
+                            tracing::warn!(
+                                size_error = ?size_result.err(),
+                                "layout size re-apply failed after focus/topology change"
+                            );
+                        }
+                    }
+                });
                 let effect = controller_for_window_events
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -623,9 +983,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         start_pos: (0.0, 0.0),
     }));
 
-    // 展示模式按钮
+    // 展示模式按钮：切换模式并持久化。
     let weak = app.as_weak();
     let ctrl = Arc::clone(&controller);
+    let persisted_for_mode = Arc::clone(&persisted);
     app.on_show_mode(move || {
         let Some(app) = weak.upgrade() else { return };
         let effect = ctrl
@@ -638,14 +999,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         tracing::info!(mode = ?mode, "show-mode button");
         apply_mode_effect(&app, effect);
+        let _ = app
+            .window()
+            .with_winit_window(|window: &winit::window::Window| {
+                let state = persisted_for_mode
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                save_layout(window, &state, mode);
+            });
     });
 
-    // 设置/删除：S2 占位，记录事件
+    // 设置：S2 占位，记录事件
     app.on_settings_clicked(|| {
         tracing::info!("settings clicked (placeholder)");
     });
-    app.on_delete_clicked(|| {
-        tracing::info!("delete clicked (placeholder)");
+
+    // 删除：移除持久化记录并关闭窗口（单窗口宿主语义）。
+    let weak = app.as_weak();
+    let persisted_for_delete = Arc::clone(&persisted);
+    app.on_delete_clicked(move || {
+        tracing::info!("delete clicked; removing clock layout and closing window");
+        if let Some(store) = &persisted_for_delete
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+        {
+            match store.layout().delete(CLOCK_INSTANCE_ID.0) {
+                Ok(()) => tracing::info!("layout deleted"),
+                Err(error) => tracing::warn!(%error, "layout delete failed"),
+            }
+        }
+        if let Some(app) = weak.upgrade() {
+            let _ = app.window().hide();
+        }
     });
 
     // 缩放手柄：down 记录起点，move 按指针位移精确缩放，clamp 到约束。
@@ -675,8 +1061,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         apply_size(&app, clamped);
     });
     let st = Rc::clone(&resize_state);
+    let weak = app.as_weak();
+    let ctrl = Arc::clone(&controller);
+    let persisted_for_resize = Arc::clone(&persisted);
     app.on_resize_up(move || {
         st.borrow_mut().active = false;
+        let Some(app) = weak.upgrade() else { return };
+        let _ = app
+            .window()
+            .with_winit_window(|window: &winit::window::Window| {
+                let state = persisted_for_resize
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mode = ctrl
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .mode;
+                save_layout(window, &state, mode);
+            });
     });
 
     // 时钟定时器
