@@ -22,9 +22,9 @@ use floatile_core::{
     SizeConstraints, WidgetMode,
 };
 use floatile_platform::capability::probe;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use floatile_platform::listen_hotkey;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use floatile_platform::{Hotkey, HotkeyModifiers};
 use floatile_platform::{
     PlatformError, PlatformKind, WindowOptions, apply_window_options, data_dir, enumerate_monitors,
@@ -574,6 +574,11 @@ fn schedule_layout_restore(
 const HOTKEY_ID: u32 = 0x0001;
 #[cfg(any(windows, target_os = "linux"))]
 const KEY_E: u32 = 0x45;
+#[cfg(target_os = "macos")]
+const HOTKEY_ID: u32 = 0x0001;
+/// Carbon 虚拟键码 `kVK_ANSI_E`（物理 E 键位；区别于 Windows/X11 的 ASCII 0x45）。
+#[cfg(target_os = "macos")]
+const KEY_E: u32 = 0x0E;
 #[cfg(windows)]
 const KEY_F12: u32 = 0x7B;
 
@@ -613,7 +618,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "transparent window disabled"
         );
     }
-    if caps.kind == PlatformKind::X11 {
+    if matches!(caps.kind, PlatformKind::X11 | PlatformKind::MacOS) {
         match enumerate_monitors() {
             Ok(monitors) => {
                 for monitor in monitors {
@@ -733,61 +738,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         *hotkey_app.borrow_mut() = Some(app.clone_strong());
     }
 
-    #[cfg(target_os = "linux")]
-    let hotkey_listener = if caps.kind == PlatformKind::X11 && click_through_capable {
-        let hotkey = Hotkey {
-            id: HOTKEY_ID,
-            modifiers: HotkeyModifiers {
-                control: true,
-                shift: true,
-                ..HotkeyModifiers::none()
-            },
-            virtual_key: KEY_E,
-        };
-        let weak = app.as_weak();
-        let controller_for_hotkey = Arc::clone(&controller);
-        let persisted_for_hotkey = Arc::clone(&persisted);
-        match listen_hotkey(hotkey, move || {
-            let controller = Arc::clone(&controller_for_hotkey);
-            let persisted = Arc::clone(&persisted_for_hotkey);
-            if let Err(error) = weak.upgrade_in_event_loop(move |app| {
-                tracing::info!("global hotkey pressed");
-                let effect = controller
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .restore_edit_mode();
-                apply_mode_effect(&app, effect);
-                let _ = app
-                    .window()
-                    .with_winit_window(|window: &winit::window::Window| {
-                        let state = persisted
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        save_layout(window, &state, WidgetMode::Edit);
-                    });
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let hotkey_listener =
+        if matches!(caps.kind, PlatformKind::X11 | PlatformKind::MacOS) && click_through_capable {
+            let hotkey = Hotkey {
+                id: HOTKEY_ID,
+                modifiers: HotkeyModifiers {
+                    control: true,
+                    shift: true,
+                    ..HotkeyModifiers::none()
+                },
+                virtual_key: KEY_E,
+            };
+            let weak = app.as_weak();
+            let controller_for_hotkey = Arc::clone(&controller);
+            let persisted_for_hotkey = Arc::clone(&persisted);
+            match listen_hotkey(hotkey, move || {
+                let controller = Arc::clone(&controller_for_hotkey);
+                let persisted = Arc::clone(&persisted_for_hotkey);
+                if let Err(error) = weak.upgrade_in_event_loop(move |app| {
+                    tracing::info!("global hotkey pressed");
+                    let effect = controller
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .restore_edit_mode();
+                    apply_mode_effect(&app, effect);
+                    let _ = app
+                        .window()
+                        .with_winit_window(|window: &winit::window::Window| {
+                            let state = persisted
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            save_layout(window, &state, WidgetMode::Edit);
+                        });
+                }) {
+                    tracing::debug!(%error, "global hotkey event loop delivery failed");
+                }
             }) {
-                tracing::debug!(%error, "global hotkey event loop delivery failed");
+                Ok(listener) => {
+                    controller
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .click_through_supported = true;
+                    tracing::info!("global hotkey registered (Ctrl+Shift+E)");
+                    Some(listener)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "click-through disabled because recovery hotkey registration failed"
+                    );
+                    None
+                }
             }
-        }) {
-            Ok(listener) => {
-                controller
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .click_through_supported = true;
-                tracing::info!("global hotkey registered (Ctrl+Shift+E)");
-                Some(listener)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "click-through disabled because recovery hotkey registration failed"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     let weak = app.as_weak();
     let controller_for_window_events = Arc::clone(&controller);
@@ -1236,7 +1242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         perf_sampler.stop();
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(listener) = hotkey_listener {
         listener.stop();
     }

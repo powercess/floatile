@@ -7,6 +7,8 @@
 pub enum PlatformKind {
     /// Windows（DWM 合成桌面）。
     Windows,
+    /// macOS（Quartz 合成桌面）。
+    MacOS,
     /// X11（含 XWayland）。
     X11,
     /// 原生 Wayland。
@@ -70,7 +72,7 @@ pub struct PlatformCapabilities {
     pub always_on_top: CapabilityState,
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn unavailable_capabilities(
     kind: PlatformKind,
     reason: CapabilityUnavailableReason,
@@ -87,21 +89,28 @@ fn unavailable_capabilities(
 ///
 /// Windows 走 DWM 合成桌面路径：Windows 8.1+ 的 DWM 始终合成，透明、点击穿透
 /// （`WS_EX_TRANSPARENT`）与置顶（`HWND_TOPMOST`）由 `floatile-platform::window` 落地。
+/// macOS 走 Quartz 合成桌面路径：macOS 始终合成，点击穿透（`ignoresMouseEvents`）与
+/// 置顶（floating window level）由 `floatile-platform::window` 落地。
 /// Linux X11 查询 compositor selection、SHAPE 扩展与 EWMH `_NET_WM_STATE_ABOVE`；
 /// 连接或查询失败时返回明确降级原因。其余平台使用显示环境识别会话类型，不把 OS
 /// 名称当作能力证明。
 pub fn probe() -> PlatformCapabilities {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
+        #[cfg(target_os = "windows")]
+        let kind = PlatformKind::Windows;
+        #[cfg(target_os = "macos")]
+        let kind = PlatformKind::MacOS;
+
         PlatformCapabilities {
-            kind: PlatformKind::Windows,
+            kind,
             compositing: CapabilityState::Available,
             click_through: CapabilityState::Available,
             always_on_top: CapabilityState::Available,
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         use std::env;
 
@@ -143,8 +152,8 @@ pub fn probe() -> PlatformCapabilities {
             PlatformKind::Unknown => {
                 unavailable_capabilities(kind, CapabilityUnavailableReason::DisplayUnavailable)
             }
-            // 非 Windows 分支永远构造不出 Windows；此分支只为穷尽匹配。
-            PlatformKind::Windows => {
+            // Windows/macOS 分支在此 cfg 下构造不出；此分支只为穷尽匹配。
+            PlatformKind::Windows | PlatformKind::MacOS => {
                 unavailable_capabilities(kind, CapabilityUnavailableReason::NotImplemented)
             }
         }
@@ -156,15 +165,15 @@ pub fn probe() -> PlatformCapabilities {
 mod tests {
     use super::*;
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     use std::ffi::OsString;
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     use std::sync::Mutex;
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     static DISPLAY_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     fn restore_env(key: &str, value: Option<OsString>) {
         use std::env;
         // SAFETY: Callers hold DISPLAY_ENV_LOCK for the complete mutation/probe/restore sequence.
@@ -176,17 +185,21 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[test]
-    fn windows_dwm_capabilities_reported() {
+    fn compositing_desktop_capabilities_reported() {
         let caps = probe();
-        assert_eq!(caps.kind, PlatformKind::Windows);
+        #[cfg(target_os = "windows")]
+        let expected_kind = PlatformKind::Windows;
+        #[cfg(target_os = "macos")]
+        let expected_kind = PlatformKind::MacOS;
+        assert_eq!(caps.kind, expected_kind);
         assert!(caps.compositing.is_available());
         assert!(caps.click_through.is_available());
         assert!(caps.always_on_top.is_available());
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     #[test]
     fn wayland_env_reports_protocol_degradation() {
         use std::env;

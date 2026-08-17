@@ -44,9 +44,9 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 |---|:---:|---|
 | Rust workspace 与领域基础类型 | ✅ | 九个 crate 的分层骨架、固定工具链与基础 CI 已建立 |
 | 原生参考时钟 | ✅ | 可运行的 Slint 时钟，每秒更新，用作窗口与性能基线 |
-| 透明、无边框、置顶窗口 | 🧪 | Windows 与 Linux X11 已有运行证据；X11 无合成器时显式降级为不透明，macOS/Wayland 待实测 |
-| 窗口拖拽 | 🧪 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已运行验证；macOS/Wayland 待验证 |
-| 平台能力探测与降级 | 🧪 | Windows 原生探测与 X11 compositor/SHAPE/EWMH/RandR 实探测已落地；Wayland 仅有显式协议降级，macOS 实现待补 |
+| 透明、无边框、置顶窗口 | 🧪 | Windows、Linux X11 与 macOS 已有运行证据；X11 无合成器时显式降级为不透明，Wayland 待实测 |
+| 窗口拖拽 | 🧪 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已运行验证；macOS/Wayland 待交互实测 |
+| 平台能力探测与降级 | 🧪 | Windows 原生探测、X11 compositor/SHAPE/EWMH/RandR 实探测与 macOS 探测（点击穿透/置顶/显示器/指标/热键）已落地；Wayland 仅有显式协议降级 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
 | `.slint + .wasm` Widget | 🧪 | WIT v1 契约、SDK guest 绑定、host async 绑定与 `clock.wasm` 组件构建已落地（wasm-tools validate 通过）；wasmtime 运行时加载执行待实现 |
@@ -186,7 +186,7 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 | 平台 | 目标 | 当前证据 |
 |---|---|---|
 | Windows | 透明、置顶、点击穿透、编辑/展示模式 | 透明/置顶/点击穿透 API 与编辑/展示模式、拖拽、缩放已有实测（2026-08-13，DWM） |
-| macOS | 透明、置顶、点击穿透、编辑/展示模式 | CI 构建配置已存在；运行行为未验证 |
+| macOS | 透明、置顶、点击穿透、编辑/展示模式 | 探测、无边框置顶窗口、布局持久化与恢复已实测（2026-08-17，macOS 15.7.5）；穿透/拖拽/缩放交互待人工复核 |
 | Linux X11 | 依赖合成器的透明窗口与窗口管理器能力 | 基础环境探测已实现；运行行为未验证 |
 | Linux Wayland | 能力分级并明确降级，不承诺与 X11 完全一致 | 基础环境探测已实现；纯 Wayland 实测未完成 |
 

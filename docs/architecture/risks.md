@@ -61,7 +61,17 @@
 - 退出条件：进入 S5 加载不受信任插件 UI/资源前必须移除例外并让 advisory 检查通过；否则 S5 阻断。
 - P0 验证：每次 Slint 升级运行 `cargo deny --locked check advisories` 并检查反向依赖图。
 
+### R13. macOS 全局热键依赖已弃用的 Carbon API — 低
+- 展示模式点击穿透后的恢复热键使用 Carbon `RegisterEventHotKey` + 事件处理器；该 API 无需
+  辅助功能/输入监控授权（对比 `CGEventTap` 会触发授权弹窗），但 Carbon 在 macOS 15 已标记
+  弃用、仍可正常工作。
+- 缓解：热键注册失败时关闭点击穿透（沿用 Windows/X11 的「恢复热键失败即禁用穿透」降级）；
+  若未来 macOS 移除 Carbon，迁移到 `CGEventTap` + 授权提示或 `NSEvent` 全局监听并重新实测。
+- P0 验证：macOS 15.7.5（Apple M4）已实测 `RegisterEventHotKey` 注册成功（日志
+  `global hotkey registered (Ctrl+Shift+E)`）；真实按键触发待人工复核。
+
 ## 2. 依赖选型
+
 
 | 领域 | 选型 | 理由 | 风险备注 |
 |------|------|------|----------|
