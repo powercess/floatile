@@ -56,7 +56,7 @@ Floatile 要让用户在桌面上长期运行轻量、可布局的浮动 Widget�
 | S2 桌面交互 | 部分验证 | Edit/Show、Windows 与 X11 点击穿透、恢复热键、拖拽与缩放已落地；Linux Xvfb 与 VMware Xfce/Xorg 已验证穿透往返，Xfce 已验证窗口重映射后的输入区重同步；物理多显示器、DPI 与热插拔降级（F7/F8）未验证 |
 | 平台抽象 | 部分实现 | 能力状态包含明确降级原因；Windows 窗口能力与 X11 compositor/SHAPE/EWMH/RandR 探测已落地；尚无统一四平台 trait、Wayland 协议探测及 macOS 实现 |
 | 布局/存储 | 部分验证 | 核心层已有强类型 monitor/DPI/物理坐标模型和平台无关恢复算法；SQLite v2 migration 已持久化物理尺寸、scale factor 与 `lost_monitor`；shell 已接入启动保存/恢复（位置/尺寸/模式）、拖动/缩放/模式/热键/退出保存与显示器变化重恢复，Xvfb+Openbox 下重启恢复与删除已实测；真实多屏/DPI/热插拔与 Windows/macOS 实机验证待做 |
-| WASM/WIT/SDK | 未实现 | `wit/`、runtime、guest 示例和契约测试缺失 |
+| WASM/WIT/SDK | 部分实现 | `wit/floatile-widget.wit` v1 契约、SDK guest 绑定、plugin-api host async 绑定与 clock.wasm 组件构建已落地（wasm-tools validate 通过，CI 有单源校验）；wasmtime runtime 加载执行、fuel/memory 配额与契约测试缺失 |
 | Permission Broker | 未实现 | grants、配额、审计和恶意插件 fixture 缺失 |
 | 包工具链 | 未实现 | validate/build、schema、路径与 zip-bomb 防护缺失 |
 | 跨平台/性能证据 | 部分验证 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已回填 S1/S2 子集，两个 Linux X11 环境的 F3 穿透往返通过；Wayland 协议层（headless weston）首帧/CPU/RSS 与 F3 降级已回填；桌面会话与 macOS 未验证 |

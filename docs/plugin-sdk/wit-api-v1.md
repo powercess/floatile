@@ -1,9 +1,12 @@
 # WIT 插件 API v1 草案
 
-> 状态：Proposed
+> 状态：Implemented（契约与绑定）
 > 契约定义于 `wit/` 目录，单一事实源。
 > 宿主与 guest 都由同一 WIT 生成绑定（`wasmtime::component::bindgen!` / wit-bindgen）。
 > 版本：`floatile:widget@1.0.0`（对应 `engineApiVersion = "1.0.0"`）。
+> 已落地：`wit/floatile-widget.wit`、`floatile-sdk`（guest 绑定 + `export_widget!`）、
+> `floatile-plugin-api`（host async 绑定）、`plugins/clock-wasm` 组件构建（wasm-tools
+> validate 通过）。未落地：wasmtime runtime 加载执行（S5b）、Broker 配额（S5c）。
 
 ## 1. 设计原则
 
