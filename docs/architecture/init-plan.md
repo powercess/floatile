@@ -55,6 +55,9 @@
 ### S5 — 最小 wasm 插件（clock.wasm）
 - 做：wit/ 写入 widget WIT v1；floatile-plugin-api（bindgen host 绑定）；floatile-runtime（wasmtime engine + fuel/memory 配额）；floatile-sdk（guest 绑定 + 属性宏）；PermissionBroker 骨架（log/storage/timer/metrics）。
 - 验收：F11；恶意循环/超内存被 fuel/memory trap（安全 §3.3/3.4）。
+- 当前进度：WIT v1 契约（`wit/floatile-widget.wit`）、SDK guest 绑定（`export_widget!`）、
+  plugin-api host async 绑定与 `plugins/clock-wasm` 组件构建已落地（wasm-tools validate
+  通过）；wasmtime runtime 加载执行（S5b）、fuel/memory 配额与 Broker（S5c）待实现。
 
 ### S6 — .floatile 包 + 安装
 - 做：floatile-cli（validate + build，zip + 路径穿越校验）；PluginManager 加载 dev 包。

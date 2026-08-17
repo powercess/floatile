@@ -46,16 +46,25 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Check
-        run: cargo check --workspace --all-targets --locked
+        run: cargo check --workspace --exclude floatile-clock-wasm --all-targets --locked
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --exclude floatile-clock-wasm --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --exclude floatile-clock-wasm --all-targets --locked
       - name: Release build
-        run: cargo build --workspace --release --locked
-      - name: WASI guest check
+        run: cargo build --workspace --exclude floatile-clock-wasm --release --locked
+      - name: WASI guest build and WIT single-source check
         if: runner.os == 'Linux'
-        run: cargo check -p floatile-sdk --target wasm32-wasip2 --locked
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/bytecodealliance/wasm-tools/releases/download/v1.254.0/wasm-tools-1.254.0-x86_64-linux.tar.gz \
+            | tar xz -C /usr/local/bin --strip-components=1 wasm-tools-1.254.0-x86_64-linux/wasm-tools
+          cargo build --manifest-path plugins/clock-wasm/Cargo.toml --target wasm32-wasip2 --locked
+          wasm-tools validate target/wasm32-wasip2/debug/floatile_clock_wasm.wasm
+          sdk=$(grep -oP 'ENGINE_API_VERSION: &str = "\K[^"]+' crates/floatile-sdk/src/lib.rs)
+          api=$(grep -oP 'ENGINE_API_VERSION: &str = "\K[^"]+' crates/floatile-plugin-api/src/lib.rs)
+          test "$sdk" = "$api"
+          echo "guest component valid; WIT single-source OK (engineApiVersion=$sdk)"
 
   dependencies:
     name: Dependency policy

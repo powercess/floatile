@@ -49,7 +49,7 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 平台能力探测与降级 | 🧪 | Windows 原生探测与 X11 compositor/SHAPE/EWMH/RandR 实探测已落地；Wayland 仅有显式协议降级，macOS 实现待补 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
-| `.slint + .wasm` Widget | 🗺️ | Wasmtime、Component Model、WIT host/guest 链路尚未接入 |
+| `.slint + .wasm` Widget | 🧪 | WIT v1 契约、SDK guest 绑定、host async 绑定与 `clock.wasm` 组件构建已落地（wasm-tools validate 通过）；wasmtime 运行时加载执行待实现 |
 | Permission Broker 与审计 | 🗺️ | 默认零权限、scope/配额、参数脱敏与恶意插件测试尚未实现 |
 | 插件 SDK 与打包 CLI | 🗺️ | 计划提供 validate/build/dev、包路径和大小安全校验 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |

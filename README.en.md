@@ -53,7 +53,7 @@ Legend: ✅ basic implementation exists · 🧪 in development or awaiting compl
 | Capability probing and degradation | 🧪 | Native Windows probes and X11 compositor/SHAPE/EWMH/RandR probes are implemented; Wayland has explicit protocol degradation and the macOS implementation remains unimplemented |
 | Edit/show modes, resize, and multi-display layout | 🧪 | Edit/show, click-through coordination, dragging, and resizing are implemented on the Windows and Linux X11 paths; platform-neutral primary-display fallback/original-display recovery is implemented, while Canvas integration and real multi-display/DPI/hot-plug evidence remain |
 | SQLite layout persistence | 🧪 | Layout schema v2, CRUD, v1 upgrade/rollback, and reopen persistence tests are implemented; the shell now wires startup save/restore and display-change re-apply (verified on Xvfb+Openbox); real multi-display/hot-plug validation and multi-instance orchestration remain |
-| `.slint + .wasm` widgets | 🗺️ | Wasmtime, Component Model, and WIT host/guest path are not integrated yet |
+| `.slint + .wasm` widgets | 🧪 | WIT v1 contract, SDK guest bindings, host async bindings, and the `clock.wasm` component build are implemented (wasm-tools validate passes); wasmtime runtime loading/execution remains |
 | Permission Broker and audit trail | 🗺️ | Default-deny grants, quotas, redaction, and hostile-plugin tests remain |
 | Plugin SDK and packaging CLI | 🗺️ | Planned validate/build/dev commands and package safety checks |
 | Cross-platform and performance acceptance | 🗺️ | Numbers in the acceptance docs are targets, not measured results |

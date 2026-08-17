@@ -11,3 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+wit-bindgen = { workspace = true }
+
+[features]
+default = []
