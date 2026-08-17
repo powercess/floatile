@@ -325,6 +325,7 @@ fn schedule_always_on_top(app: slint::Weak<Clock>, delay: Duration) {
 const HOTKEY_ID: u32 = 0x0001;
 #[cfg(any(windows, target_os = "linux"))]
 const KEY_E: u32 = 0x45;
+#[cfg(windows)]
 const KEY_F12: u32 = 0x7B;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
