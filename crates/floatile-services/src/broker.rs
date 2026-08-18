@@ -126,6 +126,8 @@ impl Broker {
     // ---- 固有能力 ----
 
     pub fn clock_now(&self) -> ClockSnapshot {
+        // 固有能力仍经 Broker 授权与审计（当前实例 scope；固有 grants 恒定存在）。
+        let _ = self.authorize(CapabilityId::ClockRead, None, "clock");
         self.clock.now()
     }
 

@@ -49,7 +49,9 @@ impl LogService {
         }
         self.window_count += 1;
 
-        let message: String = message.chars().take(MAX_MESSAGE_CHARS).collect();
+        if message.chars().count() > MAX_MESSAGE_CHARS {
+            return Err(LogError::MessageTooLarge);
+        }
         match level {
             LogLevel::Debug => {
                 tracing::event!(target: "floatile::plugin-log", tracing::Level::DEBUG, plugin_id = %self.plugin, instance_id = self.instance, message = %message)
@@ -65,5 +67,23 @@ impl LogService {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_message_rejected() {
+        let mut svc = LogService::new("t", 1);
+        let big = "x".repeat(MAX_MESSAGE_CHARS + 1);
+        assert!(matches!(
+            svc.log(LogLevel::Info, &big),
+            Err(LogError::MessageTooLarge)
+        ));
+        // 边界内允许。
+        let ok = "x".repeat(MAX_MESSAGE_CHARS);
+        assert!(svc.log(LogLevel::Info, &ok).is_ok());
     }
 }

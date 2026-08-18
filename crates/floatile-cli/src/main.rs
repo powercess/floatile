@@ -39,6 +39,9 @@ fn cmd_new(args: &[String]) -> ExitCode {
     match project::generate_template(&dir, &id, &name) {
         Ok(()) => {
             println!("已生成项目模板于 {}", dir.display());
+            println!(
+                "注意: floatile-sdk 尚未发布（许可 ADR 未通过），模板需在 SDK 可用后才能独立构建；workspace 内成员可直接构建。"
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -93,12 +96,7 @@ fn cmd_dev(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let out = dir.join("out").join("plugin.floatile");
-    if let Err(e) = dev::dev_loop(&dir, &out, interval, json) {
-        eprintln!("dev 失败: {e}");
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    dev::dev_loop(&dir, &out, interval, json);
 }
 
 fn cmd_build(args: &[String]) -> ExitCode {

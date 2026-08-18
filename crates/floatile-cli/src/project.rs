@@ -210,6 +210,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# NOTE: floatile-sdk 尚未发布（许可 ADR 未通过）。独立构建前需先发布 SDK，
+# 或改用 path/patch 指向本地 SDK。workspace 内成员（如 plugins/clock-wasm）
+# 可直接构建。
 floatile-sdk = "0.1"
 serde = { version = "1", features = ["derive"] }
 "#

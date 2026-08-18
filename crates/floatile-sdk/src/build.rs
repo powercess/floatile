@@ -48,6 +48,26 @@ mod tests {
         fn start(&mut self, _: &mut Context<Self>) {}
         fn event(&mut self, _: WidgetEvent, _: &mut Context<Self>) {}
     }
+    impl Default for W {
+        fn default() -> Self {
+            W
+        }
+    }
+
+    struct WButton;
+    impl Widget for WButton {
+        type State = S;
+        fn view(_: &S) -> crate::view::View {
+            crate::view::button("Go")
+        }
+        fn start(&mut self, _: &mut Context<Self>) {}
+        fn event(&mut self, _: WidgetEvent, _: &mut Context<Self>) {}
+    }
+    impl Default for WButton {
+        fn default() -> Self {
+            WButton
+        }
+    }
 
     #[test]
     fn builds_ftui_and_validates() {
@@ -63,5 +83,14 @@ mod tests {
             }
             other => panic!("期望 Object schema，实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn button_view_produces_valid_document() {
+        // 回归：button() 曾携带空 emit 占位导致 validate_document 拒绝。
+        let json = build_ftui::<WButton>(BTreeMap::new());
+        let doc: crate::view::UiDocument = serde_json::from_str(&json).unwrap();
+        crate::validate_document(&doc).unwrap();
+        assert_eq!(doc.root.kind, "Button");
     }
 }

@@ -71,27 +71,25 @@ fn watch_signature(project_dir: &Path) -> std::io::Result<Option<(SystemTime, us
 }
 
 /// 轮询循环：初始构建一次，随后在签名变化时重建。
-pub fn dev_loop(
-    project_dir: &Path,
-    out: &Path,
-    interval_ms: u64,
-    json: bool,
-) -> Result<(), BuildError> {
+pub fn dev_loop(project_dir: &Path, out: &Path, interval_ms: u64, json: bool) -> ! {
     let mut last_sig = None;
     loop {
-        let sig = watch_signature(project_dir).map_err(|e| BuildError::Io(e.to_string()))?;
-        if sig != last_sig || last_sig.is_none() {
-            let status = build_once(project_dir, out);
-            if json {
-                println!("{}", status.to_json());
-            } else {
-                if status.ok {
-                    println!("[ok] {}", status.out);
-                } else {
-                    println!("[fail] code={} detail={}", status.code, status.detail);
+        match watch_signature(project_dir) {
+            Ok(Some(sig)) => {
+                if last_sig != Some(sig) {
+                    let status = build_once(project_dir, out);
+                    if json {
+                        println!("{}", status.to_json());
+                    } else if status.ok {
+                        println!("[ok] {}", status.out);
+                    } else {
+                        println!("[fail] code={} detail={}", status.code, status.detail);
+                    }
+                    last_sig = Some(sig);
                 }
             }
-            last_sig = sig;
+            Ok(_) => {}
+            Err(e) => eprintln!("watch 错误（继续轮询）: {e}"),
         }
         std::thread::sleep(Duration::from_millis(interval_ms));
     }

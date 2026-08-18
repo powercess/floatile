@@ -12,7 +12,9 @@ use crate::{Context, WidgetEvent};
 /// - `start`：实例启动，可 schedule 计时器、初始化
 /// - `event`：统一事件入口（UI / timer / mode / config / theme / suspend / resume）
 /// - `stop`：实例销毁前的通知（尽力而为，不能保证执行）
-pub trait Widget: Sized {
+///
+/// `Default` 是导出宏 `impl_export_widget!` 构造实例所需的构造约束。
+pub trait Widget: Sized + Default {
     type State: crate::State;
     fn view(state: &Self::State) -> View;
     fn start(&mut self, ctx: &mut Context<Self>);

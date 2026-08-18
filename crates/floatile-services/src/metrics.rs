@@ -15,6 +15,14 @@ pub struct MemorySnapshot {
     pub virtual_kib: u64,
 }
 
+/// CPU 占用率（0.0..=100.0，纯函数便于测试）。
+fn compute_cpu_percent(cpu_secs: f64, wall_secs: f64) -> f64 {
+    if wall_secs <= 0.0 {
+        return 0.0;
+    }
+    (cpu_secs / wall_secs * 100.0).clamp(0.0, 100.0)
+}
+
 pub struct MetricsService {
     /// 上次采样 (wall, cpu_time)，用于计算 CPU%。
     last: Option<(Instant, Duration)>,
@@ -62,7 +70,7 @@ impl MetricsService {
             return Ok(0.0);
         }
         let cpu = sample.cpu_time.as_secs_f64() - prev_cpu.as_secs_f64();
-        Ok((cpu / wall * 100.0).clamp(0.0, 100.0 * 100.0))
+        Ok(compute_cpu_percent(cpu, wall))
     }
 
     /// 本进程内存快照。虚拟内存采样未实现，`virtual_kib` 暂为 0。
@@ -72,5 +80,22 @@ impl MetricsService {
             rss_kib: sample.rss_bytes / 1024,
             virtual_kib: 0,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_cpu_percent;
+
+    #[test]
+    fn cpu_percent_bounded_to_100() {
+        // 全核满载也不得超过 100.0（WIT 契约 0.0..100.0）。
+        assert_eq!(compute_cpu_percent(1.0, 1.0), 100.0);
+        // CPU 时间大于墙钟（多核/异常数据）仍被钳制。
+        assert_eq!(compute_cpu_percent(5.0, 1.0), 100.0);
+        assert_eq!(compute_cpu_percent(0.5, 1.0), 50.0);
+        // 墙钟为零/负 → 0.0，避免除零。
+        assert_eq!(compute_cpu_percent(1.0, 0.0), 0.0);
+        assert_eq!(compute_cpu_percent(1.0, -1.0), 0.0);
     }
 }

@@ -6,9 +6,7 @@
 
 use crate::JsonSchema;
 pub use floatile_ui_schema::Component as View;
-pub use floatile_ui_schema::ir::{
-    Binding, EmittedEvent, EventSchema, PropValue, StateSchema, UiDocument,
-};
+pub use floatile_ui_schema::ir::{Binding, EventSchema, PropValue, StateSchema, UiDocument};
 
 /// Column 容器。
 pub fn column(children: Vec<View>) -> View {
@@ -74,18 +72,9 @@ pub fn button(label: &str) -> View {
         "label".into(),
         PropValue::Literal(serde_json::Value::String(label.to_owned())),
     );
-    let mut events = std::collections::BTreeMap::new();
-    events.insert(
-        "activate".into(),
-        EmittedEvent {
-            emit: "".into(), // placeholder（具体事件由插件定义）
-            payload: serde_json::Value::Object(Default::default()),
-        },
-    );
     View {
         kind: "Button".into(),
         props,
-        events,
         ..Default::default()
     }
 }
@@ -109,7 +98,7 @@ pub fn into_document(
     events: std::collections::BTreeMap<String, EventSchema>,
 ) -> UiDocument {
     UiDocument {
-        ui_api_version: crate::ENGINE_API_VERSION.to_owned(),
+        ui_api_version: floatile_ui_schema::UI_API_VERSION.to_owned(),
         state: StateSchema {
             initial: initial_state_json,
             schema,
