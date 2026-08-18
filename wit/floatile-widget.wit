@@ -1,0 +1,116 @@
+// Floatile Widget 插件契约 v1.0.0（唯一事实源）。
+//
+// 宿主与 guest 绑定都由本文件生成；修改必须同步 floatile-plugin-api、
+// floatile-sdk、floatile-runtime 适配、engineApiVersion 与契约测试。
+// 设计见 docs/plugin-sdk/wit-api-v1.md。
+package floatile:widget@1.0.0;
+
+// ---------- 宿主能力（插件 import；能力即接口，world 显式 import 才算获得） ----------
+
+interface host-log {
+    enum log-level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    log: func(level: log-level, message: string);
+}
+
+interface host-storage {
+    variant storage-error {
+        not-allowed, // 无 storage:read/write 权限
+        quota-exceeded, // 超出单实例配额（默认 64 KiB）
+        internal,
+    }
+
+    get: func(key: string) -> result<option<string>, storage-error>;
+    set: func(key: string, value: string) -> result<_, storage-error>;
+    delete: func(key: string) -> result<_, storage-error>;
+}
+
+interface host-timer {
+    type timer-id = u32;
+
+    variant timer-error {
+        not-allowed, // 无 timer:schedule
+        budget-exceeded, // 超 maxPerMinute / 活跃计时器上限
+        invalid-timer-id,
+    }
+
+    // 请求宿主在 delay-ms 后调用 widget-instance.on-tick(timer-id)。
+    // v1 仅一次性；周期由插件每次 on-tick 后重新 schedule。
+    schedule: func(delay-ms: u64) -> result<timer-id, timer-error>;
+    cancel: func(timer-id: timer-id) -> result<_, timer-error>;
+}
+
+interface host-metrics {
+    record memory-snapshot {
+        rss-kib: u64,
+        virtual-kib: u64,
+    }
+
+    variant metrics-error {
+        not-allowed, // 无 system:cpu / system:memory 权限
+        unavailable,
+    }
+
+    // 进程级占用率 0.0..100.0，不暴露整机信息（避免信息泄露面）。
+    cpu-percent: func() -> result<f64, metrics-error>;
+    memory: func() -> result<memory-snapshot, metrics-error>;
+}
+
+interface host-theme {
+    type subscription-id = u32;
+
+    variant theme-error {
+        not-allowed,
+        unknown-token,
+        invalid-subscription,
+    }
+
+    get-token: func(name: string) -> result<option<string>, theme-error>;
+    subscribe: func() -> result<subscription-id, theme-error>;
+    unsubscribe: func(id: subscription-id) -> result<_, theme-error>;
+}
+
+// ---------- 插件实现（宿主 import） ----------
+
+interface widget-contract {
+    record ui-event {
+        // Slint callback 名；payload 为 JSON 序列化参数。
+        name: string,
+        payload: string,
+    }
+
+    enum widget-mode {
+        edit,
+        show,
+    }
+
+    resource widget-instance {
+        // 宿主创建实例；config 为 manifest 校验后的 JSON 字符串。
+        constructor(config: string);
+        // UI 事件（宿主从 Slint 回调桥接而来）。
+        handle-ui-event: func(event: ui-event);
+        // 计时器到期回调。
+        on-tick: func(timer-id: u32);
+        // 展示模式切换通知（插件可做内部状态调整，非必须）。
+        on-mode-changed: func(mode: widget-mode);
+        // 宿主销毁实例前的最后通知。
+        destroy: func();
+    }
+}
+
+// ---------- world ----------
+
+world floatile-widget {
+    import host-log;
+    import host-storage;
+    import host-timer;
+    import host-metrics;
+    import host-theme;
+
+    export widget-contract;
+}

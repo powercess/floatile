@@ -10,7 +10,7 @@
 | 语言 | Rust 2024，MSRV 1.97 | 原生跨平台、WASM guest 同语言；工具链固定到 `rust-toolchain.toml`。 |
 | 宿主 UI | Slint 1.17.x + winit 0.30.x | 原生 renderer 与窗口；ADR-0001 规定 Slint 只在宿主内使用，插件不提供 `.slint`。 |
 | 插件 UI | Floatile UI IR v1（计划） | 版本化静态组件树 + State/Event schema；Rust/TypeScript SDK 同源生成；IR→Slint renderer 路径需 P0 spike。 |
-| 平台 API | windows-sys 0.52.x + x11rb 0.13.x（`randr`、`shape`） | 平台句柄、Windows 窗口操作，以及 X11 compositor/SHAPE/EWMH/RandR/热键探测与操作；只允许 `floatile-platform` 直接依赖。 |
+| 平台 API | windows-sys 0.52.x + x11rb 0.13.x（`randr`、`shape`）+ objc2 0.6.x（`app-kit`/`foundation`）+ mach2 0.6.x | 平台句柄、Windows 窗口操作、X11 compositor/SHAPE/EWMH/RandR/热键探测，以及 macOS NSWindow/NSScreen/进程指标与 Carbon 全局热键；只允许 `floatile-platform` 直接依赖。 |
 | 插件 ABI | WIT + WASM Component Model，guest `wasm32-wasip2` | 版本化接口、无原生句柄；`wit/` 为唯一源。 |
 | 插件 runtime | Wasmtime（计划在 S5 引入） | Component Model、异步调用、fuel 与资源限制；引入时固定兼容版本组。 |
 | TypeScript adapter | 未决，需 ADR 与实测 | 必须保持普通 TypeScript 语义、同一 WIT/Broker，并通过单/10 实例资源与三平台门禁。 |

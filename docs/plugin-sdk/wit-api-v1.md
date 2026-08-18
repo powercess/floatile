@@ -1,9 +1,21 @@
 # WIT 插件 API v1
 
-> 状态：Proposed（待 S5a 契约实现与 host/guest contract tests 后标记 Implemented）
+> 状态：Proposed（ADR-0001 目标契约）；实验性 Component 契约与绑定已实现，尚待迁移
 > 唯一源：`wit/`；本文解释语义，不复制一套可独立修改的绑定
 > engine API：`floatile:widget@1.x`
 > 关联：ADR-0001、FR-PLUGIN-01、FR-PERM-01、F11、F12
+
+## 0. 当前实现与迁移门
+
+当前 `wit/floatile-widget.wit@1.0.0`、`floatile-sdk` guest bindings、`floatile-plugin-api` host async
+bindings 与 `plugins/clock-wasm` 已构建并通过 `wasm-tools validate`。这证明 stable Rust、wit-bindgen、
+Wasmtime bindgen 与 Component 构建链路可用，但该契约早于 ADR-0001：它仍使用
+`handle-ui-event/on-tick/on-mode-changed/destroy`，缺少 `host-ui`、`host-clock`、canonical initial
+State、`start/handle-event/stop` 和稳定 guest error。
+
+项目尚未对外分发插件，现有 `1.0.0` 不是兼容承诺。S5a 必须以 `wit/` 为唯一编译源将其替换为本文
+目标形状，同步 host/guest bindings、clock fixture、engine version 检查与 contract tests；迁移完成前
+不得把 WIT/SDK 标记为 ADR-0001 契约已 Implemented，也不得接入 runtime 制造第二套适配层。
 
 ## 1. v1 目标
 

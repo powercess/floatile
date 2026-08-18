@@ -84,6 +84,8 @@
 - WIT import/export 的薄 adapter traits 与 engine API 版本。
 - 不实现 Broker、Storage、Timer、UI renderer 或 Wasmtime Engine。
 - 与 `floatile-sdk` 的 binding/version 由 CI contract test 对齐。
+- 当前已有 ADR-0001 前的实验 host async bindings；只证明生成链路，目标 WIT 迁移完成前不得接入
+  runtime 或标记为统一插件契约 Implemented。
 
 ### 3.6 `floatile-runtime`
 
@@ -114,6 +116,8 @@
 - UI builder/proc macro、State/Event schema、manifest capability 候选与 export glue。
 - capability wrapper 保留稳定错误，不暴露 raw generated module/handle。
 - 可拆 `floatile-sdk-macros` proc-macro crate；拆分时仍属于 SDK 单一发布单元。
+- 当前实验实现仍 re-export raw WIT bindings 与 `export_widget!`，供 clock Component 验证；这是待迁移
+  基线，不是普通作者 API，不能据此放宽上述边界。
 
 ### 3.10 TypeScript SDK（非 Cargo workspace crate）
 

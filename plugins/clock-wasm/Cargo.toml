@@ -1,5 +1,5 @@
 [package]
-name = "floatile-plugin-api"
+name = "floatile-clock-wasm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,8 +7,11 @@ license.workspace = true
 authors.workspace = true
 publish = false
 
+[lib]
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true
 
 [dependencies]
-wasmtime = { workspace = true }
+floatile-sdk = { workspace = true }

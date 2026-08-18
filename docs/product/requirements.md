@@ -52,14 +52,14 @@ HTML/WebView、原生插件和完整无障碍均不在 P0。接口可以预留�
 | 范围 | 状态 | 主要差距 |
 |---|---|---|
 | Workspace/核心类型 | 部分实现 | 多数 crate 仍为模板，依赖边界尚缺架构测试 |
-| S1 窗口与原生时钟 | 部分验证 | 透明、无边框、置顶、拖拽已有 Windows、Linux Xvfb 与 VMware Xfce/Xorg 证据；Wayland 协议层已实测（headless weston：探测正确、置顶/穿透显式降级），桌面会话与 macOS 未验证；时钟按 UTC 秒数计算且未标注时区 |
+| S1 窗口与原生时钟 | 部分验证 | 透明、无边框、置顶、拖拽已有 Windows、Linux Xvfb 与 VMware Xfce/Xorg 证据；macOS 15.7.5（Apple M4）已实测无边框置顶窗口、布局持久化与恢复；Wayland 协议层已实测（headless weston：探测正确、置顶/穿透显式降级）；时钟按 UTC 秒数计算且未标注时区 |
 | S2 桌面交互 | 部分验证 | Edit/Show、Windows 与 X11 点击穿透、恢复热键、拖拽与缩放已落地；Linux Xvfb 与 VMware Xfce/Xorg 已验证穿透往返，Xfce 已验证窗口重映射后的输入区重同步；物理多显示器、DPI 与热插拔降级（F7/F8）未验证 |
-| 平台抽象 | 部分实现 | 能力状态包含明确降级原因；Windows 窗口能力与 X11 compositor/SHAPE/EWMH/RandR 探测已落地；尚无统一四平台 trait、Wayland 协议探测及 macOS 实现 |
-| 布局/存储 | 部分验证 | 核心层已有强类型 monitor/DPI/物理坐标模型和平台无关恢复算法；SQLite v2 migration 已持久化物理尺寸、scale factor 与 `lost_monitor`；shell 已接入启动保存/恢复（位置/尺寸/模式）、拖动/缩放/模式/热键/退出保存与显示器变化重恢复，Xvfb+Openbox 下重启恢复与删除已实测；真实多屏/DPI/热插拔与 Windows/macOS 实机验证待做 |
-| 插件系统/WASM/SDK | 未实现 | ADR-0001 与插件/SDK 架构文档已确定统一 UI、单向 State Patch、串行实例 actor 与 Rust/TypeScript 同语义目标；`dev` 上 UI schema、WIT、runtime、Broker、双 SDK、参考插件和契约测试仍缺失 |
+| 平台抽象 | 部分实现 | 能力状态包含明确降级原因；Windows 窗口能力、X11 compositor/SHAPE/EWMH/RandR 探测与 macOS 探测（`PlatformKind::MacOS`）、点击穿透（`NSWindow.ignoresMouseEvents`）、NSScreen 显示器枚举、mach 进程指标与 Carbon 全局热键已落地；尚无统一四平台 trait 与 Wayland 协议探测 |
+| 布局/存储 | 部分验证 | 核心层已有强类型 monitor/DPI/物理坐标模型和平台无关恢复算法；SQLite v2 migration 已持久化物理尺寸、scale factor 与 `lost_monitor`；shell 已接入启动保存/恢复（位置/尺寸/模式）、拖动/缩放/模式/热键/退出保存与显示器变化重恢复，Xvfb+Openbox 与 macOS 单屏重启恢复已实测；真实多屏/DPI/热插拔与 Windows 实机验证待做 |
+| 插件系统/WASM/SDK | 部分实现 | ADR-0001 已确定统一 UI、State Patch、串行 actor 与 Rust/TypeScript 同语义目标；现有 `wit/floatile-widget.wit`、guest/host bindings 和 `clock.wasm` 已证明实验性 Component 构建，但契约早于 ADR，缺少 UI State、统一 lifecycle 与 clock 能力，必须迁移；UI schema、runtime、Broker、双 SDK 和契约测试仍缺失 |
 | Permission Broker | 未实现 | grants、配额、审计和恶意插件 fixture 缺失 |
 | 包工具链 | 未实现 | validate/build、schema、路径与 zip-bomb 防护缺失 |
-| 跨平台/性能证据 | 部分验证 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已回填 S1/S2 子集，两个 Linux X11 环境的 F3 穿透往返通过；Wayland 协议层（headless weston）首帧/CPU/RSS 与 F3 降级已回填；桌面会话与 macOS 未验证 |
+| 跨平台/性能证据 | 部分验证 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已回填 S1/S2 子集，两个 Linux X11 环境的 F3 穿透往返通过；Wayland 协议层（headless weston）首帧/CPU/RSS 与 F3 降级已回填；macOS 15.7.5 已回填 S1 子集（置顶 layer=3、无边框、布局恢复、首帧/RSS/CPU）；穿透/拖拽/缩放的交互实测待人工复核 |
 
 ## 6. 阶段门槛与未决策
 

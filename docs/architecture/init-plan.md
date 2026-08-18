@@ -3,18 +3,22 @@
 > 状态：Accepted
 > 目标：以最小垂直切片跑通 P0 验收 F1–F13，暴露窗口层与 Wayland 风险。
 > 原则：每次提交都可运行；每步结束跑一次「当前验收项」；三端差异只进 `floatile-platform`。
-> 进度：S0 已完成；S1 有 Windows 与 Linux Xvfb 子集证据；S2/S3 部分实现；Wayland 协议层已在 headless weston 实测；ADR-0001 与插件/SDK 架构已确定，S5 实现尚未进入 dev。
+> 进度：S0 已完成；S1 有 Windows、Linux 与 macOS 子集证据；S2/S3 部分实现；Wayland 协议层已在
+> headless weston 实测；ADR-0001 与插件/SDK 架构已确定，实验 WIT/Component 链路已落地但待迁移。
 
 ## 0. 当前基线（2026-08-18）
 
 - Rust 1.97.1、`wasm32-wasip2`、rustfmt、Clippy、wasm-tools 已可用。
-- Workspace、九个 crate、CI/依赖策略和工程文档已建立；Windows S2 窗口交互与 S3 SQLite layout CRUD 已部分落地。
+- Workspace、九个宿主/SDK crate、一个 WASM clock fixture、CI/依赖策略和工程文档已建立；Windows
+  S2 窗口交互与 S3 SQLite layout CRUD 已部分落地。
 - S1 已有 Windows 实测与 Linux Xvfb/Openbox/picom 证据；X11 合成器探测、无边框、置顶、拖拽和 `--perf` 诊断已落地。
-- 物理 Linux X11、sway/GNOME Wayland、macOS 仍未验证；Wayland 协议层（headless weston 14.0.2）已验证探测与 F3/置顶显式降级；Win/macOS 后续使用实体机、CI 或远程环境补证。
+- 物理 Linux X11 与 sway/GNOME Wayland 仍未验证；Wayland 协议层（headless weston 14.0.2）已验证
+  探测与 F3/置顶显式降级；macOS 15.7.5 已验证探测、无边框置顶窗口和布局恢复，点击穿透/拖拽/
+  缩放交互及真实多屏仍待复核。
 - ADR-0001 已把插件 UI 从第三方 `.slint` 改为统一 `widget.ftui` + State Patch；插件系统、SDK、WIT、
   manifest、安全与 crate 文档已形成实施约束，但对应代码不算完成。
-- `agent/s4-plugin-wit` 的实验分支证明 stable Rust 可构建/validate Component，但其契约早于 ADR-0001，
-  缺少正式 UI State 输出和统一生命周期；评审/合入前必须按新 WIT/UI schema 重整，不能按原样作为 F11。
+- 已合入 `dev` 的实验 WIT/clock 证明 stable Rust 可构建/validate Component，但其契约早于 ADR-0001，
+  缺少正式 UI State 输出和统一生命周期；必须按新 WIT/UI schema 重整，不能按现状作为 F11 完成证据。
 
 ## 1. 已完成脚手架
 
@@ -66,6 +70,10 @@
   为 TypeScript adapter 输出同一 contract schema。
 - manifest schema 改为 `widget.ftui + plugin.wasm`，实现版本轴与正反例 contract vectors。
 - 验收：生成物无 drift；非法 UI/binding/patch/event/version 被拒；无 Slint/host handle 泄漏。
+- 当前基线已有 ADR-0001 之前的实验 `floatile:widget@1.0.0`、Rust guest/host bindings 与
+  `plugins/clock-wasm` Component 构建（`wasm-tools validate` 通过），只证明 WIT/Component 工具链。
+  它缺少 `host-ui`、initial State 与统一 `start/handle-event/stop`，必须在 S5a 内按新契约替换并同步
+  clock fixture；不得把现状标记为统一插件契约已实现。
 
 #### S5b — Runtime actor + Broker
 
@@ -117,7 +125,7 @@ wasm-tools validate logic/plugin.wasm    # 校验组件
 | Linux X11 | 当前机 + 无合成器环境（Xvfb 场景） | 本地 |
 | Linux Wayland | sway（wlroots）与 GNOME/Wayland | 本地（有则测） |
 | Windows | 本机或 CI | 待定 |
-| macOS | 待定 | 待定 |
+| macOS | macOS 15.7.5 / Apple M4 子集已测 | 继续补穿透、拖拽、缩放、多屏/DPI/热插拔 |
 
 ## 5. 完成定义（DoD）
 

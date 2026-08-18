@@ -67,7 +67,16 @@
   例外并让 advisory 检查通过，否则对应能力阻断。
 - P0 验证：每次 Slint 升级运行 `cargo deny --locked check advisories` 并检查反向依赖图。
 
-### R13. TypeScript adapter/runtime 的体积与隔离 — 高
+### R13. macOS 全局热键依赖已弃用的 Carbon API — 低
+- 展示模式点击穿透后的恢复热键使用 Carbon `RegisterEventHotKey` + 事件处理器；该 API 无需
+  辅助功能/输入监控授权（对比 `CGEventTap` 会触发授权弹窗），但 Carbon 在 macOS 15 已标记
+  弃用、仍可正常工作。
+- 缓解：热键注册失败时关闭点击穿透（沿用 Windows/X11 的「恢复热键失败即禁用穿透」降级）；
+  若未来 macOS 移除 Carbon，迁移到 `CGEventTap` + 授权提示或 `NSEvent` 全局监听并重新实测。
+- P0 验证：macOS 15.7.5（Apple M4）已实测 `RegisterEventHotKey` 注册成功（日志
+  `global hotkey registered (Ctrl+Shift+E)`）；真实按键触发待人工复核。
+
+### R14. TypeScript adapter/runtime 的体积与隔离 — 高
 - 完整 TypeScript/JavaScript 语义可能显著增加单实例冷启动、包大小和 RSS；共享 runtime 又可能破坏
   实例故障隔离，Node/DOM 兼容层可能偷渡 ambient capability。
 - 缓解：实现前独立 ADR；CLI 管理锁定工具链；同一 WIT/Broker；不提供 Node/DOM；对候选做单/10
@@ -75,14 +84,14 @@
 - P0 验证：TypeScript clock 与 Rust clock 行为一致且达到明确资源门；未达标则记录 P0 失败/降级，
   不发布伪 TypeScript 子集。
 
-### R14. Rust/TypeScript SDK 语义漂移 — 高
+### R15. Rust/TypeScript SDK 语义漂移 — 高
 - 两套手写 SDK 容易在组件、错误、权限默认值、事件顺序和版本支持上分叉，文档/Agent 示例会进一步
   放大差异。
 - 缓解：UI schema/WIT/capability registry 单源生成；共享 contract/behavior vectors；每个文档示例
   CI 编译；同一稳定诊断 code。
 - P0 验证：双 clock 与 capability deny/timeout/state patch vectors 全部一致。
 
-### R15. UI IR 过早冻结 — 中
+### R16. UI IR 过早冻结 — 中
 - v1 若混合渲染器细节、脚本或 Slint 名称，会把内部实现变成长期插件兼容负担；过度抽象又可能无法
   表达真实 Widget。
 - 缓解：v1 只含稳定组件/State/Event/binding/有限 If/ForEach；Slint 版本不进入 manifest；编码与语义分离；新增
@@ -94,10 +103,10 @@
 | 领域 | 选型 | 理由 | 风险备注 |
 |------|------|------|----------|
 | 宿主 GUI | Slint（winit 后端，可选软件渲染） | 原生 + GPU；只在宿主内 | 许可见 licensing.md；第三方资源见 R12 |
-| 插件 UI | Floatile UI IR | 双 SDK 同一模型、可验证、renderer 可替换 | 表达力/性能见 R2；冻结风险见 R15 |
+| 插件 UI | Floatile UI IR | 双 SDK 同一模型、可验证、renderer 可替换 | 表达力/性能见 R2；冻结风险见 R16 |
 | 插件逻辑 | Wasmtime（component-model + async） | 成熟组件运行时、fuel/memory 限制 | 工具链见 R3 |
 | 绑定生成 | wit-bindgen | 官方标准 | — |
-| TypeScript adapter | 待 ADR | 保留普通 TypeScript 语义且进入同一 Component/Broker | R13/R14 |
+| TypeScript adapter | 待 ADR | 保留普通 TypeScript 语义且进入同一 Component/Broker | R14/R15 |
 | 异步 | Tokio | 标准 | 线程模型见 p0-design §3 |
 | HTTP | reqwest + rustls | 生态成熟 | 重定向需自定义策略（http-broker §6） |
 | DNS（Broker 用） | hickory-resolver | 可控解析 + 私网校验 | V1 才引入 |

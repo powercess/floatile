@@ -43,14 +43,14 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 
 | 能力 | 状态 | 当前说明 |
 |---|:---:|---|
-| Rust workspace 与领域基础类型 | ✅ | 九个 crate 的分层骨架、固定工具链与基础 CI 已建立 |
+| Rust workspace 与领域基础类型 | ✅ | 九个宿主/SDK crate、一个 WASM clock fixture、固定工具链与基础 CI 已建立 |
 | 原生参考时钟 | ✅ | 可运行的 Slint 时钟，每秒更新，用作窗口与性能基线 |
-| 透明、无边框、置顶窗口 | 🧪 | Windows 与 Linux X11 已有运行证据；X11 无合成器时显式降级为不透明，macOS/Wayland 待实测 |
-| 窗口拖拽 | 🧪 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已运行验证；macOS/Wayland 待验证 |
-| 平台能力探测与降级 | 🧪 | Windows 原生探测与 X11 compositor/SHAPE/EWMH/RandR 实探测已落地；Wayland 仅有显式协议降级，macOS 实现待补 |
+| 透明、无边框、置顶窗口 | 🧪 | Windows、Linux X11 与 macOS 已有运行证据；X11 无合成器时显式降级为不透明，Wayland 待实测 |
+| 窗口拖拽 | 🧪 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已运行验证；macOS/Wayland 待交互实测 |
+| 平台能力探测与降级 | 🧪 | Windows 原生探测、X11 compositor/SHAPE/EWMH/RandR 实探测与 macOS 探测（点击穿透/置顶/显示器/指标/热键）已落地；Wayland 仅有显式协议降级 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
-| 统一 UI + WASM Widget | 🗺️ | ADR-0001 与 SDK 架构已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；代码尚未进入 `dev` |
+| 统一 UI + WASM Widget | 🧪 | ADR-0001 已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；现有 WIT/bindings/`clock.wasm` 只证明实验性 Component 工具链，仍需迁移到统一生命周期与 UI State 契约 |
 | Permission Broker 与审计 | 🗺️ | 默认零权限、scope/配额、参数脱敏与恶意插件测试尚未实现 |
 | 插件 SDK 与打包 CLI | 🗺️ | 计划提供 new/dev/check/test/preview/build/inspect、包路径与资源预算校验 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
@@ -158,7 +158,7 @@ flowchart TB
 | 语言与工具链 | Rust 2024 · Rust 1.97.1 | ✅ 固定 patch 工具链与 lockfile |
 | UI 与窗口 | Slint 1.17 · winit 0.30 | 🧪 参考时钟和基础窗口属性已接入 |
 | 插件 UI | Floatile UI IR v1 | 🗺️ 静态组件树、State/Event schema；Slint 仅为宿主实现 |
-| 插件 ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🗺️ 单一版本化 host/guest 契约 |
+| 插件 ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🧪 实验契约与双端 bindings 已构建；ADR-0001 目标契约待迁移 |
 | 插件运行时 | Wasmtime | 🗺️ 异步组件调用、fuel 与资源限制 |
 | 异步运行时 | Tokio | 🗺️ 承载后台 I/O，避免阻塞 Slint 主线程 |
 | 持久化 | SQLite · rusqlite (bundled) | 🧪 layout schema v2 与恢复元数据；插件 KV 与审计日志 🗺️ |
@@ -175,12 +175,12 @@ flowchart TB
 | `floatile-core` | 纯领域模型、ID、坐标与权限类型 | 🧪 |
 | `floatile-platform` | 平台能力探测与全部 OS 窗口差异 | 🧪 |
 | `floatile-shell` | 桌面宿主、画布、模式与应用编排 | 🧪 |
-| `floatile-plugin-api` | WIT host bindings 与契约类型 | 🗺️ |
+| `floatile-plugin-api` | WIT host bindings 与契约类型 | 🧪 |
 | `floatile-ui-schema`（计划） | guest-safe UI IR、组件与 State/Event schema 单源 | 🗺️ |
 | `floatile-runtime` | 实例 actor、State、预算与 Wasmtime 执行 | 🗺️ |
 | `floatile-services` | 经 Broker 授权的宿主服务 | 🗺️ |
 | `floatile-store` | SQLite、migration 与事务 | 🧪 |
-| `floatile-sdk` | WASI guest SDK 与 bindings | 🗺️ |
+| `floatile-sdk` | WASI guest SDK 与 bindings；作者级 API 待迁移 | 🧪 |
 | `floatile-cli` | 插件校验、构建与开发工具 | 🗺️ |
 
 crate 之间的依赖规则不是建议，而是安全与可移植性边界。详情见
@@ -191,9 +191,9 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 | 平台 | 目标 | 当前证据 |
 |---|---|---|
 | Windows | 透明、置顶、点击穿透、编辑/展示模式 | 透明/置顶/点击穿透 API 与编辑/展示模式、拖拽、缩放已有实测（2026-08-13，DWM） |
-| macOS | 透明、置顶、点击穿透、编辑/展示模式 | CI 构建配置已存在；运行行为未验证 |
-| Linux X11 | 依赖合成器的透明窗口与窗口管理器能力 | 基础环境探测已实现；运行行为未验证 |
-| Linux Wayland | 能力分级并明确降级，不承诺与 X11 完全一致 | 基础环境探测已实现；纯 Wayland 实测未完成 |
+| macOS | 透明、置顶、点击穿透、编辑/展示模式 | 探测、无边框置顶窗口、布局持久化与恢复已实测（2026-08-17，macOS 15.7.5）；穿透/拖拽/缩放交互待人工复核 |
+| Linux X11 | 依赖合成器的透明窗口与窗口管理器能力 | Xvfb/Openbox/picom 与 VMware Xfce/Xorg 证据已记录；物理多屏/DPI/热插拔待验证 |
+| Linux Wayland | 能力分级并明确降级，不承诺与 X11 完全一致 | headless weston 协议层已验证显式降级；真实桌面会话待验证 |
 
 这里的“目标”不是兼容性声明。真实平台证据只记录在
 [平台能力矩阵](docs/platform-matrix/platform-matrix.md)中。
@@ -203,7 +203,7 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 - **S1 · 浮窗基线（进行中）**：参考时钟、透明/无边框/置顶、拖拽和真实平台探测
 - **S2 · 桌面交互（进行中）**：Edit/Show、点击穿透和缩放已在 Windows/Linux X11 子路径落地；真实多屏与 DPI 仍待验证
 - **S3 · 布局持久化（进行中）**：monitor-local 恢复算法、SQLite v2、shell 启动恢复/保存与显示器变化重恢复已落地；真实多屏/热插拔实机验证与多实例编排待做
-- **S4 · 插件契约（设计完成、实现待开始）**：ADR-0001、统一 UI、WIT、manifest 与双 SDK 架构
+- **S4 · 插件契约（架构完成、实验链路待迁移）**：ADR-0001、统一 UI、WIT、manifest 与双 SDK 架构；旧 WIT/clock 已证明 Component 构建
 - **S5 · 沙箱运行时（规划中）**：UI schema、实例 actor、State Patch、Wasmtime、Broker、Rust/TypeScript 时钟与恶意插件测试
 - **P0 验收（规划中）**：Windows/macOS/X11/Wayland 证据、性能数据、风险复盘与许可 ADR
 

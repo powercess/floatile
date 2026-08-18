@@ -46,14 +46,14 @@ Legend: ✅ basic implementation exists · 🧪 in development or awaiting compl
 
 | Capability | Status | Current reality |
 |---|:---:|---|
-| Rust workspace and core domain types | ✅ | Nine-crate structure, pinned toolchain, and baseline CI |
+| Rust workspace and core domain types | ✅ | Nine host/SDK crates, one WASM clock fixture, a pinned toolchain, and baseline CI |
 | Native reference clock | ✅ | Runnable Slint clock updated once per second |
-| Transparent, borderless, always-on-top window | 🧪 | Runtime evidence exists for Windows and Linux X11; X11 explicitly degrades to opaque without a compositor, while macOS/Wayland remain unverified |
-| Window dragging | 🧪 | Runtime evidence exists for Windows, Linux Xvfb, and VMware Xfce/Xorg; macOS/Wayland remain unverified |
-| Capability probing and degradation | 🧪 | Native Windows probes and X11 compositor/SHAPE/EWMH/RandR probes are implemented; Wayland has explicit protocol degradation and the macOS implementation remains unimplemented |
+| Transparent, borderless, always-on-top window | 🧪 | Runtime evidence exists for Windows, Linux X11, and macOS; X11 explicitly degrades to opaque without a compositor, while Wayland remains unverified |
+| Window dragging | 🧪 | Runtime evidence exists for Windows, Linux Xvfb, and VMware Xfce/Xorg; macOS/Wayland interaction remains unverified |
+| Capability probing and degradation | 🧪 | Native Windows, X11 compositor/SHAPE/EWMH/RandR, and macOS window/display/metrics/hotkey probes are implemented; Wayland has explicit protocol degradation |
 | Edit/show modes, resize, and multi-display layout | 🧪 | Edit/show, click-through coordination, dragging, and resizing are implemented on the Windows and Linux X11 paths; platform-neutral primary-display fallback/original-display recovery is implemented, while Canvas integration and real multi-display/DPI/hot-plug evidence remain |
 | SQLite layout persistence | 🧪 | Layout schema v2, CRUD, v1 upgrade/rollback, and reopen persistence tests are implemented; the shell now wires startup save/restore and display-change re-apply (verified on Xvfb+Openbox); real multi-display/hot-plug validation and multi-instance orchestration remain |
-| Unified-UI WASM widgets | 🗺️ | ADR-0001 and the SDK architecture define `widget.ftui + plugin.wasm`, State Patch, and serialized instance actors; implementation is not on `dev` yet |
+| Unified-UI WASM widgets | 🧪 | ADR-0001 defines `widget.ftui + plugin.wasm`, State Patch, and serialized instance actors; existing WIT/bindings/`clock.wasm` only prove the experimental Component toolchain and must migrate to the unified lifecycle and UI State contract |
 | Permission Broker and audit trail | 🗺️ | Default-deny grants, quotas, redaction, and hostile-plugin tests remain |
 | Plugin SDK and packaging CLI | 🗺️ | Planned new/dev/check/test/preview/build/inspect commands and package budget checks |
 | Cross-platform and performance acceptance | 🗺️ | Numbers in the acceptance docs are targets, not measured results |
@@ -164,7 +164,7 @@ with bounded messages posted back to the UI.
 | Language/toolchain | Rust 2024 · Rust 1.97.1 | ✅ pinned patch toolchain and lockfile |
 | UI/windowing | Slint 1.17 · winit 0.30 | 🧪 reference clock and base window attributes |
 | Plugin UI | Floatile UI IR v1 | 🗺️ static component tree and State/Event schema; Slint remains host-internal |
-| Plugin ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🗺️ single versioned host/guest contract |
+| Plugin ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🧪 experimental contract and both bindings build; ADR-0001 target migration remains |
 | Plugin runtime | Wasmtime | 🗺️ async component calls, fuel, and resource limits |
 | Async runtime | Tokio | 🗺️ background I/O without blocking the Slint thread |
 | Persistence | SQLite · bundled rusqlite | 🧪 layout schema v2 and recovery metadata; plugin KV and audit records 🗺️ |
@@ -181,12 +181,12 @@ See the [technology stack document](docs/architecture/technology-stack.md) for v
 | `floatile-core` | Pure domain models, IDs, geometry, and permission types | 🧪 |
 | `floatile-platform` | Capability probes and all OS/window-system differences | 🧪 |
 | `floatile-shell` | Desktop host, canvas, modes, and application composition | 🧪 |
-| `floatile-plugin-api` | WIT host bindings and contract types | 🗺️ |
+| `floatile-plugin-api` | WIT host bindings and contract types | 🧪 |
 | `floatile-ui-schema` (planned) | Guest-safe UI IR, components, and State/Event schema source | 🗺️ |
 | `floatile-runtime` | Instance actors, State, budgets, and Wasmtime execution | 🗺️ |
 | `floatile-services` | Broker-mediated host services | 🗺️ |
 | `floatile-store` | SQLite, migrations, and transactions | 🧪 |
-| `floatile-sdk` | WASI guest SDK and bindings | 🗺️ |
+| `floatile-sdk` | WASI guest SDK and bindings; author-level API migration remains | 🧪 |
 | `floatile-cli` | Plugin validation, builds, and development tools | 🗺️ |
 
 Crate dependency rules are security and portability boundaries, not suggestions. See
@@ -197,9 +197,9 @@ Crate dependency rules are security and portability boundaries, not suggestions.
 | Platform | Target | Current evidence |
 |---|---|---|
 | Windows | Transparency, always-on-top, click-through, edit/show modes | Runtime evidence recorded for borderless transparency, topmost state, click-through, edit/show, dragging, and resizing |
-| macOS | Transparency, always-on-top, click-through, edit/show modes | CI build configured; runtime unverified |
+| macOS | Transparency, always-on-top, click-through, edit/show modes | Probe, borderless topmost window, and layout persistence/recovery verified on macOS 15.7.5; click-through/drag/resize interaction remains |
 | Linux X11 | Compositor-dependent transparency and WM capabilities | Xvfb/Openbox/picom and VMware Xfce/Xorg evidence recorded; physical multi-display/DPI/hot-plug remains unverified |
-| Linux Wayland | Capability tiers with explicit degradation | Basic environment probe; native Wayland unverified |
+| Linux Wayland | Capability tiers with explicit degradation | Explicit protocol degradation verified under headless weston; real desktop sessions remain unverified |
 
 “Target” is not a compatibility claim. Runtime evidence belongs in the
 [platform capability matrix](docs/platform-matrix/platform-matrix.md).
@@ -210,7 +210,7 @@ Crate dependency rules are security and portability boundaries, not suggestions.
   dragging, and real platform probes
 - **S2 · Desktop interaction (in progress):** edit/show, click-through, resizing, and Linux X11 monitor enumeration; real multi-display/DPI evidence remains
 - **S3 · Layout persistence (in progress):** monitor-local recovery, SQLite v2, shell startup save/restore, and display-change re-apply are implemented; real multi-display/hot-plug validation and multi-instance orchestration remain
-- **S4 · Plugin contract (designed, implementation pending):** ADR-0001, unified UI, WIT, manifest, and dual-SDK architecture
+- **S4 · Plugin contract (architecture complete, experimental path awaiting migration):** ADR-0001, unified UI, WIT, manifest, and dual-SDK architecture; the old WIT/clock proves Component builds
 - **S5 · Sandboxed runtime (planned):** UI schema, instance actors, State Patch, Wasmtime, Broker, Rust/TypeScript clocks, and hostile-plugin tests
 - **P0 acceptance (planned):** Windows/macOS/X11/Wayland evidence, performance measurements, risk review,
   and licensing ADR

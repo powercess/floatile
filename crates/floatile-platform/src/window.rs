@@ -148,6 +148,7 @@ fn ex_style_with_click_through(ex_style: isize, enabled: bool) -> isize {
 ///
 /// - Windows：通过 `WS_EX_TRANSPARENT` + `WS_EX_LAYERED` 实现，鼠标事件穿透到底层应用。
 /// - Linux X11：通过 SHAPE 扩展把 Input region 设为空；禁用时以 `None` 恢复默认区域。
+/// - macOS：通过 `NSWindow.ignoresMouseEvents` 实现，整窗生效；禁用时恢复交互。
 /// - 原生 Wayland/其他平台：返回 `PlatformError::Unsupported`。
 ///
 /// 编辑模式等需要交互时调用方必须传入 `false` 恢复；不得静默跳过失败。
@@ -158,6 +159,11 @@ pub fn set_click_through(
     #[cfg(windows)]
     {
         windows_impl::set_click_through(window, enabled)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        macos_impl::set_click_through(window, enabled)
     }
 
     #[cfg(target_os = "linux")]
@@ -181,7 +187,7 @@ pub fn set_click_through(
         crate::x11::set_click_through(window_id, enabled)
     }
 
-    #[cfg(all(not(windows), not(target_os = "linux")))]
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
         let _ = (window, enabled);
         Err(PlatformError::Unsupported(
@@ -304,6 +310,46 @@ mod windows_impl {
         // SAFETY: 重显窗口应用新样式。
         let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos_impl {
+    use super::*;
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSView, NSWindow};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    /// 从 winit 窗口取当前 NSWindow。
+    ///
+    /// winit 的 AppKit 原始句柄是窗口内容视图（NSView）；视图的 `window` 属性在
+    /// 视图已加入窗口后返回所属 NSWindow。窗口创建早期视图尚未 attach 时返回
+    /// [`PlatformError::WindowNotReady`]，调用方可按该错误重试。
+    fn ns_window_of(window: &winit::window::Window) -> Result<Retained<NSWindow>, PlatformError> {
+        let handle = window
+            .window_handle()
+            .map_err(|e| PlatformError::Platform(format!("window handle unavailable: {e}")))?;
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return Err(PlatformError::Unsupported(
+                "window handle is not an AppKit NSView on macOS",
+            ));
+        };
+        // SAFETY: winit 保证 AppKit 句柄指向窗口有效期内存活的 NSView；
+        // 这里只读取视图引用，不转移所有权、不释放。
+        let view: *const NSView = handle.ns_view.as_ptr().cast();
+        // SAFETY: view 在窗口句柄有效期内保持存活；`window` 只读取所属窗口引用。
+        unsafe { (&*view).window() }.ok_or(PlatformError::WindowNotReady)
+    }
+
+    pub(super) fn set_click_through(
+        window: &winit::window::Window,
+        enabled: bool,
+    ) -> Result<(), PlatformError> {
+        let ns_window = ns_window_of(window)?;
+        // 须在主线程调用；floatile-shell 的模式切换与热键恢复都从 Slint 事件循环发起。
+        ns_window.setIgnoresMouseEvents(enabled);
         Ok(())
     }
 }
