@@ -92,3 +92,9 @@ impl Default for Clock {
 // ---- 导出（仅 wasm 目标；host 编译时用于 build_ftui）----
 #[cfg(target_arch = "wasm32")]
 impl_export_widget!(Clock);
+
+// ---- 宿主侧 build 入口（`floatile build` 调用）----
+#[cfg(not(target_arch = "wasm32"))]
+pub fn __floatile_ftui_json() -> String {
+    floatile_sdk::build::build_ftui::<Clock>(std::collections::BTreeMap::new())
+}

@@ -8,7 +8,15 @@ authors.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "build_ftui"
+required-features = ["build-host"]
+
+[features]
+# 宿主侧构建 build_ftui 二进制（仅 host 编译启用；wasm 编译跳过）。
+build-host = []
 
 [lints]
 workspace = true

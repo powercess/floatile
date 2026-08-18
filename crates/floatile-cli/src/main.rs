@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use floatile_cli::{package, project};
+use floatile_cli::{build, dev, package, project};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -15,6 +15,7 @@ fn main() -> ExitCode {
         "new" => cmd_new(&args[2..]),
         "validate" => cmd_validate(&args[2..]),
         "build" => cmd_build(&args[2..]),
+        "dev" => cmd_dev(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
             ExitCode::from(2)
@@ -76,62 +77,46 @@ fn cmd_validate(args: &[String]) -> ExitCode {
     }
 }
 
+fn cmd_dev(args: &[String]) -> ExitCode {
+    let dir = args
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let json = args.iter().any(|a| a == "--json");
+    let interval: u64 = args
+        .windows(2)
+        .find(|w| w[0] == "--interval")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(500);
+    if let Err(e) = dev::ensure_project(&dir) {
+        eprintln!("dev 失败: {e}");
+        return ExitCode::FAILURE;
+    }
+    let out = dir.join("out").join("plugin.floatile");
+    if let Err(e) = dev::dev_loop(&dir, &out, interval, json) {
+        eprintln!("dev 失败: {e}");
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn cmd_build(args: &[String]) -> ExitCode {
     let dir = args
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    // 读取 floatile.toml → 生成 manifest。
-    let toml_path = dir.join("floatile.toml");
-    let toml_text = match std::fs::read_to_string(&toml_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("读取 {} 失败: {e}", toml_path.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    let config = match project::parse_floatile_toml(&toml_text) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("解析 floatile.toml 失败: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let manifest = match project::generate_manifest(&config) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("生成 manifest 失败: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // 读取已构建的 widget.ftui 与 plugin.wasm（由 SDK build 管线产出）。
-    let ftui = match std::fs::read_to_string(dir.join("build/widget.ftui")) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("读取 build/widget.ftui 失败（先运行 SDK build）: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let wasm = match std::fs::read(dir.join("build/plugin.wasm")) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("读取 build/plugin.wasm 失败: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let out = args.get(1).map(PathBuf::from).unwrap_or_else(|| {
-        dir.join("out")
-            .join(format!("{}.floatile", config.plugin.id))
-    });
-    match package(&manifest, &ftui, &wasm, &out) {
-        Ok(()) => {
+    let out = args
+        .get(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.join("out").join("plugin.floatile"));
+    match build::build_project(&dir, &out) {
+        Ok(manifest) => {
             println!("已构建 {} (id={})", out.display(), manifest.id.0);
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("打包失败: code={} detail={e}", e.code());
+            eprintln!("build 失败: code={} detail={e}", e.code());
             ExitCode::FAILURE
         }
     }
