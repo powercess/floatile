@@ -186,7 +186,7 @@ See the [technology stack document](docs/architecture/technology-stack.md) for v
 | `floatile-runtime` | Instance actors, State, budgets, and Wasmtime execution | 🧪 |
 | `floatile-services` | Broker-mediated host services | 🧪 |
 | `floatile-store` | SQLite, migrations, and transactions | 🧪 |
-| `floatile-sdk` | WASI guest SDK and bindings; author-level API to be implemented | 🧪 |
+| `floatile-sdk` | WASI guest SDK + author layer (Widget/View/Context/derive State) | 🧪 |
 | `floatile-cli` | Plugin package validation, builds, and development tools | 🧪 |
 
 Crate dependency rules are security and portability boundaries, not suggestions. See

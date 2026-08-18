@@ -9,6 +9,7 @@ members = [
     "crates/floatile-services",
     "crates/floatile-store",
     "crates/floatile-sdk",
+    "crates/floatile-sdk-macros",
     "crates/floatile-ui-schema",
     "crates/floatile-cli",
     "plugins/clock-wasm",
@@ -30,6 +31,7 @@ floatile-services = { path = "crates/floatile-services", version = "0.1.0" }
 floatile-store = { path = "crates/floatile-store", version = "0.1.0" }
 floatile-ui-schema = { path = "crates/floatile-ui-schema", version = "0.1.0" }
 floatile-sdk = { path = "crates/floatile-sdk", version = "0.1.0" }
+floatile-sdk-macros = { path = "crates/floatile-sdk-macros", version = "0.1.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -15,8 +15,8 @@ pub const MAX_STATE_DEPTH: usize = 16;
 
 /// JSON Schema（v1 子集）。
 ///
-/// 不支持脚本、`$ref`、任意表达式或动态 key。字符串/数组/对象必须有显式上限；
-/// 对象默认 `additionalProperties: false` 由 `UiDocument` 校验时强制（此处记录声明值）。
+/// 不支持脚本、`$ref`、任意表达式或动态 key；`Default` 用于构建时文档骨架，
+/// 是宽松策略，运行期校验仍以 `additional_properties: false` + required 为准。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum JsonSchema {
@@ -52,6 +52,16 @@ pub enum JsonSchema {
 
 fn default_true() -> bool {
     true
+}
+
+impl Default for JsonSchema {
+    fn default() -> Self {
+        Self::Object {
+            required: Vec::new(),
+            properties: BTreeMap::new(),
+            additional_properties: true,
+        }
+    }
 }
 
 /// 校验一个 JSON 值是否符合 schema，并施加最大深度限制。

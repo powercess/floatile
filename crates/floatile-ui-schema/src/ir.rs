@@ -14,7 +14,7 @@ use crate::schema::JsonSchema;
 ///
 /// `props`、`children`、`events` 与 If/ForEach 专用字段（`when/then/else`、
 /// `items/key/template`）的语义由 `registry` 决定；未使用的字段必须为空。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Component {
     #[serde(rename = "type")]
     pub kind: String,
@@ -66,20 +66,20 @@ pub struct EmittedEvent {
 }
 
 /// State 声明：canonical initial 值 + schema。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct StateSchema {
     pub initial: serde_json::Value,
     pub schema: JsonSchema,
 }
 
 /// 事件声明：稳定名称 → payload schema。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EventSchema {
     pub payload: JsonSchema,
 }
 
 /// `widget.ftui` v1 文档根。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UiDocument {
     #[serde(rename = "uiApiVersion")]
     pub ui_api_version: String,

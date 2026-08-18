@@ -1581,6 +1581,7 @@ name = "floatile-clock-wasm"
 version = "0.1.0"
 dependencies = [
  "floatile-sdk",
+ "serde",
 ]
 
 [[package]]
@@ -1637,7 +1638,20 @@ dependencies = [
 name = "floatile-sdk"
 version = "0.1.0"
 dependencies = [
+ "floatile-sdk-macros",
+ "floatile-ui-schema",
+ "serde",
+ "serde_json",
  "wit-bindgen 0.60.0",
+]
+
+[[package]]
+name = "floatile-sdk-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

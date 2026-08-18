@@ -123,9 +123,10 @@ asset 预算的进一步落地与 `uiApiVersion` 版本轴 contract vectors 仍�
 - re-export 生成的 guest bindings，但普通作者只使用 `Widget/State/View/Event/Context`。
 - UI builder/proc macro、State/Event schema、manifest capability 候选与 export glue。
 - capability wrapper 保留稳定错误，不暴露 raw generated module/handle。
-- 可拆 `floatile-sdk-macros` proc-macro crate；拆分时仍属于 SDK 单一发布单元。
-- 当前实现 re-export 已迁移到 ADR-0001 目标契约的 raw WIT bindings 与 `export_widget!`，供 clock
-  Component 验证；作者级 `State/View/Event/Context` API 尚未实现，不能据此放宽上述边界。
+- `floatile-sdk-macros` proc-macro crate 已拆分：`#[derive(State)]` 生成 schema + initial。
+- S5c 已实现：`Widget<State,Event>` trait、`View` builder、`Context` 运行时封装（state/log/
+  clock/timer/storage/metrics/theme）与 `impl_export_widget!` 导出适配；clock-wasm 已改用作者
+  SDK（作者不手写 WIT）。作者级 `Event` 类型化与 build-time UI IR 生成仍待后续切片。
 
 ### 3.10 TypeScript SDK（非 Cargo workspace crate）
 

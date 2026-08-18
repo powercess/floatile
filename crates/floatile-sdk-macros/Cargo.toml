@@ -1,5 +1,5 @@
 [package]
-name = "floatile-clock-wasm"
+name = "floatile-sdk-macros"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,12 @@ authors.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+proc-macro = true
 
 [lints]
 workspace = true
 
 [dependencies]
-floatile-sdk = { workspace = true }
-serde = { workspace = true }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "derive"] }

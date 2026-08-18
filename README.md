@@ -50,7 +50,7 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 平台能力探测与降级 | 🧪 | Windows 原生探测、X11 compositor/SHAPE/EWMH/RandR 实探测与 macOS 探测（点击穿透/置顶/显示器/指标/热键）已落地；Wayland 仅有显式协议降级 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
-| 统一 UI + WASM Widget | 🧪 | ADR-0001 已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；WIT/bindings/`clock.wasm` 已迁移到统一生命周期与 UI State 契约并通过 `wasm-tools validate`；`floatile-ui-schema`、`floatile-runtime`（Wasmtime actor + State Patch）与 `floatile-services`（Broker）已实现，`clock-wasm` 集成测试通过；CLI、双 SDK、renderer spike 与契约测试待实现 |
+| 统一 UI + WASM Widget | 🧪 | ADR-0001 已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；WIT/bindings/`clock.wasm` 已迁移到统一生命周期与 UI State 契约并通过 `wasm-tools validate`；`floatile-ui-schema`、`floatile-runtime`（Wasmtime actor + State Patch）、`floatile-services`（Broker）与 Rust 作者 SDK（`Widget`/`View`/`Context`/`#[derive(State)]`）已实现，`clock-wasm` 集成测试通过；TypeScript SDK、renderer spike 与契约测试待实现 |
 | Permission Broker 与审计 | 🧪 | deny-by-default 决策、scope/配额、脱敏审计（target `floatile::audit`）与 clock/log/timer/storage/metrics/theme 能力已实现并有测试；恶意插件 fixture 与 SQLite 审计持久化待做 |
 | 插件 SDK 与打包 CLI | 🧪 | `.floatile` 包校验核心（zip/路径/zip-bomb/manifest/UI IR/WASM world 校验）已实现；new/dev/build 命令待做 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
@@ -180,7 +180,7 @@ flowchart TB
 | `floatile-runtime` | 实例 actor、State、预算与 Wasmtime 执行 | 🧪 |
 | `floatile-services` | 经 Broker 授权的宿主服务 | 🧪 |
 | `floatile-store` | SQLite、migration 与事务 | 🧪 |
-| `floatile-sdk` | WASI guest SDK 与 bindings；作者级 API 待实现 | 🧪 |
+| `floatile-sdk` | WASI guest SDK + 作者层（Widget/View/Context/derive State） | 🧪 |
 | `floatile-cli` | 插件包校验、构建与开发工具 | 🧪 |
 
 crate 之间的依赖规则不是建议，而是安全与可移植性边界。详情见
