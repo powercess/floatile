@@ -1,8 +1,12 @@
 # manifest.json v1 与 `.floatile` 包格式
 
-> 状态：Proposed（待 schema、正反例与包安全测试后标记 Implemented）
+> 状态：Proposed（核心模型已实现；CLI 包校验与 zip 级安全测试后标记 Implemented）
 > 包扩展名：`.floatile`（zip container，必须按文件头与安全规则识别）
 > 关联：ADR-0001、FR-PACK-01、FR-PLUGIN-01、F11、F12
+
+`floatile-core` 已实现 manifest 纯模型与校验（字段/版本轴/semver/sizes/entrypoints/permissions）、
+capability 参数解析（未知字段拒绝）与包路径规范化规则，并带正反例测试；它是 manifest schema 的
+可执行单源。zip 归档、WASM world、UI IR 与 config schema 的深度校验属于 CLI 切片。
 
 manifest 是安装与运行时的显式事实，不是开发者主要编辑界面。Rust/TypeScript 项目使用最小
 `floatile.toml`，CLI 结合代码生成的 UI/State/Event schema 和 capability 候选产生 manifest；作者

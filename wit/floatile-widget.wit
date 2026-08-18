@@ -3,9 +3,31 @@
 // 宿主与 guest 绑定都由本文件生成；修改必须同步 floatile-plugin-api、
 // floatile-sdk、floatile-runtime 适配、engineApiVersion 与契约测试。
 // 设计见 docs/plugin-sdk/wit-api-v1.md。
+//
+// 本文件是 ADR-0001 目标契约形状：统一 lifecycle（constructor/start/
+// handle-event/stop）、canonical initial State、host-ui.update-state 与稳定
+// guest error。宿主能力即 interface，world 显式 import 才算获得；所有能力
+// 调用仍由 PermissionBroker 仲裁与审计。
 package floatile:widget@1.0.0;
 
 // ---------- 宿主能力（插件 import；能力即接口，world 显式 import 才算获得） ----------
+
+interface host-ui {
+    variant ui-error {
+        not-allowed, // 非当前实例或固有 scope 之外的调用
+        invalid-json, // patch 不是合法 UTF-8/JSON
+        schema-mismatch(string), // 完整 State 未通过 schema（携带脱敏原因）
+        patch-too-large, // 单 patch 超过上限（默认 16 KiB）
+        state-too-large, // 完整 State 超过上限（默认 64 KiB）
+        update-rate-exceeded, // 超过每实例 UI 更新频率上限（默认 30/s）
+        queue-full, // UI 线程队列已满
+        internal,
+    }
+
+    // JSON Merge Patch；宿主在副本上原子应用并对完整 State 做 schema 校验，
+    // 成功后替换，失败时旧 State 不变。
+    update-state: func(patch-json: string) -> result<_, ui-error>;
+}
 
 interface host-log {
     enum log-level {
@@ -15,19 +37,22 @@ interface host-log {
         error,
     }
 
-    log: func(level: log-level, message: string);
-}
-
-interface host-storage {
-    variant storage-error {
-        not-allowed, // 无 storage:read/write 权限
-        quota-exceeded, // 超出单实例配额（默认 64 KiB）
-        internal,
+    variant log-error {
+        rate-exceeded, // 超过每实例日志频率上限
+        message-too-large,
     }
 
-    get: func(key: string) -> result<option<string>, storage-error>;
-    set: func(key: string, value: string) -> result<_, storage-error>;
-    delete: func(key: string) -> result<_, storage-error>;
+    log: func(level: log-level, message: string) -> result<_, log-error>;
+}
+
+interface host-clock {
+    record wall-time {
+        unix-millis: u64,
+        utc-offset-minutes: s32,
+    }
+
+    // 只读 wall clock；不暴露系统/平台句柄，插件无法借此访问宿主内部。
+    now: func() -> wall-time;
 }
 
 interface host-timer {
@@ -36,13 +61,29 @@ interface host-timer {
     variant timer-error {
         not-allowed, // 无 timer:schedule
         budget-exceeded, // 超 maxPerMinute / 活跃计时器上限
+        invalid-delay,
         invalid-timer-id,
+        unavailable, // 环境不支持
     }
 
-    // 请求宿主在 delay-ms 后调用 widget-instance.on-tick(timer-id)。
+    // 请求宿主在 delay-ms 后调用 widget-instance.handle-event(timer(id))。
     // v1 仅一次性；周期由插件每次 on-tick 后重新 schedule。
     schedule: func(delay-ms: u64) -> result<timer-id, timer-error>;
     cancel: func(timer-id: timer-id) -> result<_, timer-error>;
+}
+
+interface host-storage {
+    variant storage-error {
+        not-allowed, // 无 storage:read/write 权限
+        invalid-key,
+        quota-exceeded, // 超出单实例配额（默认 64 KiB）
+        unavailable,
+        internal,
+    }
+
+    get: func(key: string) -> result<option<string>, storage-error>;
+    set: func(key: string, value: string) -> result<_, storage-error>;
+    delete: func(key: string) -> result<_, storage-error>;
 }
 
 interface host-metrics {
@@ -53,6 +94,7 @@ interface host-metrics {
 
     variant metrics-error {
         not-allowed, // 无 system:cpu / system:memory 权限
+        rate-exceeded,
         unavailable,
     }
 
@@ -68,6 +110,7 @@ interface host-theme {
         not-allowed,
         unknown-token,
         invalid-subscription,
+        unavailable,
     }
 
     get-token: func(name: string) -> result<option<string>, theme-error>;
@@ -78,10 +121,18 @@ interface host-theme {
 // ---------- 插件实现（宿主 import） ----------
 
 interface widget-contract {
+    record widget-init {
+        // manifest 校验后的 config JSON。
+        config-json: string,
+        // 宿主从已验证 UI IR 取得的 canonical initial State JSON；
+        // SDK 以此初始化 typed mirror，不能自行猜默认值。
+        initial-state-json: string,
+    }
+
     record ui-event {
         // Slint callback 名；payload 为 JSON 序列化参数。
         name: string,
-        payload: string,
+        payload-json: string,
     }
 
     enum widget-mode {
@@ -89,26 +140,47 @@ interface widget-contract {
         show,
     }
 
+    // 统一事件变体：UI、timer、mode、config、theme、suspend/resume 全部进入
+    // handle-event，避免每增加宿主事件都扩展 resource method。
+    variant widget-event {
+        ui(ui-event),
+        timer(u32),
+        mode-changed(widget-mode),
+        config-changed(string),
+        theme-changed(string),
+        suspend,
+        resume,
+    }
+
+    // guest 侧业务拒绝；trap/fuel/timeout/memory/queue overflow 由 runtime
+    // error 模型报告，不能伪装成 guest 返回值。
+    variant widget-error {
+        invalid-input(string),
+        rejected(string),
+        internal,
+    }
+
     resource widget-instance {
-        // 宿主创建实例；config 为 manifest 校验后的 JSON 字符串。
-        constructor(config: string);
-        // UI 事件（宿主从 Slint 回调桥接而来）。
-        handle-ui-event: func(event: ui-event);
-        // 计时器到期回调。
-        on-tick: func(timer-id: u32);
-        // 展示模式切换通知（插件可做内部状态调整，非必须）。
-        on-mode-changed: func(mode: widget-mode);
-        // 宿主销毁实例前的最后通知。
-        destroy: func();
+        // 宿主完成 manifest、UI IR、WASM 与 config 校验后才调用；
+        // 只建立内存状态，不做 I/O。第一次能力调用从 start 开始。
+        constructor(init: widget-init);
+        // 首次调用宿主能力的入口；失败时实例进入 failed。
+        start: func() -> result<_, widget-error>;
+        // 唯一常规事件入口；同一实例严格串行，runtime 不重入 guest。
+        handle-event: func(event: widget-event) -> result<_, widget-error>;
+        // 有预算的清理通知；不保证崩溃/强制终止时运行，持久数据须在操作时提交。
+        stop: func();
     }
 }
 
 // ---------- world ----------
 
 world floatile-widget {
+    import host-ui;
     import host-log;
-    import host-storage;
+    import host-clock;
     import host-timer;
+    import host-storage;
     import host-metrics;
     import host-theme;
 

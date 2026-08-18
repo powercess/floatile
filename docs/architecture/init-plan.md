@@ -4,7 +4,7 @@
 > 目标：以最小垂直切片跑通 P0 验收 F1–F13，暴露窗口层与 Wayland 风险。
 > 原则：每次提交都可运行；每步结束跑一次「当前验收项」；三端差异只进 `floatile-platform`。
 > 进度：S0 已完成；S1 有 Windows、Linux 与 macOS 子集证据；S2/S3 部分实现；Wayland 协议层已在
-> headless weston 实测；ADR-0001 与插件/SDK 架构已确定，实验 WIT/Component 链路已落地但待迁移。
+> headless weston 实测；ADR-0001 与插件/SDK 架构已确定，WIT/Component 链路已迁移到 ADR-0001 目标契约。
 
 ## 0. 当前基线（2026-08-18）
 
@@ -17,8 +17,11 @@
   缩放交互及真实多屏仍待复核。
 - ADR-0001 已把插件 UI 从第三方 `.slint` 改为统一 `widget.ftui` + State Patch；插件系统、SDK、WIT、
   manifest、安全与 crate 文档已形成实施约束，但对应代码不算完成。
-- 已合入 `dev` 的实验 WIT/clock 证明 stable Rust 可构建/validate Component，但其契约早于 ADR-0001，
-  缺少正式 UI State 输出和统一生命周期；必须按新 WIT/UI schema 重整，不能按现状作为 F11 完成证据。
+- `wit/`、guest/host bindings 与 `clock.wasm` 已迁移到 ADR-0001 目标契约（`host-ui`/`host-clock`、canonical State、
+  统一 `start/handle-event/stop` 与稳定 guest error）并通过 `wasm-tools validate`；`floatile-ui-schema`
+  S5a 切片已实现（IR/registry/schema 校验/绑定解析/预算校验/契约测试，host+wasm 可编译）。manifest
+  模型与 capability 注册表已在 `floatile-core` 实现。S5b 的 runtime actor + Broker + clock 集成测试
+  已落地；CLI 包校验、shell renderer spike、恶意插件 fixture 与契约测试仍待实现，不能作为 F11 完成证据。
 
 ## 1. 已完成脚手架
 
@@ -70,10 +73,12 @@
   为 TypeScript adapter 输出同一 contract schema。
 - manifest schema 改为 `widget.ftui + plugin.wasm`，实现版本轴与正反例 contract vectors。
 - 验收：生成物无 drift；非法 UI/binding/patch/event/version 被拒；无 Slint/host handle 泄漏。
-- 当前基线已有 ADR-0001 之前的实验 `floatile:widget@1.0.0`、Rust guest/host bindings 与
-  `plugins/clock-wasm` Component 构建（`wasm-tools validate` 通过），只证明 WIT/Component 工具链。
-  它缺少 `host-ui`、initial State 与统一 `start/handle-event/stop`，必须在 S5a 内按新契约替换并同步
-  clock fixture；不得把现状标记为统一插件契约已实现。
+- 当前基线已有 ADR-0001 目标契约 `floatile:widget@1.0.0`：Rust guest/host bindings 与 `plugins/clock-wasm`
+  已按统一 `start/handle-event/stop` lifecycle、`host-ui`/`host-clock` 与 canonical State 迁移并通过
+  `wasm-tools validate`。`floatile-ui-schema` 的 IR/registry/schema 校验/绑定解析/预算校验与契约测试
+  已落地（S5a 切片）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。S5a 剩余：CLI
+  包校验（zip/路径/资源预算）与版本轴/正反例 contract vectors；runtime adapter 落地前不得标记为
+  统一插件契约已实现。
 
 #### S5b — Runtime actor + Broker
 
@@ -81,6 +86,10 @@
 - State Patch 原子验证与有界 UI 投递；shell renderer 从已验证 IR 构建 Slint host UI。
 - Broker 固有能力（UI/log/clock）与 timer 最小声明能力；allow/deny/quota/audit。
 - 验收：Rust clock 1 Hz 更新；deny、超 patch、队列洪泛、fuel/内存 trap 后宿主存活。
+- 已实现：`floatile-runtime`（Wasmtime 47 + 空 WASI 上下文、fuel/内存限制、串行 actor、State Patch
+  原子应用、WIT adapter 经 Broker）；`floatile-services` Broker 与 clock/log/timer/storage/metrics/theme
+  能力；`clock-wasm` 集成测试（start/1Hz tick/update-state/deny 存活/fuel trap 存活）。剩余：shell
+  renderer（IR→Slint）、队列洪泛与内存超限的恶意 fixture 级测试。
 
 #### S5c — Rust SDK 与作者闭环
 
@@ -140,7 +149,8 @@ wasm-tools validate logic/plugin.wasm    # 校验组件
 两条独立风险线都进入 P0 关键路径：
 
 1. 平台线继续在物理 X11 验证 EDID key、负坐标、DPI/拔插，并补 Windows/macOS monitor 与统一 trait。
-2. 插件线先做 S5a 的 UI schema + 新 WIT + manifest contract tests；不得直接在旧实验 WIT 上实现
-   runtime。S5b 必须以 State Patch + Broker + 恶意路径为完整垂直切片，不能只做到 Component 能加载。
+2. 插件线：WIT/guest-host bindings/clock 已迁移到 ADR-0001 目标契约，`floatile-ui-schema`、manifest/
+   capability 纯模型与 S5b runtime+Broker（含 clock 集成测试）已落地；继续 CLI 包校验 + 版本轴/正反例
+   contract vectors，再做 S5c Rust SDK 作者闭环与 renderer spike（恶意路径不能只做到 Component 能加载）。
 
 两条线都需要真实证据；任一线的 CI 编译不能替代对应平台/安全验收。

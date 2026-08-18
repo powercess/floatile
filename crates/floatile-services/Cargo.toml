@@ -11,3 +11,13 @@ publish = false
 workspace = true
 
 [dependencies]
+floatile-core = { workspace = true }
+floatile-platform = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
