@@ -2,6 +2,10 @@
 //!
 //! 绑定由 `wit/floatile-widget.wit` 单一事实源生成；本 crate 只 re-export
 //! 绑定与导出宏，不包含任何宿主依赖。示例见 `plugins/clock-wasm`。
+//!
+//! 当前导出面是 ADR-0001 之前的 S5a 实验性 Component 工具链证据；统一
+//! `State / View / Event / Context`、`host-ui.update-state` 与新 lifecycle 尚未迁移完成，不能把本层
+//! raw binding re-export 当作最终作者 SDK。
 
 wit_bindgen::generate!({
     world: "floatile-widget",

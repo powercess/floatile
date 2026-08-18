@@ -1,205 +1,255 @@
-# WIT 插件 API v1 草案
+# WIT 插件 API v1
 
-> 状态：Implemented（契约与绑定）
-> 契约定义于 `wit/` 目录，单一事实源。
-> 宿主与 guest 都由同一 WIT 生成绑定（`wasmtime::component::bindgen!` / wit-bindgen）。
-> 版本：`floatile:widget@1.0.0`（对应 `engineApiVersion = "1.0.0"`）。
-> 已落地：`wit/floatile-widget.wit`、`floatile-sdk`（guest 绑定 + `export_widget!`）、
-> `floatile-plugin-api`（host async 绑定）、`plugins/clock-wasm` 组件构建（wasm-tools
-> validate 通过）。未落地：wasmtime runtime 加载执行（S5b）、Broker 配额（S5c）。
+> 状态：Proposed（ADR-0001 目标契约）；实验性 Component 契约与绑定已实现，尚待迁移
+> 唯一源：`wit/`；本文解释语义，不复制一套可独立修改的绑定
+> engine API：`floatile:widget@1.x`
+> 关联：ADR-0001、FR-PLUGIN-01、FR-PERM-01、F11、F12
 
-## 1. 设计原则
+## 0. 当前实现与迁移门
 
-1. **能力即接口**：每个宿主能力（storage、timer、metrics…）是独立 interface；`world` 里显式 import 才算获得。
-2. **P0 最小能力集**：`log` / `storage` / `timer` / `metrics` / `theme(subscribe)`。网络、文件、通知、命令等能力在 V1 才加入，P0 里**根本没有对应接口 = 无攻击面**。
-3. **跨边界数据用 JSON 字符串**（v1 简化）：UI 事件与配置都以 JSON 字符串传递，语义结构化在 WIT 里约定 schema 版本。避免 v1 就引入复杂的 interface 类型演进问题。
-4. **资源模型**：`widget-instance` 是 resource，宿主创建实例、插件管理内部状态，生命周期由宿主强控（销毁时宿主调用 drop）。
-5. **异步语义**：宿主接口标注 `async`；wasmtime 在 `async_support` 下执行。P0 的调用频率与耗时受配额限制（见 security 文档）。
+当前 `wit/floatile-widget.wit@1.0.0`、`floatile-sdk` guest bindings、`floatile-plugin-api` host async
+bindings 与 `plugins/clock-wasm` 已构建并通过 `wasm-tools validate`。这证明 stable Rust、wit-bindgen、
+Wasmtime bindgen 与 Component 构建链路可用，但该契约早于 ADR-0001：它仍使用
+`handle-ui-event/on-tick/on-mode-changed/destroy`，缺少 `host-ui`、`host-clock`、canonical initial
+State、`start/handle-event/stop` 和稳定 guest error。
 
-## 2. 文件：`wit/floatile-widget.wit`
+项目尚未对外分发插件，现有 `1.0.0` 不是兼容承诺。S5a 必须以 `wit/` 为唯一编译源将其替换为本文
+目标形状，同步 host/guest bindings、clock fixture、engine version 检查与 contract tests；迁移完成前
+不得把 WIT/SDK 标记为 ADR-0001 契约已 Implemented，也不得接入 runtime 制造第二套适配层。
+
+## 1. v1 目标
+
+WIT 只负责 WASM plugin 与 host 的跨边界调用。UI 结构由 `widget.ftui` 描述，Slint 不进入 WIT，
+插件也不能获得 UI 节点、窗口、renderer、service 或原生句柄。
+
+公开 SDK 将 WIT 包装成 `State / View / Event / Context`；普通作者不得手写 WIT 或直接调用生成
+模块。v1 必须支持：
+
+1. 宿主创建、启动、串行投递事件、停止并销毁一个实例；
+2. 插件通过 State Patch 更新当前实例 UI；
+3. log、clock、timer、storage、metrics、theme 全部由 Broker 仲裁；
+4. 所有拒绝、配额、输入、环境和内部错误使用稳定 variant；
+5. host/guest 都从同一 WIT 生成，CI 验证版本和签名一致。
+
+## 2. Interface 分类
+
+| interface | SDK 表面 | grant | P0 |
+|---|---|---|---|
+| `host-ui` | `ctx.state` | 固有实例能力；严格实例/schema/quota scope | 必须 |
+| `host-log` | `ctx.log` | 固有实例能力；限速与脱敏 | 必须 |
+| `host-clock` | `ctx.clock` | 固有只读能力；不暴露系统句柄 | 必须 |
+| `host-timer` | `ctx.timer` | `timer:schedule` | 必须 |
+| `host-storage` | `ctx.storage` | `storage:read/write` | 必须 |
+| `host-metrics` | `ctx.metrics` | `system:cpu/memory` | 必须 |
+| `host-theme` | `ctx.theme` | `theme:subscribe` | 必须 |
+| `widget-contract` | `Widget` lifecycle | host 调 guest export | 必须 |
+
+能力即接口不等于导入即授权。world 提供可链接的接口，manifest + user grants 决定有效授权；每次调用
+仍经过 Broker。固有能力也只能操作当前实例并执行固定预算，不能绕过 Broker。
+
+## 3. 建议的 v1 形状
+
+以下用于说明拟定形状；实现时 `wit/` 文件是唯一可编译事实源。字段或 case 调整必须同步本文、
+bindings、runtime adapter、版本和 contract tests。
 
 ```wit
 package floatile:widget@1.0.0;
 
-// ---------- 宿主能力（插件 import） ----------
+interface host-ui {
+    variant ui-error {
+        not-allowed,
+        invalid-json,
+        schema-mismatch(string),
+        patch-too-large,
+        state-too-large,
+        update-rate-exceeded,
+        queue-full,
+        internal,
+    }
+
+    // JSON Merge Patch；宿主原子应用并验证完整 State。
+    update-state: func(patch-json: string) -> result<_, ui-error>;
+}
 
 interface host-log {
-  log: func(level: log-level, message: string);
+    enum log-level { debug, info, warn, error }
+    variant log-error { rate-exceeded, message-too-large }
+    log: func(level: log-level, message: string) -> result<_, log-error>;
 }
 
-enum log-level {
-  debug,
-  info,
-  warn,
-  error,
-}
-
-interface host-storage {
-  get: func(key: string) -> result<option<string>, storage-error>;
-  set: func(key: string, value: string) -> result<_, storage-error>;
-  delete: func(key: string) -> result<_, storage-error>;
-}
-
-variant storage-error {
-  not-allowed,      // 无 storage:read/write 权限
-  quota-exceeded,   // 超出单实例配额（默认 64 KiB）
-  internal,
+interface host-clock {
+    record wall-time {
+        unix-millis: u64,
+        utc-offset-minutes: s32,
+    }
+    now: func() -> wall-time;
 }
 
 interface host-timer {
-  /// 请求宿主在 delay-ms 后调用 widget-instance.on-tick(timer-id)。
-  /// 需 timer:schedule 权限；返回计时器句柄。
-  schedule: func(delay-ms: u64) -> result<timer-id, timer-error>;
-  cancel: func(timer-id: timer-id) -> result<_, timer-error>;
+    type timer-id = u32;
+    variant timer-error {
+        not-allowed,
+        budget-exceeded,
+        invalid-delay,
+        invalid-timer-id,
+        unavailable,
+    }
+    schedule: func(delay-ms: u64) -> result<timer-id, timer-error>;
+    cancel: func(timer-id: timer-id) -> result<_, timer-error>;
 }
 
-type timer-id = u32;
-
-variant timer-error {
-  not-allowed,       // 无 timer:schedule
-  budget-exceeded,   // 超 maxPerMinute / 活跃计时器上限
-  invalid-timer-id,
+interface host-storage {
+    variant storage-error {
+        not-allowed,
+        invalid-key,
+        quota-exceeded,
+        unavailable,
+        internal,
+    }
+    get: func(key: string) -> result<option<string>, storage-error>;
+    set: func(key: string, value: string) -> result<_, storage-error>;
+    delete: func(key: string) -> result<_, storage-error>;
 }
 
 interface host-metrics {
-  /// 需 system:cpu 权限。返回 0.0..100.0 的占用率（进程级，非整机，避免信息泄露面）。
-  cpu-percent: func() -> result<f64, metrics-error>;
-  /// 需 system:memory 权限。只返回本进程内存快照（RSS/虚拟），不暴露其他进程信息。
-  memory: func() -> result<memory-snapshot, metrics-error>;
-}
-
-record memory-snapshot {
-  rss-kib: u64,
-  virtual-kib: u64,
-}
-
-variant metrics-error {
-  not-allowed,
-  unavailable,
+    record memory-snapshot { rss-kib: u64, virtual-kib: u64 }
+    variant metrics-error { not-allowed, rate-exceeded, unavailable }
+    cpu-percent: func() -> result<f64, metrics-error>;
+    memory: func() -> result<memory-snapshot, metrics-error>;
 }
 
 interface host-theme {
-  get-token: func(name: string) -> result<option<string>, theme-error>;
-  /// 订阅主题变化；宿主通过 widget-instance.on-theme-changed 通知。
-  subscribe: func() -> result<subscription-id, theme-error>;
-  unsubscribe: func(id: subscription-id) -> result<_, theme-error>;
+    type subscription-id = u32;
+    variant theme-error {
+        not-allowed,
+        unknown-token,
+        invalid-subscription,
+        unavailable,
+    }
+    get-token: func(name: string) -> result<option<string>, theme-error>;
+    subscribe: func() -> result<subscription-id, theme-error>;
+    unsubscribe: func(id: subscription-id) -> result<_, theme-error>;
 }
-
-type subscription-id = u32;
-
-variant theme-error {
-  not-allowed,
-  unknown-token,
-  invalid-subscription,
-}
-
-// ---------- 插件实现（宿主 import） ----------
 
 interface widget-contract {
-  resource widget-instance {
-    /// 宿主创建实例：config 为 manifest.config.schema.json 校验后的 JSON 字符串。
-    constructor(config: string);
-    /// UI 事件（回调名 + JSON 参数），宿主从 Slint 回调桥接而来。
-    handle-ui-event: func(event: ui-event);
-    /// 计时器到期回调。
-    on-tick: func(timer-id: timer-id);
-    /// 主题变化回调（仅订阅后触发）。
-    on-theme-changed: func();
-    /// 宿主要求展示模式切换（插件可做内部状态调整，非必须）。
-    on-mode-changed: func(mode: widget-mode);
-    /// 宿主销毁实例前的最后通知。
-    destroy: func();
-  }
+    record widget-init {
+        config-json: string,
+        initial-state-json: string,
+    }
 
-  record ui-event {
-    name: string,
-    /// JSON 序列化参数，schema 由 SDK 文档约定。
-    payload: string,
-  }
+    record ui-event {
+        name: string,
+        payload-json: string,
+    }
 
-  enum widget-mode {
-    edit,
-    show,
-  }
+    enum widget-mode { edit, show }
+
+    variant widget-event {
+        ui(ui-event),
+        timer(u32),
+        mode-changed(widget-mode),
+        config-changed(string),
+        theme-changed(string),
+        suspend,
+        resume,
+    }
+
+    variant widget-error {
+        invalid-input(string),
+        rejected(string),
+        internal,
+    }
+
+    resource widget-instance {
+        constructor(init: widget-init);
+        start: func() -> result<_, widget-error>;
+        handle-event: func(event: widget-event) -> result<_, widget-error>;
+        stop: func();
+    }
 }
-
-// ---------- world ----------
 
 world floatile-widget {
-  import host-log;
-  import host-storage;
-  import host-timer;
-  import host-metrics;
-  import host-theme;
-
-  export widget-contract;
+    import host-ui;
+    import host-log;
+    import host-clock;
+    import host-timer;
+    import host-storage;
+    import host-metrics;
+    import host-theme;
+    export widget-contract;
 }
 ```
 
-## 3. 调用链示例（P0 时钟）
+## 4. 生命周期语义
 
-```
-[Slint: 按钮 click]  ──桥接──> host 调 widget-instance.handle-ui-event({name:"start",payload:"{}"})
-                                 └─> wasm (plugin) 调 host-timer.schedule(1000)
-                                       └─> Broker: timer:schedule 权限 + maxPerMinute 配额
-                                            └─> tokio sleep(1s)
-                                                 └─> 宿主调 widget-instance.on-tick(id)
-                                                      └─> 插件算时间，调 host-log / host-metrics
-                                                           └─> 宿主把返回值 set 到 Slint 属性
-```
+- host 完成 manifest、UI IR、WASM 和 config 校验后才调用 constructor。
+- constructor 的 initial State 是 host 从已验证 UI IR 取得的 canonical JSON；SDK 以它初始化 typed
+  mirror，不能自行猜默认值。
+- constructor 不做 I/O；第一次 capability 调用从 `start` 开始。
+- 同一 instance 的 `start/handle-event/stop` 严格串行；runtime 不重入 guest。
+- UI callback、timer、mode、config、theme、suspend/resume 统一进入 `widget-event`，避免每增加宿主事件都
+  扩展 resource method。
+- `stop` 只有短预算且可被取消；资源释放最终由 resource drop 保证。插件不能依赖 stop 持久化
+  尚未提交的数据。
+- guest `widget-error` 是业务拒绝；trap、fuel、timeout、memory、queue overflow 由 runtime error
+  模型报告，不能伪装成 guest 返回值。
 
-- 宿主写回 UI：P0 用「宿主直接 set Slint 属性」（宿主持有组件句柄），插件通过 `handle-ui-event` 返回值（`ui-event` 响应或专用 `set-property`）→ 简化后为：**宿主在回调里按需 set 属性**，见 §4。
+## 5. UI State Patch 语义
 
-## 4. UI（.slint）与 wasm 逻辑的桥接约定
+`host-ui.update-state` 是完成 F11 的唯一 plugin→UI 通道：
 
-P0 桥接规则（写入 SDK 文档）：
+1. runtime 从当前实例取得 State 与 UI IR 内嵌 schema；插件不能传 instance id。
+2. 验证 UTF-8/JSON、patch 大小、深度与更新频率。
+3. 在副本上应用 JSON Merge Patch，对完整 State 做 schema 与总大小校验。
+4. 成功后原子替换 runtime State，并把有界更新投递 Slint 主线程。
+5. 任一步失败时旧 State 不变，返回具体 `ui-error` 并写脱敏审计。
 
-- `.slint` 中声明的 `callback <name>(<json-args>)` 由宿主注册，回调触发时调用 `widget-instance.handle-ui-event({name, payload})`。
-- 插件需要把数据写给 UI 时，通过 `host-ui.set-property(name, json)` 接口（**宿主校验属性名白名单：只允许 manifest/初始化时声明的属性**，防止插件篡改宿主属性）。
-- 属性白名单在实例化时确定：`ui/set-properties: [...]` 从 manifest 读取（manifest 增加 `ui.properties` 字段，见 §5）。
+host runtime State 是权威副本。SDK mirror 只在 `update-state` 成功返回后提交同一修改；失败必须回滚
+本地候选，避免 UI 与 guest 逻辑 split-brain。
 
-### 补充接口 host-ui（在 v1 中与 host-theme 并列加入）
+禁止把 JSON pointer、Slint property、组件 ID 或任意表达式作为更新目标。字段合法性完全由 State
+schema 决定。P0 选择 JSON 是为了跨语言和诊断简单；未来更换编码不改变 State Patch 语义。
 
-```wit
-interface host-ui {
-  /// 向本实例的 Slint 组件写入属性值（JSON 字符串）。
-  /// 属性必须在 manifest.ui.properties 白名单中，否则返回 not-allowed。
-  set-property: func(name: string, value: string) -> result<_, ui-error>;
-}
+## 6. 事件语义
 
-variant ui-error {
-  not-allowed,
-  invalid-json,
-  no-such-property,
-}
-```
+- UI event 名与 payload schema 来自 `widget.ftui`；未知事件和错误 payload 在进入 WASM 前拒绝。
+- Timer 是一次性：周期由 SDK 在 tick 后重新 schedule；SDK 可以提供 `every` 便利包装，但仍受
+  active timer 与 max/minute 配额。
+- Config 已由 manifest 指定 schema 校验，再作为完整 JSON 发送；插件必须明确处理版本/default。
+- Theme change 发送有大小上限的 token snapshot JSON；只有已订阅实例接收，SDK 解析为 typed snapshot，
+  非法 payload 在进入 guest 前拒绝。纯 UI theme token 由 renderer 自动更新，不要求插件回写 State。
+- mode 只是通知，插件不得借此调用窗口穿透、置顶或 Edit/Show 切换。
+- suspend 后普通 timer/event 可以合并或暂停；resume 必须按文档提供最新 config/theme snapshot。
 
-> 说明：`host-ui` 属 v1 扩展点，P0 的最小插件可只用 `handle-ui-event` 回传 + 宿主预绑定静态属性。为保持文档完整，此处先并列记录，P0 实现若不需要则标记 deprecated 而不删除。
+## 7. 异步与线程
 
-## 5. manifest 关联字段（新增）
+host imports 由 Wasmtime async adapter 实现。异步不代表同一实例并行；runtime 的 per-instance
+actor 等待当前回调完成或超时后才取下一个 event。任何 host import 都不得阻塞 Slint 主线程。
 
-```json
-{
-  "ui": {
-    "properties": [
-      { "name": "time_text", "type": "string" },
-      { "name": "cpu", "type": "number" }
-    ]
-  }
-}
-```
+`host-ui` 写 runtime State 并异步投递 UI；不能直接调用 Slint。Storage、Timer、Metrics、Theme 由
+services 实现，adapter 只能持有 Broker/instance context，不能持有原生能力句柄。
 
-## 6. 版本与演进策略
+## 8. 版本与兼容
 
-- world/interface 包版本 = `1.0.0`；对 `engineApiVersion` 语义：
-  - **major** 不匹配 → 拒绝加载。
-  - **minor** 兼容 → 宿主做降级（例如 host-ui 为 v1.1 新增，v1.0 宿主拒绝需要该接口的插件）。
-- 每个 interface 独立版本化，未来某个能力接口升级不影响其他。
-- WIT 变更流程：改 `wit/` → 重新生成 host + guest 绑定 → 更新 `engineApiVersion` → CI 里做「SDK 与 Host 绑定必须来自同一 commit 的 WIT」校验。
+- WIT package/world 版本对应 `engineApiVersion`，不对应 `uiApiVersion` 或 SDK 包版本。
+- major 不一致拒绝；同 major 的 minor 只允许增加可选 interface/function/case，并需要兼容测试。
+- capability 不存在或环境不支持时，SDK 提供显式 unavailable；宿主不得伪造成功。
+- WIT 改动必须：更新 `wit/` → host/guest bindings → runtime adapter → API 文档 → version →
+  supported/rejected contract tests → clock/evil fixtures。
 
-## 7. 未决问题（P0 评审确认）
+## 9. 必须的 contract tests
 
-1. `host-ui.set-property` 是否在 P0 落地，还是仅 `handle-ui-event` 回传（倾向：P0 只做后者，`host-ui` 留在 v1.1）。
-2. 计时器粒度：仅一次性（delay）还是需要周期（interval）？倾向 v1 先只做一次性，周期由插件自建（每次 on-tick 重新 schedule）。
-3. `ui-event` 是否需要返回值（`result<string, ui-event-error>`）？倾向 v1 返回 `result<_, ui-error>` 简化。
-4. `metrics` 是否在 v1 暴露整机信息（当前只暴露进程级，作为默认保守值）。
+P0 至少验证：
+
+- host 与 guest bindings 来自同一 WIT，engine API 一致；
+- 支持的版本加载、major 不匹配拒绝、未知 minor capability 显式降级；
+- lifecycle 顺序、同实例不并发、stop/drop 可取消；
+- State Patch 正常、类型错误、未知字段、超大、过深、洪泛、queue full 与原子回滚；
+- UI event schema 正常/错误/未知事件；
+- capability allow/deny/scope/quota/unavailable 与审计脱敏；
+- trap/fuel/memory/timeout 后宿主和其他实例存活。
+
+## 10. 非目标
+
+v1 不提供文件、网络、命令、原生窗口、Slint、DOM、跨插件通信、secret 或 raw WASI ambient
+capability。没有 interface 就没有路径；不得用临时 host function 绕开 WIT/Broker。

@@ -11,10 +11,14 @@
 - 缓解：能力探测 + 分级降级（layer-shell → XWayland → 普通窗口）；产品对「纯 Wayland 穿透」明确不承诺。
 - P0 验证：至少 sway（wlroots）与 GNOME/Wayland 两个环境实测；产出矩阵回填。
 
-### R2. Slint 动态编译 .slint 的成熟度与性能 — 中
-- 动态加载需要 `slint_interpreter::Compiler`，运行时编译有 CPU/内存成本；动态组件属性绑定的方式受限。
-- 缓解：P0 只做运行时编译验证 + 首帧时间测量；热重载（MVP）用增量重编译；必要时 MVP 阶段用「预编译组件 + 受限动态属性」。
-- P0 验证：运行时编译 100 行 .slint 耗时、内存增量、首帧。
+### R2. Floatile UI IR/State Patch 的表达力与性能 — 中
+- ADR-0001 取消第三方 `.slint`，Floatile 必须维护组件/IR/renderer；组件不足会迫使作者等待宿主升级，
+  patch/绑定实现不当会造成 UI 卡顿或状态不一致。
+- 缓解：P0 只冻结最小组件；组合 + 受限 Canvas/Path；schema 单源；patch 原子验证；不做运行时 VDOM；
+  renderer spike 比较预编译通用组件与宿主从已验证 IR 生成定义；用 Reference/Rust/TypeScript clocks
+  和恶意 IR/patch 建立行为/性能基线。
+- P0 验证：嵌套布局/If/ForEach/动画可行性、IR 构建/缓存/销毁、首帧、1 KiB patch P95、30
+  updates/s、10 实例与非法 IR/patch 回滚。
 
 ### R3. WASM Component Model 工具链稳定性（稳定版 Rust 下）— 中
 - guest 目标 `wasm32-wasip2`；wit-bindgen 组件支持成熟度；`cargo-component` 非 stable。
@@ -53,12 +57,14 @@
 - 缓解：wasm 调用全部异步（`async_support`），不在 Slint 回调里阻塞；fuel 上限；调用超时。
 - P0 验证：恶意插件无限循环测试不卡死 UI。
 
-### R12. Slint 字体/SVG 传递依赖停止维护 — 高（进入第三方插件阶段前）
+### R12. Slint 字体/SVG 传递依赖停止维护 — 高（公开分发/第三方资源前）
 - Slint 1.17.1 经 `resvg/usvg` 带入 `rustybuzz 0.20.1`（RUSTSEC-2026-0206）与
   `ttf-parser 0.25.1`（RUSTSEC-2026-0192）；公告标为 unmaintained，当前无安全升级路径。
 - 缓解：仅在内部 S1 原生时钟阶段做精确 advisory 例外，不接受第三方 `.slint`、字体或 SVG；持续
   跟踪 Slint/渲染依赖升级，禁止把例外扩展到其他版本或 crate。
-- 退出条件：进入 S5 加载不受信任插件 UI/资源前必须移除例外并让 advisory 检查通过；否则 S5 阻断。
+- ADR-0001 后纯 `widget.ftui + wasm` 不编译第三方 Slint，也不允许第三方字体/SVG，因此可以在精确
+  例外下验证内部统一 UI 垂直切片；公开分发、允许第三方字体/SVG 或扩大受影响解析路径前必须移除
+  例外并让 advisory 检查通过，否则对应能力阻断。
 - P0 验证：每次 Slint 升级运行 `cargo deny --locked check advisories` 并检查反向依赖图。
 
 ### R13. macOS 全局热键依赖已弃用的 Carbon API — 低
@@ -70,14 +76,37 @@
 - P0 验证：macOS 15.7.5（Apple M4）已实测 `RegisterEventHotKey` 注册成功（日志
   `global hotkey registered (Ctrl+Shift+E)`）；真实按键触发待人工复核。
 
-## 2. 依赖选型
+### R14. TypeScript adapter/runtime 的体积与隔离 — 高
+- 完整 TypeScript/JavaScript 语义可能显著增加单实例冷启动、包大小和 RSS；共享 runtime 又可能破坏
+  实例故障隔离，Node/DOM 兼容层可能偷渡 ambient capability。
+- 缓解：实现前独立 ADR；CLI 管理锁定工具链；同一 WIT/Broker；不提供 Node/DOM；对候选做单/10
+  实例资源、trap、timeout、三平台和 contract vector 比较。
+- P0 验证：TypeScript clock 与 Rust clock 行为一致且达到明确资源门；未达标则记录 P0 失败/降级，
+  不发布伪 TypeScript 子集。
 
+### R15. Rust/TypeScript SDK 语义漂移 — 高
+- 两套手写 SDK 容易在组件、错误、权限默认值、事件顺序和版本支持上分叉，文档/Agent 示例会进一步
+  放大差异。
+- 缓解：UI schema/WIT/capability registry 单源生成；共享 contract/behavior vectors；每个文档示例
+  CI 编译；同一稳定诊断 code。
+- P0 验证：双 clock 与 capability deny/timeout/state patch vectors 全部一致。
+
+### R16. UI IR 过早冻结 — 中
+- v1 若混合渲染器细节、脚本或 Slint 名称，会把内部实现变成长期插件兼容负担；过度抽象又可能无法
+  表达真实 Widget。
+- 缓解：v1 只含稳定组件/State/Event/binding/有限 If/ForEach；Slint 版本不进入 manifest；编码与语义分离；新增
+  组件按 minor，破坏语义按 major；Custom UI 必须新 ADR。
+- P0 验证：至少 clock、system monitor、countdown 三种内部 fixture 证明模型，不用预留未验证控件。
+
+## 2. 依赖选型
 
 | 领域 | 选型 | 理由 | 风险备注 |
 |------|------|------|----------|
-| GUI | Slint（winit 后端，可选软件渲染） | 原生 + GPU；动态编译支持；Rust 生态 | 许可见 licensing.md；动态 API 成熟度见 R2 |
+| 宿主 GUI | Slint（winit 后端，可选软件渲染） | 原生 + GPU；只在宿主内 | 许可见 licensing.md；第三方资源见 R12 |
+| 插件 UI | Floatile UI IR | 双 SDK 同一模型、可验证、renderer 可替换 | 表达力/性能见 R2；冻结风险见 R16 |
 | 插件逻辑 | Wasmtime（component-model + async） | 成熟组件运行时、fuel/memory 限制 | 工具链见 R3 |
 | 绑定生成 | wit-bindgen | 官方标准 | — |
+| TypeScript adapter | 待 ADR | 保留普通 TypeScript 语义且进入同一 Component/Broker | R14/R15 |
 | 异步 | Tokio | 标准 | 线程模型见 p0-design §3 |
 | HTTP | reqwest + rustls | 生态成熟 | 重定向需自定义策略（http-broker §6） |
 | DNS（Broker 用） | hickory-resolver | 可控解析 + 私网校验 | V1 才引入 |
@@ -95,16 +124,20 @@
 
 | # | 假设 | 验证方式 | 结论（P0 后填） |
 |---|------|----------|-----------------|
-| A1 | Slint 动态 .slint 在 3 平台可用且首帧达标 | F11 + 性能指标 | |
+| A1 | Floatile UI IR 在三平台可由 Slint host 渲染，State Patch 首帧/延迟达标 | F11 + patch/性能指标 | |
 | A2 | `wasm32-wasip2` target 在 stable 可用且 wit-bindgen 组件链路顺畅 | clock.wasm 构建+运行 | |
 | A3 | wasmtime async + fuel 能可靠终止恶意循环 | 安全验收 §3.3 | |
 | A4 | winit 三端提供统一透明窗口路径 | F1 实测 | |
 | A5 | XWayland 可覆盖 Wayland 点击穿透需求（能接受缩放差异） | F3 Wayland 降级实测 | |
 | A6 | 空宿主性能达标（CPU/RSS/首帧） | 性能验收 | |
 | A7 | keyring 三端 API 一致、Linux 可探测到 Secret Service | R4 验证项 | |
+| A8 | 完整 TypeScript adapter 在资源目标内且无 ambient capability | TypeScript clock + 单/10 实例 + 安全测试 | |
+| A9 | Rust/TypeScript SDK 可从单源保持行为与诊断一致 | 双 SDK contract/behavior vectors | |
+| A10 | 最小组件 + Canvas 足以表达 P0 常见 Widget，无需第三方 Slint | clock/system-monitor/countdown fixtures | |
 
 ## 4. 版本锁定建议
 
 - Rust：`rust-toolchain.toml` 固定为 P0 基线 1.97.1，升级走显式依赖/工具链变更。
-- 关键依赖锁：`slint`、`wasmtime`、`wit-bindgen` 三者版本联动；升级时三者一起升并跑 WIT 一致性校验。
+- 关键依赖锁：`slint`、`wasmtime`、`wit-bindgen` 与未来 TypeScript adapter 各自记录兼容组；升级时
+  跑 UI/WIT/双 SDK contract、三平台构建和资源回归，不能只用能编译作为通过。
 - 其余依赖走 `Cargo.lock` + `cargo deny` 准入。

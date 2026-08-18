@@ -5,6 +5,12 @@
 ADR 记录会长期约束兼容性或迁移成本的决策，例如 UI/runtime/ABI、权限边界、数据库 schema 策略、
 Wayland 产品承诺、许可与分发方式。普通实现细节不需要 ADR。
 
+当前决策：
+
+| ADR | 状态 | 结论 |
+|---|---|---|
+| [ADR-0001](0001-unified-plugin-ui.md) | Accepted | 插件使用统一 Floatile UI IR；Slint 仅为宿主实现，P0/MVP 不接受第三方 `.slint` |
+
 文件名使用 `NNNN-short-title.md`，编号递增。Accepted ADR 不改写结论；需要改变时新增 ADR，并在
 旧文件标记 `Superseded by ADR-NNNN`。
 
