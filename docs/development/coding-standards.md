@@ -16,6 +16,8 @@
   可复用领域实现；服务依赖接口而非 UI；平台分支不泄漏到业务 crate。
 - 直接依赖统一放在根 workspace；关闭不需要的 default features，并解释大型依赖的 feature 选择。
 - guest/host 类型以 WIT 语义为准；内部领域类型与生成绑定之间使用显式转换层。
+- UI 组件、State/Event schema 与 Rust/TypeScript 类型以 UI schema 单一源为准；不得在 SDK、runtime
+  或 renderer 手写同名平行类型。Slint property/类型不得进入插件公开 API。
 - 禁止循环依赖、通过重新导出掩盖反向依赖，或复制类型绕开依赖规则。
 
 ## 3. 错误与不变量
@@ -31,6 +33,8 @@
 - Slint/winit 事件循环只做短时状态变更；I/O、SQLite、WASM 与网络进入后台 runtime。
 - 跨线程消息要有界；定义背压、取消、超时和宿主关闭行为。禁止同步 channel 无限等待。
 - UI 更新通过 Slint 事件循环回投；不要在 callback 内 `block_on`、持锁调用插件或执行阻塞文件操作。
+- 每个 plugin instance 是有界串行 actor；不得为提升吞吐并发进入同一 guest Store。State Patch 在
+  worker 上限流、解析、完整 schema 校验并原子提交，主线程只应用已验证状态。
 - 测试修改环境变量、时钟或全局状态时必须隔离并恢复；并行测试不得互相污染。
 
 ## 5. 安全与 `unsafe`
@@ -38,6 +42,8 @@
 - `unsafe` 只允许在 `floatile-platform` 的最小模块/表达式中，每处写清可检查前提的
   `// SAFETY:` 注释，并用安全 API 封装；调用方不能继续承担隐含前提。
 - manifest、路径和 archive 先规范化再访问；拒绝绝对路径、`..`、链接逃逸、重复条目和超额解压。
+- UI IR、State Patch、event payload、assets 与 config 在分配/解析前先做字节、数量、深度和频率上限；
+  P0/MVP 不接受第三方 `.slint`、HTML、脚本 entrypoint 或 native library。
 - 权限判断与执行不可分离到可被替换的两个公开步骤，避免 check/use 竞态和绕过。
 - 日志禁止记录 token、Cookie、Authorization、存储值、原始插件配置或用户文件内容。
 - 资源限制必须有失败测试：fuel、内存、队列、定时器、存储、包大小和调用频率。

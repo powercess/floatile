@@ -1,58 +1,79 @@
 # 许可选项（与 Slint 兼容）与影响
 
 > 状态：Proposed
-> 决策：未决。本文只提出选项与影响，供评审与法务确认后再定。
-> 本仓库暂不设 LICENSE；`cargo-deny` 的 licenses 检查刻意拒绝 Slint，正式决策前不放行发布。
+> 决策：未决；本文不是法律意见
+> 发布门：仓库暂不设 LICENSE，`cargo-deny check licenses` 刻意拒绝 Slint，ADR 通过前不得分发
 
-## 1. 背景
+## 1. ADR-0001 后的许可边界
 
-- 宿主应用（floatile-shell 及各 crate）静态链接 Slint（Rust crate）。
-- 插件包含两部分：
-  - `ui/*.slint` —— Slint 源码文本，宿主运行时解释/编译，**以明文分发**；
-  - `logic/plugin.wasm` —— WASM 二进制，与 Slint 无关（只通过 WIT 接口通信）。
-- 许可证影响最大的不是宿主二进制，而是「插件 .slint 源 + 生态分发」的传播问题。
+- Floatile 宿主静态链接 Slint，并使用 Slint/winit 渲染内建 UI 与经过验证的 Floatile UI IR。
+- P0/MVP 插件包包含 `widget.ftui + plugin.wasm`，不包含 `.slint` 源码，也不直接链接 Slint crate。
+- Rust/TypeScript SDK 公开的是 Floatile 组件、State/Event/WIT 契约；Slint 不是插件作者 API。
+- 这降低了“第三方插件源码是否受 Slint 许可传播”的不确定性，但不能自动解决宿主二进制、SDK、
+  UI IR renderer 或插件生态的许可问题；仍需 Slint 与法务书面确认。
 
-## 2. 选项
+许可影响现在分成三件事：
 
-### 选项 A：Slint GPLv3（开源路线）
-- Floatile 全仓以 GPLv3（或 GPLv3+）发布。
-- **影响**：
-  - 宿主与所有依赖需满足 GPL-3.0 兼容性（wasmtime = Apache-2.0，ok；但需逐项核对）。
-  - 插件分发：`.slint` 以源码文本分发，且插件与宿主通过 WIT 紧耦合。**是否构成派生作品存在解释空间**：保守解读是插件开发者的 `.slint` 也须 GPL → 插件生态（闭源插件、付费市场）被摧毁；宽松解读认为 `.slint` 是「被解释的数据」，不必然受 GPL 传染。
-  - **结论：需要法务确认；若选择 A，商业插件模式基本不可行。**
-- 适合：完全开源、无闭源插件计划、可接受 GPL 传染不确定性。
+1. Floatile 宿主如何获得并分发 Slint；
+2. Floatile UI IR/SDK 是否可以在目标许可下公开、允许闭源/付费插件；
+3. Slint 商业/Royalty-Free 条款是否允许宿主把 Slint 作为第三方插件 UI IR 的通用 renderer。
 
-### 选项 B：Slint 商业许可（付费路线）
-- Floatile 向 Slint 购买商业授权 → 宿主可任意授权（Apache-2.0 / MIT / 闭源）。
-- **影响**：
-  - 有 License 成本（按营收阶梯，见 Slint 当前报价；需与 Slint 确认 2026 现行条款）。
-  - 宿主与插件许可完全自主，`.slint` 明文分发不构成问题 → 插件市场、闭源插件、生态均可做。
-- 适合：目标做商业插件生态。
+## 2. 候选路线
 
-### 选项 C：Slint Royalty-Free 许可（免费商用子集）
-- Slint 提供 Royalty-Free License（免费，条件如团队规模/营收门槛、内置使用限制等，**具体条款需向 Slint 获取现行版本核对**）。
-- **影响**：
-  - 若满足条件可零成本商用，但**条款限制可能禁止把 Slint 作为「运行时解释插件 .slint」的分发模式或限制衍生工具链**——这正是 Floatile 的核心用法，必须先确认。
-  - 插件生态收益受限程度取决于条款。
-- 适合：预算有限但想保留商用；需先过条款核对。
+### A. Slint GPLv3 + Floatile GPLv3
 
-## 3. 对插件生态的关键问题（需在选型前向 Slint 确认）
+- 宿主与仓库按 GPLv3 兼容方式分发；全部直接/传递依赖需核对兼容性。
+- 插件不携带 Slint 源，也不链接 Slint，较旧 `.slint` 方案减少了直接传播问题；但插件通过 Floatile
+  SDK/WIT/UI IR 与 GPL 宿主交互是否允许闭源/付费分发仍需要法务判断，项目不得自行宣称“插件
+  一定不受 GPL 影响”。
+- 适合完全开源路线；是否支持闭源插件市场是独立法律问题。
 
-1. 宿主运行时**解释/编译第三方提供的 .slint 文件**，是否属于条款允许的「使用」范围（尤其选项 C）。
-2. 插件作者**不直接链接 Slint crate**，仅提供 `.slint` 源 → 是否因此免受 GPL/条款约束。
-3. 若选择 A，`.slint` 明文分发是否构成派生作品。
-4. 商业/ Royalty-Free 授权的**分发形式**是否允许「应用内解释外部 .slint」。
+### B. Slint 商业许可
 
-## 4. 建议路径（非决策）
+- 为宿主取得允许目标分发方式的商业授权，Floatile 仓库/SDK/插件可另行选择许可。
+- 必须书面确认授权覆盖：桌面宿主、多个插件实例、把 `widget.ftui` 渲染为 Slint 组件、开发者预览/
+  CI renderer、软件 renderer 与未来商业插件生态。
+- 适合希望保留闭源宿主或商业插件生态的路线；成本与条款需获取 2026 现行报价/合同。
 
-1. P0 阶段：无对外分发，许可不影响内部开发 → **暂不设 LICENSE**；`cargo-deny` 的
-   advisories/bans/sources 作为持续门禁，licenses 保持发布阻断。
-2. P0 评审时同步启动 Slint 许可咨询 + 法务评估（填第 3 节问题）。
-3. 决策点设在 **MVP 发布前**（首次对外分发 .floatile 包与安装器时）。
+### C. Slint Royalty-Free 许可
 
-## 5. 其余第三方许可提醒
+- 仅当项目主体、营收/团队/产品形态与使用方式满足现行条款时可选。
+- 核心问题不再是解释第三方 `.slint`，而是“将 Slint 用作外部 `widget.ftui` 的通用宿主 renderer”
+  是否属于允许场景，以及 SDK/CLI/preview 的分发是否受限。
+- 条款未经书面确认前不能把该路线当成默认免费商用方案。
 
-- wasmtime / wasm-tools：Apache-2.0（ok）。
-- wit-bindgen：Apache-2.0（ok）。
-- slint 之外需重点核对的传染性许可 crate（若选 GPL 路线）：无已知 GPL 主依赖，但 `cargo-deny` 会逐项扫描。
-- 插件 SDK 若随 .floatile 包分发模板工程，SDK 本身许可取决于宿主最终许可。
+### D. 更换宿主 UI 技术
+
+- ADR-0001 使插件契约不含 Slint 名称，理论上可以保留 `widget.ftui`/SDK/WIT 并替换 renderer。
+- 这降低迁移插件生态的成本，但窗口、组件、动画、性能与三平台能力都需重新验证；不能把“可替换”
+  当成当前许可问题已解决。
+
+## 3. 必须向 Slint/法务确认的问题
+
+1. Floatile 宿主把第三方生成的、无 Slint 源码的 `widget.ftui` 映射为 Slint 组件，属于何种授权使用？
+2. `floatile dev/preview` 在开发者机器或 CI 中启动同一 renderer，是否需要额外授权或分发条款？
+3. 插件只链接 Floatile SDK/WIT、提交 `widget.ftui + wasm` 时，插件作者能否独立选择闭源/商业许可？
+4. Floatile UI schema、组件名、SDK 代码和生成 IR 是否包含受 Slint 许可约束的派生材料？
+5. GPL、商业和 Royalty-Free 各路线对插件商店、收费插件、企业内部分发和开源贡献的具体影响？
+6. 允许的软件/硬件平台、收入/团队阈值、再分发、离线使用、版本升级和终止条款是什么？
+
+答案必须保留可审查的书面证据，并形成独立许可 ADR；不得只引用市场页面摘要或口头理解。
+
+## 4. P0 行动与发布门
+
+1. P0 内部开发可以继续统一 UI/Wasmtime/Broker 可行性验证，但不对外发布二进制、SDK 或插件包。
+2. UI IR 与 WIT 避免 Slint 专有名称/类型，保持 renderer 可替换；这是一项维护策略，不是规避许可。
+3. 启动 Slint 许可咨询与法务评估，覆盖第 3 节全部问题。
+4. MVP 首次公开 SDK、`.floatile` 包、安装器、商店或二进制前必须：
+   - 接受许可 ADR；
+   - 补仓库/SDK/示例/第三方 notices；
+   - 让 `cargo deny --locked check licenses` 按决策通过；
+   - 处理 risks.md R12 advisory/第三方资源边界。
+5. 禁止通过宽泛 license allow、伪造 proprietary 结论、删除 Slint 依赖链或只发布插件而绕开门禁。
+
+## 5. 其他依赖
+
+- Wasmtime、wasm-tools、wit-bindgen 的具体版本许可在引入/升级时由 cargo-deny 与 notices 核对。
+- TypeScript adapter/runtime 尚未选择；ADR 必须包含运行时、stdlib、bundler、npm 包与生成产物许可。
+- UI schema/codegen、示例和 SDK 最终采用何种许可必须与插件生态路线一致。
+- 每次关键依赖升级检查 license expression、feature、source、传递依赖和三平台产物，不继承旧结论。

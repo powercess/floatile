@@ -1,103 +1,154 @@
 # Workspace 与 crate 边界设计
 
 > 状态：Accepted
-> 目标：依赖方向单向、跨平台差异收敛、插件 API 与宿主实现分离，保证长期可维护。
+> 目标：依赖单向、UI/ABI 单源、平台差异收敛、Broker 成为唯一宿主能力入口
+> 插件 UI 决策：ADR-0001
 
-## 1. 依赖方向（禁止反向依赖）
+## 1. 分层
 
+```text
+插件作者侧
+  TypeScript SDK ─┐
+                  ├─ ui schema + WIT → widget.ftui + plugin.wasm
+  floatile-sdk ───┘
+                         │
+  floatile-cli ──────────┤ validate / build / inspect
+                         ▼
+宿主侧
+  floatile-shell → floatile-runtime → floatile-plugin-api
+        │                 │                    │
+        │                 ├────────────→ floatile-ui-schema
+        │                 └────────────→ floatile-services → floatile-store
+        │                                      │
+        └────────→ floatile-platform ←─────────┘
+
+共享纯模型
+  floatile-core          host domain/layout/permission decision types
+  floatile-ui-schema     guest-safe UI IR/State/Event schema types
 ```
-floatile-sdk ──(guest, 编译到 wasm)──┬── 仅供插件开发者使用
-                                     │
-floatile-cli ◄──(打包/校验)──────────┤
-                                     │
-         floatile-shell ◄────────────┴── floatile-plugin-api (WIT host 绑定 + 契约类型)
-              │  ▲                            ▲
-              │  │                            │
-   floatile-services ◄── floatile-core ◄── floatile-runtime
-        │  │                                    │
-        │  floatile-store                       │
-        │       │                               │
-        └───────┴── floatile-platform ◄─────────┘ (所有 OS 差异)
-```
 
-依赖规则：
+图只表达允许方向，不表示每条依赖现在都已落地。新增反向依赖必须更新本文并在不可逆时新增 ADR。
 
-- **每一条都是分层单向依赖**：`core ← runtime ← services/shell`。
-- `floatile-platform` 是唯一允许依赖平台 crate（`windows-sys` / `objc2` / `x11rb` / `wayland-client`）的 crate。任何平台相关代码不得外泄。
-- `floatile-plugin-api` 只依赖 `floatile-core`（类型）与生成的 WIT 绑定，是「契约 crate」，不得依赖任何运行时实现。
-- `floatile-sdk` 是 guest 侧工具库，编译到 `wasm32-wasip2`，不得依赖宿主 crate。
+## 2. 硬边界
 
-## 2. 各 crate 职责
+1. `floatile-core` 是纯宿主领域模型，不做 I/O，不依赖 runtime/UI/platform。
+2. `floatile-ui-schema` 是计划在 S5 新增的纯、guest-safe 共享 crate；不依赖 Slint、Wasmtime、Tokio、
+   SQLite、平台 API 或宿主服务。
+3. `floatile-platform` 是唯一允许直接依赖 windows-sys/objc2/x11rb/wayland-client 和平台 unsafe 的
+   crate。
+4. `floatile-plugin-api` 只包含从 `wit/` 生成的 host bindings 与薄契约封装，不实现 capability。
+5. `floatile-runtime` 运行不可信 WASM、管理 actor/State/budget；不得执行未经 Broker 的原生能力。
+6. `floatile-services` 拥有 `PermissionBroker` 与 capability 执行；授权、scope/quota、执行和脱敏审计
+   不得拆成可绕过的公开入口。
+7. `floatile-shell` 拥有 Slint 主线程、画布和 UI renderer；只消费已验证 UI IR 与 State，不等待 WASM。
+8. `floatile-sdk` 和 TypeScript SDK 是 guest 作者表面，不依赖任何 host crate/API；只能通过 WIT 调宿主。
+9. `floatile-cli` 可以验证/生成包，但不能链接宿主 capability 实现来“顺便执行”插件。
 
-### 2.1 floatile-core（数据模型与纯逻辑）
-- `PluginId` / `InstanceId` / `WidgetId`（强类型，禁止字符串互转滥用）。
-- 坐标与 DPI 数据模型：`LogicalRect`、`PhysicalRect`、`MonitorKey`、`ScaleFactor`。
-- `manifest` 结构体（serde）与校验（无 I/O）。
-- 权限模型：`Capability`、`Grants`、`Scope`（纯逻辑，校验规则可单测）。
-- 事件总线类型：`HostEvent`、`WidgetEvent`。
-- 领域常量：`engineApiVersion`、包格式版本。
+## 3. crate 职责
 
-### 2.2 floatile-shell（宿主可执行 + 编排）
-- `main`：初始化日志/审计、tokio、Slint 后端、画布。
-- Canvas：widget 实例的创建/销毁/布局/层级。
-- 编辑/展示模式状态机。
-- 布局持久化编排（委托 `floatile-store`）。
-- 窗口生命周期（创建/销毁/坐标同步），全部经由 `floatile-platform`。
-- P0 的 Reference Clock（硬编码组件）。
+### 3.1 `floatile-core`
 
-### 2.3 floatile-platform（平台抽象）
-- trait：`PlatformWindow`、`PlatformService`（窗口标志、穿透、置顶、桌面附着、监视器枚举、热插拔、系统指标）。
-- impl：`windows.rs` / `macos.rs` / `linux_x11.rs` / `linux_wayland.rs`（feature-gate）。
-- 能力探测：`CapabilityProbe::probe()` 返回 `PlatformCapabilities`（透明？穿透？layer-shell？），供上层降级。
-- 平台矩阵文档即由此 crate 的探测逻辑驱动（可生成能力报告）。
+- `PluginId`、`InstanceId`、布局/DPI/模式等纯领域类型。
+- manifest、capability/grant/scope/quota 的纯数据与决策输入；无文件/数据库访问。
+- host/runtime 使用的稳定错误分类与版本值对象。
+- 不放 UI IR/WIT 生成物，避免 guest 为 UI 类型依赖全部宿主 domain。
 
-### 2.4 floatile-plugin-api（宿主契约）
-- 存放 WIT 宿主侧绑定（`wasmtime::component::bindgen!` 生成结果）与手工封装的「宿主能力 trait」。
-- `HostCapability` trait 族：`HostStorage`、`HostTimer`、`HostMetrics`、`HostLog`。
-- 声明这些 trait 必须实现「先过 Broker 再做事」。
-- 供 `floatile-runtime` 实例化绑定，供 `floatile-sdk` 对齐签名（guest 与 host 共享同一 WIT 源）。
+### 3.2 `floatile-ui-schema`（S5 计划新增）
 
-### 2.5 floatile-runtime（插件运行时）
-- wasmtime `Engine` 配置（fuel、内存上限、异步、cache）。
-- WIT 世界解析与 component 加载、实例化、资源生命周期。
-- Slint 动态编译 `slint_interpreter::Compiler` + 组件实例化（作为 Widget Host）。
-- `WidgetHost`：把 Slint 回调 ↔ wasm `handle_ui_event` 桥接。
-- 资源配额与运行预算执行（调用频率、CPU、内存）。
+- `widget.ftui` v1 的纯类型：组件树、State/Event schema、binding、有限 If/ForEach、animation、asset ref。
+- UI component registry 的机器可读 schema 与版本。
+- 无 I/O 的结构/限制验证；输入字节读取和包路径检查属于 CLI/runtime。
+- Rust SDK builder/macro 与 TypeScript codegen 的共同语义源。
+- 必须在 host 与 `wasm32-wasip2` 编译；不得引入宿主依赖。
 
-### 2.6 floatile-services（宿主能力实现）
-- `StorageService`（SQLite KV + 表结构）。
-- `TimerService`（tokio 调度，按实例配额）。
-- `MetricsService`（CPU/内存采样）。
-- `NotificationService`（P0 预留）。
-- `KeyringService` / `HttpBroker`（MVP/V1 实现，P0 只有 stub 接口）。
-- 所有服务入口持 `Broker` 引用，先校验后执行。
+如最终采用 schema-first code generation 而不增加 crate，必须在实现计划中给出同等的单源与 host/guest
+一致性证明；不得手写两套 UI 类型。
 
-### 2.7 floatile-store（持久化）
-- SQLite 打开/迁移/事务封装。
-- 表：`layout`、`plugin_meta`、`kv`、`audit_log`（见迁移 SQL）。
-- 只被 `floatile-services` 与 `floatile-shell`（布局编排）使用。
+### 3.3 `floatile-shell`
 
-### 2.8 floatile-sdk（插件开发者 SDK）
-- 编译目标 `wasm32-wasip2`。
-- 预置 wit-bindgen guest 绑定（re-export）。
-- 便利宏/包装：`FloatWidget` trait + `#[float_widget]` 属性宏。
-- 编译成组件的前置说明（使用 `wasm-tools component embed` 或 cargo config）。
-- **发布时与 `floatile-plugin-api` 必须由同一 WIT 源生成，加 CI 检查签名一致性。**
+- Slint/winit 事件循环、窗口/Canvas、Edit/Show 与布局编排。
+- 把已验证 UI IR 映射到宿主 Slint 组件；插件不提供 `.slint`。
+- 在主线程应用 runtime 发来的有界 State snapshot/patch，并把声明过的 UI event 投递 runtime。
+- 不解析不可信包、不执行 WASM、不直接实现 plugin capability。
+- 内建 Reference Clock，用于与插件化时钟对比行为/性能。
 
-### 2.9 floatile-cli（打包/校验工具）
-- `floatile build`（收集 manifest/ui/logic/assets → 校验 → 打包 `.floatile` zip）。
-- `floatile validate`（manifest 语义校验 + schema 校验）。
-- `floatile sign`（V1 起；P0 只有骨架）。
-- `floatile dev`（开发模式：监视目录、热重载触发，P0 骨架）。
+### 3.4 `floatile-platform`
 
-## 3. 目录结构（cargo workspace）
+- 平台 trait/probe、窗口标志、穿透、置顶、热键、monitor/DPI/hot-plug、系统指标采样。
+- Windows/macOS/X11/Wayland 实现与所有平台 unsafe。
+- 返回能力状态和降级原因；上层不得按 OS 名猜测。
 
-```
-Cargo.toml              # [workspace] members + 共享依赖版本表 [workspace.dependencies]
-rust-toolchain.toml     # 锁定完整 Rust patch 版本 + wasm32-wasip2 target
+### 3.5 `floatile-plugin-api`
+
+- `wasmtime::component::bindgen!` 的 host bindings；`wit/` 为唯一源。
+- WIT import/export 的薄 adapter traits 与 engine API 版本。
+- 不实现 Broker、Storage、Timer、UI renderer 或 Wasmtime Engine。
+- 与 `floatile-sdk` 的 binding/version 由 CI contract test 对齐。
+
+### 3.6 `floatile-runtime`
+
+- Wasmtime Engine/Linker/Store、Component 验证/实例化、fuel/memory/epoch/timeout。
+- 每实例 actor、bounded queue、严格串行 lifecycle、取消与 shutdown。
+- 加载并验证 `widget.ftui`，维护 Config/State，原子应用已校验 State Patch。
+- WIT host adapter 只持 `InstanceContext + PermissionBroker` 门面；不得持 service/OS raw handle。
+- 把 UI snapshot/patch 通过有界通道发送 shell；不直接操作 Slint。
+- trap/restart/isolation 与宿主存活保证。
+
+### 3.7 `floatile-services`
+
+- `PermissionBroker`：registry、grant、scope、quota、环境能力、decision cache、redacted audit。
+- Timer/Storage/Metrics/Theme/Clock/Log capability 的实现。
+- 固有能力和声明能力使用同一 Broker 入口；固有能力只是固定 grant/scope。
+- 后续 Notification/Keyring/HTTP 仍必须经 Broker；P0 不留可调用 stub 假装实现。
+
+### 3.8 `floatile-store`
+
+- SQLite open/migration/transaction。
+- layout、plugin metadata、private KV、audit_log；新增前向 migration，禁止修改已发布 migration。
+- 不做 permission 决策，不向 plugin 暴露连接/SQL/path。
+
+### 3.9 `floatile-sdk`
+
+- Rust guest SDK，目标 `wasm32-wasip2`。
+- re-export 生成的 guest bindings，但普通作者只使用 `Widget/State/View/Event/Context`。
+- UI builder/proc macro、State/Event schema、manifest capability 候选与 export glue。
+- capability wrapper 保留稳定错误，不暴露 raw generated module/handle。
+- 可拆 `floatile-sdk-macros` proc-macro crate；拆分时仍属于 SDK 单一发布单元。
+
+### 3.10 TypeScript SDK（非 Cargo workspace crate）
+
+- `@floatile/sdk` 组件/State/Event/Context 类型和 JSX build transform。
+- 由 CLI 管理的 TypeScript→WASM Component adapter；必须实现同一 WIT/world/error/budget。
+- 不提供 Node/DOM/文件/网络等 ambient API；具体 runtime 选择需独立 ADR 与性能/隔离证据。
+
+### 3.11 `floatile-cli`
+
+- `new/dev/check/test/preview/build/inspect/migrate`。
+- 生成 UI IR、State/Event schema、bindings 与 manifest；插件作者不编辑生成物。
+- manifest/UI/WASM/assets/archive 的正反例校验与可复现打包。
+- `--json --no-interactive` 是 CI/Agent 稳定接口。
+- dev/test 使用 mock capability 或受控 runtime，不绕过生产 Broker 语义。
+
+## 4. 事实源
+
+| 契约 | 唯一源 | 生成/消费方 |
+|---|---|---|
+| Host/guest ABI | `wit/` | plugin-api、Rust/TS adapter、runtime、contract tests |
+| UI IR/components | UI schema source / `floatile-ui-schema` | Rust/TS SDK、CLI、runtime、shell renderer |
+| Package metadata | manifest schema | CLI、PluginManager、docs examples |
+| Capabilities | capability registry | manifest schema、Broker、SDK wrappers、docs/tests |
+| Platform behavior | platform probe + platform matrix evidence | shell/services、docs |
+
+任何修改必须一次同步全部消费者；CI 检查生成物无 drift。不得复制常量字符串作为“单源校验”。
+
+## 5. 目录目标
+
+```text
+Cargo.toml
 crates/
   floatile-core/
-  floatile-shell/       # src/main.rs 是宿主 bin
+  floatile-ui-schema/       # S5 新增或等价 schema-first 实现
+  floatile-shell/
   floatile-platform/
   floatile-plugin-api/
   floatile-runtime/
@@ -105,35 +156,39 @@ crates/
   floatile-store/
   floatile-sdk/
   floatile-cli/
-wit/                    # 单一 WIT 源（floatile:widget）
-  floatile-widget.wit   # 或按目录拆分
+wit/
+  floatile-widget.wit
+schemas/
+  manifest-v1.schema.json
+  floatile-ui-v1.schema.json
+sdk/
+  typescript/               # @floatile/sdk；引入前需 runtime ADR
 plugins/
-  clock/                # 硬编码参考组件（native Slint）
-  clock-wasm/           # 插件化时钟（SDK 示例）
+  clock-wasm/               # Rust 参考插件
+  clock-typescript/         # TypeScript adapter 通过后加入
+tests/fixtures/
+  evil-plugin/
 docs/
-tests/
 ```
 
-## 4. workspace 配置要点
+文档列出目标不代表目录已实现；状态必须以 requirements/init-plan 与代码为准。
 
-- `[workspace.dependencies]` 统一定版本，单一事实源。
-- rust-toolchain.toml：固定 P0 基线 `1.97.1`，targets 加 `wasm32-wasip2`。
-- CI（GitHub Actions）三 OS 矩阵 + clippy `-D warnings` + `cargo test`。
-- 依赖准入：`cargo-deny`（licenses 白名单、advisories、可疑来源 crate 阻断）。
+## 6. 编译与测试矩阵
 
-## 5. 冻结规则
+| 单元 | 目标 | 必须验证 |
+|---|---|---|
+| core/ui-schema | host + wasm compatible | pure tests、serde/schema vectors |
+| platform | host 三端 | compile + real platform evidence |
+| plugin-api/runtime/services/store/shell | host 三端 | check/clippy/test/release |
+| Rust SDK/clock | `wasm32-wasip2` | component validate + host contract |
+| TypeScript SDK/clock | selected adapter target | same contract vectors + resource data |
+| CLI | host 三端 | package adversarial corpus + deterministic output |
 
-- WIT 源只放在 `wit/`，一次修改触发 `floatile-plugin-api` 与 `floatile-sdk` 两处重新生成。
-- 任何新平台能力 → 先在 `floatile-platform` 加 trait 方法 + 能力探测，再决定是否需要权限。
-- 任何跨 crate 类型移动都必须更新本文件，禁止绕过。
+完整门禁按 `docs/development/workflow.md`；CI 构建不能替代真实 UI/平台/性能/安全证据。
 
-## 6. 编译矩阵（P0）
+## 7. 冻结与变更
 
-| crate | 目标 | 编译平台 |
-|-------|------|----------|
-| core / services / store | host | 三端 |
-| platform | host（feature-gate: win/mac/x11/wayland） | 三端 |
-| runtime / plugin-api | host | 三端 |
-| shell | bin | 三端 |
-| sdk | `wasm32-wasip2` | 任意（guest 交叉编译） |
-| cli | host | 三端 |
+- 修改 WIT、UI IR、manifest、capability registry、crate 方向或线程模型必须同步架构与契约测试。
+- 新 UI component 是公开兼容表面；先进入 schema、双 SDK、renderer、preview、文档和测试，再发布。
+- 第三方 `.slint`、HTML/WebView、原生插件或第二 host API 需要新 ADR，不能作为“临时开发模式”。
+- TypeScript runtime 选择、签名/分发与许可各自需要独立 ADR。

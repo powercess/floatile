@@ -34,7 +34,8 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 - **插件默认不可信**：计划以 WASM Component Model 隔离插件，所有宿主能力统一经过
   deny-by-default `PermissionBroker`。
 - **跨平台但不假装一致**：能力由运行时探测驱动；尤其在 Wayland 下会报告限制，而不是静默失败。
-- **为插件作者而设计**：WIT 是 host/guest 接口的唯一来源，配套 SDK、CLI、manifest 校验和开发示例。
+- **为插件作者和 AI Agent 设计**：Rust/TypeScript 共用 `State / View / Event / Context` 模型；WIT、
+  UI schema、权限和诊断各自单源生成，CLI 隐藏 Wasmtime、Slint 与打包细节。
 
 ## 项目状态
 
@@ -49,9 +50,9 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 平台能力探测与降级 | 🧪 | Windows 原生探测与 X11 compositor/SHAPE/EWMH/RandR 实探测已落地；Wayland 仅有显式协议降级，macOS 实现待补 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
-| `.slint + .wasm` Widget | 🗺️ | Wasmtime、Component Model、WIT host/guest 链路尚未接入 |
+| 统一 UI + WASM Widget | 🗺️ | ADR-0001 与 SDK 架构已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；代码尚未进入 `dev` |
 | Permission Broker 与审计 | 🗺️ | 默认零权限、scope/配额、参数脱敏与恶意插件测试尚未实现 |
-| 插件 SDK 与打包 CLI | 🗺️ | 计划提供 validate/build/dev、包路径和大小安全校验 |
+| 插件 SDK 与打包 CLI | 🗺️ | 计划提供 new/dev/check/test/preview/build/inspect、包路径与资源预算校验 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
 
 权威进度与验收范围请查看[需求基线](docs/product/requirements.md)和
@@ -69,20 +70,20 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 
 ### 安全插件系统
 
-- WASM Component Model + 版本化 WIT 契约（🗺️）
+- 统一 Floatile UI IR + WASM Component Model + 版本化 WIT 契约（🗺️）
 - Wasmtime fuel、内存上限、调用频率与生命周期预算（🗺️）
 - 所有宿主能力必须通过 `PermissionBroker`，默认拒绝（🗺️）
 - 存储、计时器、指标与日志能力的 scope、配额和脱敏审计（🗺️）
-- 对 manifest、归档路径、Slint、WASM、配置与 WIT 参数进行不可信输入校验（🗺️）
+- 对 manifest、归档路径、UI IR、WASM、assets、配置、State Patch 与 WIT 参数进行不可信输入校验（🗺️）
 
 ### 插件开发体验
 
-- 面向 `wasm32-wasip2` 的 Rust SDK 和同源 guest bindings（🗺️）
-- `.floatile` 包的 manifest、UI、logic 与 assets 约定（🗺️）
-- `floatile validate`、`floatile build` 和 `floatile dev` 工作流（🗺️）
-- 原生时钟与 WASM 时钟参考实现（前者 ✅，后者 🗺️）
+- Rust/TypeScript 使用同一 `State / View / Event / Context` 与组件语义（🗺️）
+- 构建期 JSX/Rust View → `widget.ftui`；插件作者不写 WIT、manifest 生成物或 Slint（🗺️）
+- `floatile new/dev/check/test/preview/build/inspect` 与稳定 `--json` Agent 接口（🗺️）
+- 原生、Rust WASM 与 TypeScript WASM 时钟参考实现（原生 ✅，插件版 🗺️）
 
-> 插件市场、签名/自动更新、主题系统、凭证托管、网络 Broker、跨插件通信和 Sidecar 不在 P0
+> 插件市场、签名/自动更新、自定义主题/主题编辑器、凭证托管、网络 Broker、跨插件通信和 Sidecar 不在 P0
 > 范围内；它们属于后续阶段的候选能力。
 
 ## 快速开始
@@ -127,18 +128,20 @@ cargo test --workspace --all-targets --locked
 ```mermaid
 flowchart TB
     Shell["floatile-shell<br/>画布 · 模式 · 生命周期"]
-    Runtime["floatile-runtime<br/>Slint · Wasmtime（开发中）"]
+    Runtime["floatile-runtime<br/>实例 Actor · State · Wasmtime（开发中）"]
+    UI["Floatile UI Renderer<br/>widget.ftui → Slint（开发中）"]
     Broker["PermissionBroker<br/>授权 · 配额 · 审计（开发中）"]
     Services["floatile-services<br/>计时器 · 存储 · 指标（开发中）"]
     Store["floatile-store<br/>SQLite（开发中）"]
     Platform["floatile-platform<br/>唯一的 OS / 窗口系统边界"]
-    Plugin["Widget Plugin<br/>.slint + .wasm（开发中）"]
-    WIT["WIT 单一契约源（开发中）"]
+    Plugin["Widget Plugin<br/>widget.ftui + plugin.wasm（开发中）"]
+    Contract["UI schema + WIT<br/>双 SDK 单一语义（开发中）"]
 
     Shell --> Runtime
+    Shell --> UI
     Shell --> Platform
     Runtime --> Plugin
-    Plugin <--> WIT
+    Plugin <--> Contract
     Runtime --> Broker
     Broker --> Services
     Services --> Store
@@ -154,6 +157,7 @@ flowchart TB
 |---|---|---|
 | 语言与工具链 | Rust 2024 · Rust 1.97.1 | ✅ 固定 patch 工具链与 lockfile |
 | UI 与窗口 | Slint 1.17 · winit 0.30 | 🧪 参考时钟和基础窗口属性已接入 |
+| 插件 UI | Floatile UI IR v1 | 🗺️ 静态组件树、State/Event schema；Slint 仅为宿主实现 |
 | 插件 ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🗺️ 单一版本化 host/guest 契约 |
 | 插件运行时 | Wasmtime | 🗺️ 异步组件调用、fuel 与资源限制 |
 | 异步运行时 | Tokio | 🗺️ 承载后台 I/O，避免阻塞 Slint 主线程 |
@@ -172,7 +176,8 @@ flowchart TB
 | `floatile-platform` | 平台能力探测与全部 OS 窗口差异 | 🧪 |
 | `floatile-shell` | 桌面宿主、画布、模式与应用编排 | 🧪 |
 | `floatile-plugin-api` | WIT host bindings 与契约类型 | 🗺️ |
-| `floatile-runtime` | Slint 动态 UI 与 Wasmtime 执行 | 🗺️ |
+| `floatile-ui-schema`（计划） | guest-safe UI IR、组件与 State/Event schema 单源 | 🗺️ |
+| `floatile-runtime` | 实例 actor、State、预算与 Wasmtime 执行 | 🗺️ |
 | `floatile-services` | 经 Broker 授权的宿主服务 | 🗺️ |
 | `floatile-store` | SQLite、migration 与事务 | 🧪 |
 | `floatile-sdk` | WASI guest SDK 与 bindings | 🗺️ |
@@ -198,8 +203,8 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 - **S1 · 浮窗基线（进行中）**：参考时钟、透明/无边框/置顶、拖拽和真实平台探测
 - **S2 · 桌面交互（进行中）**：Edit/Show、点击穿透和缩放已在 Windows/Linux X11 子路径落地；真实多屏与 DPI 仍待验证
 - **S3 · 布局持久化（进行中）**：monitor-local 恢复算法、SQLite v2、shell 启动恢复/保存与显示器变化重恢复已落地；真实多屏/热插拔实机验证与多实例编排待做
-- **S4 · 插件契约（规划中）**：WIT 单一源、manifest、SDK 与包校验
-- **S5 · 沙箱运行时（规划中）**：Wasmtime、动态 Slint、Broker、配额与恶意插件测试
+- **S4 · 插件契约（设计完成、实现待开始）**：ADR-0001、统一 UI、WIT、manifest 与双 SDK 架构
+- **S5 · 沙箱运行时（规划中）**：UI schema、实例 actor、State Patch、Wasmtime、Broker、Rust/TypeScript 时钟与恶意插件测试
 - **P0 验收（规划中）**：Windows/macOS/X11/Wayland 证据、性能数据、风险复盘与许可 ADR
 
 路线图会随验证证据调整。某项技术不可行但被准确记录和降级，同样是 P0 的有效产出。
@@ -225,11 +230,16 @@ crate 边界变更需要同步相应契约、测试和架构文档。
 - [插件权限模型](docs/security/permission-model.md)
 - [Manifest v1](docs/plugin-sdk/manifest-v1.md)
 - [WIT API v1](docs/plugin-sdk/wit-api-v1.md)
+- [Floatile UI IR v1](docs/plugin-sdk/ui-ir-v1.md)
+- [插件系统架构](docs/plugin-sdk/plugin-system-architecture.md)
+- [Rust/TypeScript SDK 与开发体验](docs/plugin-sdk/sdk-developer-experience.md)
+- [ADR-0001：统一插件 UI](docs/architecture/decisions/0001-unified-plugin-ui.md)
 - [架构风险清单](docs/architecture/risks.md)
 
 ## 安全
 
-当前插件安全边界仍在设计和实现中，请勿运行来源不明的 `.slint`、WASM 或插件包。发现安全问题时，
+当前插件安全边界仍在设计和实现中，请勿运行来源不明的 WASM、UI IR、assets 或插件包。P0/MVP
+插件不接受第三方 `.slint`。发现安全问题时，
 请不要公开披露可利用细节；在专用安全联系渠道建立前，请通过仓库所有者的私密联系方式报告。
 
 ## 许可证与分发

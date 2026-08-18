@@ -1,27 +1,31 @@
-# manifest.json v1 草案
+# manifest.json v1 与 `.floatile` 包格式
 
-> 状态：Proposed
-> 包扩展名 `.floatile`（本质是 zip，条目结构见 §5）。
-> 版本：manifest v1，冻结于 P0 评审通过后；后续变更须 bump `manifestVersion`。
+> 状态：Proposed（待 schema、正反例与包安全测试后标记 Implemented）
+> 包扩展名：`.floatile`（zip container，必须按文件头与安全规则识别）
+> 关联：ADR-0001、FR-PACK-01、FR-PLUGIN-01、F11、F12
 
-## 1. 示例
+manifest 是安装与运行时的显式事实，不是开发者主要编辑界面。Rust/TypeScript 项目使用最小
+`floatile.toml`，CLI 结合代码生成的 UI/State/Event schema 和 capability 候选产生 manifest；作者
+仍必须显式确认权限、标识、版本、尺寸和配置。
+
+## 1. P0 示例
 
 ```json
 {
   "manifestVersion": 1,
   "id": "dev.floatile.clock",
   "name": "World Clock",
-  "description": "多时区时钟",
+  "description": "A multi-time-zone clock",
   "version": "0.1.0",
   "publisher": {
     "id": "dev.floatile",
-    "name": "Floatile Labs",
-    "url": "https://floatile.dev"
+    "name": "Floatile Labs"
   },
   "engineApiVersion": "1.0.0",
+  "uiApiVersion": "1.0.0",
   "type": "widget",
   "entrypoints": {
-    "ui": "ui/widget.slint",
+    "ui": "ui/widget.ftui",
     "logic": "logic/plugin.wasm"
   },
   "sizes": {
@@ -31,105 +35,156 @@
     "resizable": true
   },
   "permissions": [
-    { "capability": "storage:read" },
-    { "capability": "storage:write" },
-    { "capability": "timer:schedule", "maxPerMinute": 60 },
-    { "capability": "system:cpu" },
-    { "capability": "system:memory" },
-    { "capability": "theme:subscribe" },
-    { "capability": "notification:show" }
-  ],
-  "platform": {
-    "requirements": {
-      "wayland": "layer-shell"
+    {
+      "capability": "timer:schedule",
+      "params": { "maxPerMinute": 60, "maxActive": 2 }
     }
-  },
+  ],
   "config": {
     "schema": "config.schema.json"
   },
   "storage": {
     "migrationVersion": 1
   },
-  "signature": {
-    "algorithm": "ed25519",
-    "publicKeyId": "dev.floatile:2026-01",
-    "digest": {
-      "algorithm": "sha256",
-      "files": {
-        "manifest.json": "9a2c...",
-        "ui/widget.slint": "7f1e...",
-        "logic/plugin.wasm": "b04d..."
-      }
-    }
+  "build": {
+    "sdk": "rust",
+    "sdkVersion": "0.1.0"
   }
 }
 ```
 
-## 2. 字段说明
+`build` 只用于诊断与复现，不能改变授权或运行语义。宿主不能根据 `sdk` 字段给 Rust/TypeScript
+不同权限。
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `manifestVersion` | u32 | ✅ | 当前恒为 1；升级时宿主迁移。 |
-| `id` | string | ✅ | 反向域名命名空间（`dev.floatile.clock`）；全包唯一、不可变。 |
-| `name` / `description` | string | ✅/❌ | 显示名与描述。 |
-| `version` | string | ✅ | 语义化版本 `major.minor.patch`（`semver` crate 校验）。 |
-| `publisher` | object | ✅ | `id` + `name` + `url`；`id` 与签名公钥绑定。 |
-| `engineApiVersion` | string | ✅ | 宿主 Plugin API 兼容版本，语义版本；宿主做 `major` 强制、`minor` 兼容判断。 |
-| `type` | string | ✅ | P0/MVP 仅 `"widget"`。V1 扩展 `panel` / `background` / `command`。 |
-| `entrypoints.ui` | string | ✅ | `.slint` 文件相对路径。 |
-| `entrypoints.logic` | string | ✅ | WASM Component 文件相对路径。 |
-| `sizes` | object | ✅ | `default/min/max/resizable`；逻辑像素。 |
-| `permissions` | array | ✅ | 权限声明，可为空数组（零权限插件）。元素见 §3。 |
-| `platform.requirements` | object | ❌ | 可选能力要求（如 `wayland: layer-shell`）。不满足时提示而非安装失败。 |
-| `config.schema` | string | ❌ | `config.schema.json` 相对路径；缺省则无配置面板。 |
-| `storage.migrationVersion` | u32 | ❌ | 插件数据迁移版本，宿主据此跑迁移。 |
-| `signature` | object | V1+ | P0/MVP 可缺省（dev 模式）；V1 校验。 |
+## 2. 字段
 
-## 3. permissions 元素
+| 字段 | 必填 | 规则 |
+|---|---:|---|
+| `manifestVersion` | 是 | v1 恒为 `1`；未知值拒绝 |
+| `id` | 是 | 反向域名；稳定、全局唯一、不可随版本改变 |
+| `name` / `description` | 是/否 | UTF-8、长度限制；不参与信任 |
+| `version` | 是 | 严格 semver |
+| `publisher.id/name` | 是 | P0 为元数据；V1 签名后由 id 关联信任锚 |
+| `engineApiVersion` | 是 | WIT world 兼容版本 |
+| `uiApiVersion` | 是 | `widget.ftui` schema 与组件语义版本 |
+| `type` | 是 | P0/MVP 仅 `widget` |
+| `entrypoints.ui` | 是 | 规范相对路径，指向 `widget.ftui`，不得是 `.slint` |
+| `entrypoints.logic` | 是 | 规范相对路径，指向 WASM Component |
+| `sizes` | 是 | 有限正逻辑像素；default 在 min/max 内 |
+| `permissions` | 是 | 可以为空；未知 capability 或非法 params 拒绝 |
+| `config.schema` | 否 | 包内规范路径；缺省表示无用户配置 |
+| `storage.migrationVersion` | 否 | 非负整数；只描述插件私有 KV 迁移 |
+| `build` | 否 | 诊断元数据，不参与信任/授权 |
+| `signature` | P0 否 | 进入分发前另行 ADR 与 schema |
+
+manifest 不重复存放 State/Event schema；它们属于 UI IR 并与组件树同 digest。宿主加载 UI IR 后
+必须验证内嵌 schema 与 State bindings/event declarations 一致。
+
+## 3. 开发者项目配置
+
+CLI 可以使用以下最小输入；准确 TOML schema 在 CLI 实现时单独版本化：
+
+```toml
+[plugin]
+id = "dev.floatile.clock"
+name = "World Clock"
+version = "0.1.0"
+
+[widget]
+default_size = [240, 120]
+min_size = [160, 80]
+max_size = [800, 600]
+
+[permissions.timer]
+max_per_minute = 60
+max_active = 2
+```
+
+不可从代码安全推导的字段必须显式声明。CLI 检出的 capability 只是候选：代码使用但未声明为
+error；声明但未使用为 warning；CLI 不自动扩大权限。
+
+## 4. 权限对象
 
 ```json
 {
-  "capability": "timer:schedule",
+  "capability": "storage:write",
   "params": {
-    "maxPerMinute": 60
+    "keys": ["settings.*"],
+    "maxBytes": 65536
   }
 }
 ```
 
-- `capability` 必须是注册表内已定义的能力（见 `docs/security/permission-model.md`），未知能力 → 校验失败。
-- `params` 为该能力的配额/作用域，如 `network:https://api.example.com/*` 的域名、`file:read:user-selected` 的范围。
-- 权限语义为**白名单 + 上限**：声明了才有，且宿主仍可收窄。
+- capability 必须来自版本化 registry；字符串前缀相似不能视为兼容。
+- params 必须通过该 capability 的专属 schema；未知字段默认拒绝。
+- manifest 是安装授权上限；用户 grant 和环境能力只能收窄。
+- `host-ui`、`host-log`、`host-clock` 是固定实例 scope 的固有能力，不写入 permissions；它们仍经过
+  Broker 的身份、schema、配额与审计路径。
 
-## 4. 校验规则（宿主 `PluginManager`）
+## 5. 包结构
 
-1. JSON 解析 → schema 校验（`jsonschema`）。
-2. `id` 命名空间合法性、`version` 语义版本。
-3. `engineApiVersion` 与宿主声明的 `SUPPORTED_ENGINE_API` 匹配（major 必须相等）。
-4. `permissions` 全部为已知能力且参数合法。
-5. 引用的文件都存在（`ui/*`、`logic/*`、`config.schema.json`）。
-6. `sizes`：`default` 在 `min`/`max` 区间内；`resizable=false` 时 `min == max == default`。
-7. V1+：`signature` 存在且 digest 与文件一致，公钥受信任。
-
-## 5. 包结构（.floatile zip）
-
-```
+```text
 manifest.json
-ui/widget.slint
+ui/widget.ftui
 logic/plugin.wasm
 assets/
-config.schema.json
-signature.json          # 外部签名文件（V1+；P0/MVP 可选）
+config.schema.json       # 可选
+signature.json           # P0 不使用，未来分发版本可选/必需
 ```
 
-- zip 用规范化打包（固定条目、无路径穿越、限制总大小与解压后大小比，防 zip-bomb）。
-- 路径校验：所有条目相对路径，禁止 `..`、绝对路径、符号链接。
+P0 不允许 `.slint`、原生库、脚本 entrypoint、符号链接或额外可执行文件。即使文件未被 manifest
+引用，非法类型/路径/大小也必须在安装前拒绝。
 
-## 6. 与 WIT/API 的关系
+## 6. 安全校验顺序
 
-- `engineApiVersion` 对应 `wit/` 中 world 的版本号（`floatile:widget@1.0.0`）。
-- manifest 只描述「元数据 + 入口」，接口契约完全由 WIT 决定，两者独立演进。
+安装器必须在独立临时目录/流式读取边界内完成，不能先完整解压再验证：
 
-## 7. 决策记录
+1. 嗅探 zip 文件头与 central directory；扩展名不是信任依据。
+2. 限制压缩包大小、条目数、单条目大小、总解压大小与压缩比。
+3. 规范化每个 UTF-8 路径；拒绝绝对路径、`..`、`.` 混淆、反斜杠变体、NUL、重复规范路径、
+   大小写碰撞、symlink/hardlink/device/特殊文件。
+4. 只读取有上限的 manifest；做 JSON schema、未知字段策略、字符串长度和 semver 校验。
+5. 校验 engine/UI API major、插件 id/version、sizes、capabilities 与 params。
+6. 要求全部 entrypoint/config/asset 引用存在且只引用普通文件；拒绝未允许的可执行条目。
+7. 解析并验证 `widget.ftui`：版本、组件 registry、State/Event schema、binding、If/ForEach、Canvas 与
+   asset budget。
+8. `wasm-tools validate` + Component world/import/export 检查；拒绝未声明 world、ambient WASI、
+   native import 与未知 host function。
+9. 计算所有允许文件 digest；未来签名在完全相同的规范文件集合上验证。
+10. 所有检查通过后原子移动到插件存储；失败清理临时文件并留下脱敏审计。
 
-- 扩展名 `.floatile` 与 zip 内容基于文件头嗅探（`PK\x03\x04`）而非扩展名，避免被改名绕过。
-- `publisher.id` 而非 `publisher.name` 作为信任锚点，避免同名冒充。
+## 7. UI IR 校验
+
+`widget.ftui` v1 至少包含：
+
+```text
+uiApiVersion
+root component tree
+initial State + JSON schema
+event names + payload schemas
+State bindings
+asset references
+limited If/ForEach/animation declarations
+```
+
+限制：无脚本、无网络/文件路径求值、无递归组件、无运行时 import、无 Slint/DOM 节点句柄。所有
+长度、深度、节点数、binding 数、If/ForEach 展开量、Canvas 指令和 asset 引用有硬上限。
+
+## 8. 版本与升级
+
+- manifest、engine API、UI API、SDK、插件自身版本是独立轴。
+- engine/UI major 不兼容直接拒绝；minor 降级必须明确指出缺少的 capability/component。
+- 新版本新增或扩大权限时必须重新确认；只降权可以无提示更新但记录审计。
+- storage migration 在新版本首次激活前以事务执行；失败保留旧版本与原数据，不运行半升级插件。
+- 包格式、安全限制或签名规范的不可逆变化必须新增 ADR。
+
+## 9. CLI 正反例测试
+
+P0 必须覆盖：合法最小包、未知字段/版本/capability、缺失 entrypoint、非 component WASM、world 不
+匹配、非法 UI component/binding/state、绝对/穿越/重复/大小写碰撞路径、symlink、zip bomb、超条目/
+大小/压缩比、损坏 central directory、未引用可执行条目、config schema 失败与安装原子回滚。
+
+## 10. 非目标
+
+P0 不定义公开签名信任、商店发布、增量更新、网络获取、第三方 `.slint`、原生代码或多插件依赖。
+这些能力不能用可选字段偷渡进 v1。

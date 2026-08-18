@@ -37,8 +37,8 @@ the network, commands, or native windows directly.
   mediated by a deny-by-default `PermissionBroker`.
 - **Cross-platform without pretending every platform is identical:** runtime capability probes drive behavior,
   particularly on Wayland.
-- **Designed for plugin authors:** WIT is the single host/guest contract source, backed by an SDK, CLI,
-  manifest validation, and examples.
+- **Designed for plugin authors and AI agents:** Rust and TypeScript share one `State / View / Event / Context`
+  model; generated contracts and the CLI hide Wasmtime, Slint, and packaging internals.
 
 ## Project status
 
@@ -53,9 +53,9 @@ Legend: ✅ basic implementation exists · 🧪 in development or awaiting compl
 | Capability probing and degradation | 🧪 | Native Windows probes and X11 compositor/SHAPE/EWMH/RandR probes are implemented; Wayland has explicit protocol degradation and the macOS implementation remains unimplemented |
 | Edit/show modes, resize, and multi-display layout | 🧪 | Edit/show, click-through coordination, dragging, and resizing are implemented on the Windows and Linux X11 paths; platform-neutral primary-display fallback/original-display recovery is implemented, while Canvas integration and real multi-display/DPI/hot-plug evidence remain |
 | SQLite layout persistence | 🧪 | Layout schema v2, CRUD, v1 upgrade/rollback, and reopen persistence tests are implemented; the shell now wires startup save/restore and display-change re-apply (verified on Xvfb+Openbox); real multi-display/hot-plug validation and multi-instance orchestration remain |
-| `.slint + .wasm` widgets | 🗺️ | Wasmtime, Component Model, and WIT host/guest path are not integrated yet |
+| Unified-UI WASM widgets | 🗺️ | ADR-0001 and the SDK architecture define `widget.ftui + plugin.wasm`, State Patch, and serialized instance actors; implementation is not on `dev` yet |
 | Permission Broker and audit trail | 🗺️ | Default-deny grants, quotas, redaction, and hostile-plugin tests remain |
-| Plugin SDK and packaging CLI | 🗺️ | Planned validate/build/dev commands and package safety checks |
+| Plugin SDK and packaging CLI | 🗺️ | Planned new/dev/check/test/preview/build/inspect commands and package budget checks |
 | Cross-platform and performance acceptance | 🗺️ | Numbers in the acceptance docs are targets, not measured results |
 
 See the authoritative [requirements baseline](docs/product/requirements.md) and
@@ -73,20 +73,20 @@ See the authoritative [requirements baseline](docs/product/requirements.md) and
 
 ### Secure plugin system
 
-- WebAssembly Component Model with versioned WIT contracts (🗺️)
+- Unified Floatile UI IR plus the WebAssembly Component Model and versioned WIT contracts (🗺️)
 - Wasmtime fuel, memory, call-rate, and lifecycle budgets (🗺️)
 - A deny-by-default `PermissionBroker` for every host capability (🗺️)
 - Scoped and audited storage, timer, metrics, and logging services (🗺️)
-- Untrusted-input validation for manifests, archives, Slint, WASM, configuration, and WIT arguments (🗺️)
+- Untrusted-input validation for manifests, archives, UI IR, WASM, assets, configuration, State Patch, and WIT arguments (🗺️)
 
 ### Plugin developer experience
 
-- Rust SDK for `wasm32-wasip2` with bindings generated from the same WIT source (🗺️)
-- A `.floatile` package layout for manifest, UI, logic, and assets (🗺️)
-- `floatile validate`, `floatile build`, and `floatile dev` workflows (🗺️)
-- Native and WebAssembly reference clock implementations (native ✅, WASM 🗺️)
+- Rust and TypeScript SDKs with the same `State / View / Event / Context` and component semantics (🗺️)
+- Build-time JSX/Rust View compilation to `widget.ftui`; authors do not edit WIT, generated manifests, or Slint (🗺️)
+- `floatile new/dev/check/test/preview/build/inspect` plus stable `--json` agent interfaces (🗺️)
+- Native, Rust-WASM, and TypeScript-WASM reference clocks (native ✅, plugin versions 🗺️)
 
-> A plugin marketplace, signing and updates, themes, credential storage, network Broker, inter-plugin
+> A plugin marketplace, signing and updates, custom theme systems/editors, credential storage, network Broker, inter-plugin
 > communication, and sidecars are outside P0 and remain candidates for later phases.
 
 ## Quick start
@@ -133,18 +133,20 @@ cargo test --workspace --all-targets --locked
 ```mermaid
 flowchart TB
     Shell["floatile-shell<br/>canvas · modes · lifecycle"]
-    Runtime["floatile-runtime<br/>Slint · Wasmtime (in development)"]
+    Runtime["floatile-runtime<br/>instance actor · State · Wasmtime (in development)"]
+    UI["Floatile UI renderer<br/>widget.ftui → Slint (in development)"]
     Broker["PermissionBroker<br/>grants · quotas · audit (in development)"]
     Services["floatile-services<br/>timers · storage · metrics (in development)"]
     Store["floatile-store<br/>SQLite (in development)"]
     Platform["floatile-platform<br/>the only OS/window-system boundary"]
-    Plugin["Widget plugin<br/>.slint + .wasm (in development)"]
-    WIT["Single WIT contract source (in development)"]
+    Plugin["Widget plugin<br/>widget.ftui + plugin.wasm (in development)"]
+    Contract["UI schema + WIT<br/>one dual-SDK model (in development)"]
 
     Shell --> Runtime
+    Shell --> UI
     Shell --> Platform
     Runtime --> Plugin
-    Plugin <--> WIT
+    Plugin <--> Contract
     Runtime --> Broker
     Broker --> Services
     Services --> Store
@@ -161,6 +163,7 @@ with bounded messages posted back to the UI.
 |---|---|---|
 | Language/toolchain | Rust 2024 · Rust 1.97.1 | ✅ pinned patch toolchain and lockfile |
 | UI/windowing | Slint 1.17 · winit 0.30 | 🧪 reference clock and base window attributes |
+| Plugin UI | Floatile UI IR v1 | 🗺️ static component tree and State/Event schema; Slint remains host-internal |
 | Plugin ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🗺️ single versioned host/guest contract |
 | Plugin runtime | Wasmtime | 🗺️ async component calls, fuel, and resource limits |
 | Async runtime | Tokio | 🗺️ background I/O without blocking the Slint thread |
@@ -179,7 +182,8 @@ See the [technology stack document](docs/architecture/technology-stack.md) for v
 | `floatile-platform` | Capability probes and all OS/window-system differences | 🧪 |
 | `floatile-shell` | Desktop host, canvas, modes, and application composition | 🧪 |
 | `floatile-plugin-api` | WIT host bindings and contract types | 🗺️ |
-| `floatile-runtime` | Dynamic Slint UI and Wasmtime execution | 🗺️ |
+| `floatile-ui-schema` (planned) | Guest-safe UI IR, components, and State/Event schema source | 🗺️ |
+| `floatile-runtime` | Instance actors, State, budgets, and Wasmtime execution | 🗺️ |
 | `floatile-services` | Broker-mediated host services | 🗺️ |
 | `floatile-store` | SQLite, migrations, and transactions | 🧪 |
 | `floatile-sdk` | WASI guest SDK and bindings | 🗺️ |
@@ -206,8 +210,8 @@ Crate dependency rules are security and portability boundaries, not suggestions.
   dragging, and real platform probes
 - **S2 · Desktop interaction (in progress):** edit/show, click-through, resizing, and Linux X11 monitor enumeration; real multi-display/DPI evidence remains
 - **S3 · Layout persistence (in progress):** monitor-local recovery, SQLite v2, shell startup save/restore, and display-change re-apply are implemented; real multi-display/hot-plug validation and multi-instance orchestration remain
-- **S4 · Plugin contract (planned):** one WIT source, manifest, SDK, and package validation
-- **S5 · Sandboxed runtime (planned):** Wasmtime, dynamic Slint, Broker, quotas, and hostile-plugin tests
+- **S4 · Plugin contract (designed, implementation pending):** ADR-0001, unified UI, WIT, manifest, and dual-SDK architecture
+- **S5 · Sandboxed runtime (planned):** UI schema, instance actors, State Patch, Wasmtime, Broker, Rust/TypeScript clocks, and hostile-plugin tests
 - **P0 acceptance (planned):** Windows/macOS/X11/Wayland evidence, performance measurements, risk review,
   and licensing ADR
 
@@ -236,12 +240,16 @@ and architecture documentation.
 - [Plugin permission model](docs/security/permission-model.md)
 - [Manifest v1](docs/plugin-sdk/manifest-v1.md)
 - [WIT API v1](docs/plugin-sdk/wit-api-v1.md)
+- [Floatile UI IR v1](docs/plugin-sdk/ui-ir-v1.md)
+- [Plugin system architecture](docs/plugin-sdk/plugin-system-architecture.md)
+- [Rust/TypeScript SDK and developer experience](docs/plugin-sdk/sdk-developer-experience.md)
+- [ADR-0001: unified plugin UI](docs/architecture/decisions/0001-unified-plugin-ui.md)
 - [Architecture risk register](docs/architecture/risks.md)
 
 ## Security
 
-The plugin security boundary is still being designed and implemented. Do not run untrusted `.slint`, WASM,
-or plugin packages. Until a dedicated security contact exists, avoid public disclosure of exploitable details
+The plugin security boundary is still being designed and implemented. Do not run untrusted WASM, UI IR,
+assets, or plugin packages. P0/MVP plugins do not accept third-party `.slint`. Until a dedicated security contact exists, avoid public disclosure of exploitable details
 and contact the repository owner privately.
 
 ## License and distribution

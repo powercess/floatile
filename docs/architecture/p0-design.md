@@ -1,126 +1,152 @@
-# Floatile P0 技术设计文档
+# Floatile P0 技术设计
 
-> 版本：draft-0.1
-> 状态：Proposed
-> 范围：P0（技术可行性验证）。目标不是堆砌功能，而是暴露窗口层和 Wayland 风险，为 MVP 打下可验证的垂直切片。
+> 版本：draft-0.2
+> 状态：Proposed；插件 UI 边界由 ADR-0001 Accepted
+> 范围：P0 技术可行性验证，不等同完整 MVP
 
-## 1. P0 目标与非目标
+## 1. P0 目标
 
-### 目标（Do）
-- 在 Windows、macOS、Linux(X11) 上验证「透明无边框 + Always-on-top + 点击穿透 + 编辑/展示模式切换」。
-- 在 Wayland 上验证能力分级与降级策略，明确能做什么、不能做什么。
-- 验证多显示器、DPI 缩放、显示器热插拔下的布局恢复。
-- 验证基础拖拽、缩放与布局持久化。
-- 验证 Slint 运行时动态加载 `.slint` UI。
-- 交付一个硬编码时钟组件（Reference Widget）。
-- 交付一个最小 `.slint + .wasm` 插件（Wasmtime + Component Model + WIT）。
-- 验证插件无法绕过 Permission Broker 调用原生能力。
-- 产出三端能力矩阵（见 `docs/platform-matrix/platform-matrix.md`）。
+- 在 Windows、macOS、Linux X11 验证透明、无边框、置顶、点击穿透和 Edit/Show。
+- 在 Wayland 验证能力分级与显式降级。
+- 验证多显示器、DPI、热插拔布局恢复和 SQLite 持久化。
+- 交付硬编码 Reference Clock，作为窗口与性能基线。
+- 验证统一 Floatile UI：Rust/TypeScript SDK 生成相同 `widget.ftui`，宿主使用 Slint 渲染但插件不
+  接触 Slint。
+- 交付 Rust 与 TypeScript 插件化时钟，通过相同 WIT、State/Event、权限与行为向量。
+- 验证 Wasmtime Component、串行实例 actor、State Patch 和 deny-by-default PermissionBroker。
+- 交付恶意插件拒绝、配额、trap、宿主存活和脱敏审计证据。
+- 完成 F1–F13、平台矩阵、性能、风险假设和版本选择记录。
 
-### 非目标（Don't）
-- 不做插件市场、多画布、主题系统、凭证托管、跨插件通信、Sidecar。
-- 不做安装器/签名/更新（只在 MVP 做）。
-- 不做全部四种插件类型，P0 只有 Widget 型。
-- 不做完备的无障碍与高对比度（P0 只记录降级行为）。
+P0 不做：插件市场、签名/更新、网络/文件/命令/secret、跨插件通信、Sidecar、第三方 `.slint`、
+HTML/WebView、原生插件、多种插件类型和完整无障碍。
 
 ## 2. 架构总览
 
-P0 采用与最终架构一致的分层，但每层只实现「最小可用」：
+```text
+floatile-shell
+├─ Slint/winit main loop · Canvas · Edit/Show · layout
+├─ Floatile UI renderer ← validated widget.ftui + State snapshot
+├─ PluginManager ← manifest/package validation
+├─ floatile-runtime
+│  ├─ per-instance actor / bounded queue / State
+│  └─ Wasmtime Component / fuel / memory / timeout
+├─ floatile-services
+│  └─ PermissionBroker → log/clock/timer/storage/metrics/theme
+├─ floatile-store
+└─ floatile-platform
 
-```
-floatile-shell (bin)
-├─ canvas · layout · edit/show mode · persistence
-├─ widget-host       —— 一个 widget 的 Slint 实例宿主
-├─ plugin-manager    —— 安装/加载/校验（P0 只支持 dev 目录加载）
-├─ permission-broker —— 唯一原生能力入口
-└─ runtime
-   ├─ slint-runtime   —— 动态编译 .slint
-   └─ wasm-runtime    —— wasmtime 组件运行时
-      └─ platform     —— 平台抽象（transparency / click-through / AOT / edit mode）
-```
-
-关键决策（P0 就定死，后续不得放宽）：
-
-1. **能力入口唯一化**：插件触达的任何宿主能力（存储、计时器、指标、文件、网络、命令）都必须经由 `PermissionBroker` 路由。P0 只实现日志、存储、计时器、CPU/内存指标四类能力，且全部过 Broker。
-2. **双模式**：`EditMode`（可交互、显示边框/手柄）与 `ShowMode`（可选点击穿透、隐藏控制元素）。点击穿透与可交互天然冲突，由宿主在模式切换时统一管理，插件不得自行切换。
-3. **零权限默认**：插件未声明任何能力时，只能获得「纯渲染 + 被动 UI 事件回传」。
-4. **WIT 即契约**：宿主与插件之间只有 WIT 定义的接口；宿主不暴露任何原始函数指针、模块或原生句柄给插件。
-
-## 3. 线程模型与事件循环
-
-- 主线程只跑 Slint/winit 事件循环。
-- Tokio 多线程 runtime 在后台运行，承载 wasmtime(异步)、存储、网络。
-- 跨线程边界使用 `tokio::sync::mpsc` + Slint `invoke_from_event_loop` 回投 UI 线程。
-- **禁止在 Slint 回调里做阻塞 I/O 或同步等待 wasm**。
-
-```
-[Slint main loop]  <--invoke_from_event_loop--   [Tokio runtime]
-        |                                            |
-        +-------- widget host (edit frame, handles)   +-- wasmtime async component call
-        +-------- permission broker (sync checks)     +-- sqlite / keyring / http
+plugin package
+├─ manifest.json
+├─ ui/widget.ftui
+└─ logic/plugin.wasm
 ```
 
-## 4. 渲染与 DPI
+关键边界：
 
-- Slint 默认 winit 后端（OpenGL/Metal/D3D），GPU 加速；软件渲染器作为 Linux 无 GPU/驱动异常时的降级后端。
-- DPI 缩放：交给 Slint/winit 的 scale factor；所有布局以逻辑像素存储，保存时同时记录物理尺寸与 scale factor。
-- 透明窗口：Slint 窗口背景设 `Color::TRANSPARENT`，窗口管理器层面按平台矩阵实现（见平台矩阵文档）。
+1. **统一 UI**：插件 View 构建期编译，运行期只发 State Patch；Slint 不是插件 API。
+2. **唯一 ABI**：WIT 是 host/guest 唯一调用源；UI IR 不能携带 host function。
+3. **唯一能力入口**：固有/声明能力都经 Broker 的 identity、scope、quota、environment 与 audit。
+4. **宿主权威模式**：Edit/Show、点击穿透、窗口控件、布局和平台降级由 shell/platform 管理。
+5. **实例 actor**：同一实例 callback 严格串行；资源和预算按实例隔离，编译产物可只读共享。
+6. **零 ambient capability**：插件不获得 raw WASI 文件/网络/环境、Slint/窗口/服务/数据库句柄。
 
-## 5. 布局模型与持久化
+详细插件架构见 `../plugin-sdk/plugin-system-architecture.md`。
 
-- 持久化坐标是相对于期望 monitor 工作区原点的逻辑像素；monitor 使用 EDID/product 指纹
-  标识，并记录保存时的 scale factor 与物理尺寸。
-- `floatile-store` 的 `layout` v2 表保存 `instance_id, plugin_id, monitor_key, x, y, w, h,
-  physical_w, physical_h, scale_factor, lost_monitor, z, mode, version, updated_at`。
-- 启动与 `MonitorListChanged` 时重算；原 monitor 缺失时运行态落到主屏并标记
-  `lost_monitor`，但不得覆盖原 `monitor_key` 或 monitor-local 矩形，确保原屏重新接入后可恢复。
+## 3. 线程模型
 
-## 6. 插件加载管线（P0 最小）
+```text
+[Slint main thread]
+  input → declared UI event ───────┐
+  render ← validated State update │ bounded channels
+                                  ▼
+[Tokio/runtime workers]
+  instance actor → Wasmtime async callback
+                 → WIT import → Broker → service
+                 → host-ui State Patch → validate/commit → UI queue
+```
 
-1. `PluginManager::discover(path)` 读取 `manifest.json`（P0 允许 dev 目录，跳过签名）。
-2. 校验 `engineApiVersion` 兼容性（语义版本）。
-3. 解析权限声明 → 构建 `Grants`。
-4. Slint 运行时编译 `ui/widget.slint`（`slint_interpreter::Compiler`）。
-5. wasmtime 引擎（`component-model` feature）加载 `logic/plugin.wasm`，实例化 component。
-6. 将编译好的 Slint 组件放入画布，宿主绑定 UI 事件回调 → wasm 的 `handle_ui_event`。
-7. 每次宿主能力调用先过 `PermissionBroker`。
+- Slint 回调只排队 event，不同步等待 WASM、Tokio、SQLite 或任何不可信输入。
+- runtime 每实例 bounded queue 严格串行；timeout/cancel 后才能处理下一事件。
+- State Patch 在 worker 上解析、原子应用和 schema 校验，runtime State 为权威；SDK mirror 只在 host
+  确认后提交，主线程只应用已验证 snapshot/diff。
+- queue full、UI 拥塞、shutdown 和 cancellation 都有明确错误/合并策略与 tracing。
 
-## 7. 硬编码时钟（Reference Widget）
+## 4. UI、渲染与 DPI
 
-- 不经过插件管线，直接内建一个时钟 Slint 组件，作为：
-  - 验证透明/置顶/点击穿透/编辑模式的基准载体；
-  - 后续对比「插件化时钟」的行为与性能基线。
+- Slint 1.17/winit 只在宿主内；默认 GPU renderer，软件 renderer 是显式降级。
+- `widget.ftui` v1 是静态组件树、State/Event schema、binding、有限 If/ForEach、动画与 asset ref；
+  无脚本或通用表达式运行时。
+- Rust/TypeScript 组件与 schema 从同一源生成。P0 组件集保持最小，定制通过组合与受限 Canvas/Path。
+- IR→Slint 是宿主内部 renderer spike：比较预编译通用 renderer 与“由结构化已验证 IR 生成宿主
+  控制的 Slint 定义”两条路径。不得接受/拼接插件 Slint 源；在实测前不宣称任一路径已可行。
+- Widget 内尺寸和宿主布局均使用逻辑像素；scale factor/物理尺寸只由 host/platform 提供。
+- 透明、穿透、置顶是宿主窗口能力，插件组件不能请求原生窗口改变。
 
-## 8. 最小插件（clock.wasm）
+## 5. 布局与持久化
 
-- 语言：Rust，target `wasm32-wasip2`，wit-bindgen 生成 guest 绑定。
-- 职责：注册 `timer:schedule`（1s 周期），`get_local_time()` 返回格式化的时间字符串，宿主把值写回 Slint 属性。
-- 目录：`plugins/clock-wasm`（作为 SDK 使用示例）。
+- 坐标相对期望 monitor 工作区原点，保存逻辑矩形、物理尺寸、scale factor 与稳定 monitor key。
+- layout v2 保存 instance/plugin/monitor/rect/DPI/lost_monitor/z/mode/version/time。
+- monitor 缺失时运行态回主屏并标记 lost，保留原 monitor-local 数据以便重新接入恢复。
+- Config、State、Storage 分离：Config/Storage 持久化，UI State 默认不持久化。
 
-## 9. 安全边界（P0 实测项）
+## 6. 插件加载管线
 
-- **插件无法读到宿主内存**：wasmtime 隔离。
-- **插件无法直接碰文件/网络/命令**：P0 未实现这些能力 → 无接口 = 无路径。
-- **插件无法绕过 Broker**：Broker 是宿主能力唯一入口，P0 以「恶意插件测试」形式证明（见验收标准）。
-- **.slint 不是安全边界**：动态编译的 .slint 在宿主进程内执行，只能调用宿主暴露的回调/属性，但仍应视为不可信输入，后续用受限执行 + 回调白名单约束。
+1. PluginManager 以有界流读取 dev 目录或 `.floatile`，校验规范路径、归档预算和 manifest。
+2. 独立检查 `manifestVersion`、`engineApiVersion`、`uiApiVersion` 与插件 semver。
+3. 验证 `widget.ftui` 的 component registry、State/Event schema、binding、If/ForEach、Canvas 与 assets。
+4. 验证 WASM 是目标 Component world，无未知/ambient imports，并施加 Engine/Store limits。
+5. capability registry 校验 permissions，构造仅可收窄的 instance grants。
+6. shell 从已验证 UI IR 创建宿主组件；runtime 创建 instance actor/State/queue/Store。
+7. host 调 constructor/start；插件通过 `host-ui.update-state` 完成首个 UI 状态。
+8. 任一步失败都回滚实例与临时安装，不显示可用状态，并记录安全的结构化错误。
 
-## 10. 可观测性
+## 7. Reference Clock 与插件时钟
 
-- `tracing` 全链路：事件（event）、span（instance_id/plugin_id）。
-- 审计日志独立 target `floatile::audit`，可配置输出到 SQLite `audit_log` 表。
-- P0 埋点：能力调用（permission 决策 + redacted 参数）、模式切换、窗口创建/移动、插件加载/实例化、崩溃（host）计数。
+- Reference Clock 保持内建，用于窗口/UI/性能基线。
+- Rust clock：`wasm32-wasip2` + Rust SDK，timer 每秒事件后更新 `state.time`。
+- TypeScript clock：相同 View/State/Event/权限和行为测试；具体 adapter/runtime 先经 ADR 与资源门。
+- 两个插件生成相同语义的 UI IR，使用同一 WIT world；语言不是能力或兼容维度。
+- F11 比较首次显示、每秒更新、Edit/Show 通知、timer deny、suspend/resume、stop 与资源指标。
 
-## 11. 交付物清单（P0 结束时应产出）
+## 8. PermissionBroker 与服务
 
-- [ ] 平台矩阵文档（实测数据回填）
-- [ ] 三端可运行的 host（Win/macOS/X11，Wayland 有降级）
-- [ ] 硬编码时钟 + 插件化时钟
-- [ ] 布局持久化 + 热插拔恢复
-- [ ] 恶意插件安全测试用例 + 结果
-- [ ] P0 验收指标实测记录
-- [ ] 依赖/假设复盘（哪些假设被推翻，哪些工具链版本锁定）
+- 固有能力：UI State、限速日志、只读 wall clock；固定当前 instance scope，仍经 Broker。
+- 声明能力：timer、private storage、process metrics、theme；manifest 是上限，grant 可收窄。
+- P0 不实现网络/文件/命令/secret；没有 WIT interface，也没有临时 host function。
+- allow/deny/scope/quota/unavailable/invalid input 都有稳定错误与脱敏 audit。
 
-## 12. 与后续阶段的关系
+## 9. Runtime 与安全
 
-- P0 冻结的：WIT 语义、Broker 决策模型、SQLite 表结构骨架、坐标/DPI 数据模型。
-- P0 不冻结的：插件包格式细节、证书/签名格式、HTTP Broker 协议（MVP 再定）。
+- Wasmtime 启用 component model、async、fuel/epoch interruption、memory/table/resource limits。
+- 对 manifest/archive/UI/WASM/config/State/event/assets 先限字节/数量/深度，再解析和语义校验。
+- 插件 trap、超时、超内存、恶意 patch/事件洪泛只终止/暂停当前实例，宿主和其他实例存活。
+- Slint 只消费宿主生成/验证的 UI，不编译第三方 `.slint`；第三方字体/SVG 在 R12 退出前禁用。
+- `.slint`、HTML/WebView、native sidecar 不能作为 dev-only 逃生口。
+
+## 10. 可观测性与诊断
+
+- tracing span 始终包含 plugin_id/instance_id/event/capability，不记录 secret 或完整 State/Storage value。
+- `floatile::audit` 记录 capability decision、quota、invalid input、runtime trap 和 package validation。
+- UI patch 只记录大小、字段数、错误路径 hash、queue latency 和结果。
+- CLI/runtime 错误有稳定 code；`--json` 输出供 CI/Agent 使用，自由文本不作为自动化契约。
+
+## 11. P0 交付物
+
+- [ ] 平台矩阵与三端可运行 host，Wayland 有真实降级证据
+- [ ] Reference Clock + Rust/TypeScript plugin clocks
+- [ ] WIT/UI schema/manifest/capability 单源与生成 drift 检查
+- [ ] IR→Slint renderer spike 与布局/缓存/错误/资源/恶意 IR 证据
+- [ ] Wasmtime actor、State Patch、Broker、budget 与 audit
+- [ ] `.floatile` dev 包 validate/build/inspect 与恶意 corpus
+- [ ] 布局持久化与真实多屏/DPI/hot-plug 证据
+- [ ] evil-plugin 安全测试与宿主存活
+- [ ] CPU/RSS/首帧/帧率/patch latency/拒绝延迟数据
+- [ ] 风险假设、TypeScript runtime ADR、许可 ADR 与版本锁定
+
+## 12. 冻结与后续
+
+P0 结束冻结：WIT v1 语义、UI IR v1 语义、Broker 决策模型、manifest/package v1、SQLite 骨架、
+坐标/DPI 模型和双 SDK 行为向量。实现细节编码可以演进，但不能静默改变公开语义。
+
+签名/商店、HTTP/credential、Custom UI、插件类型扩展与发布 SLO 在后续阶段分别决策。任何 Custom
+UI 必须用新 ADR 证明统一 UI/Canvas 的真实缺口以及隔离、许可、兼容和迁移方案。

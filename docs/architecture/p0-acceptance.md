@@ -19,7 +19,7 @@
 | F8 | 显示器热插拔恢复 | 拔屏再插回，布局恢复到原位置 | 支持 | 支持 | 条件支持 | 支持 |
 | F9 | 布局持久化 | 重启后布局/尺寸/模式恢复 | 支持 | 支持 | 支持 | 支持 |
 | F10 | 硬编码时钟 | 每秒更新时间，逻辑正确 | 支持 | 支持 | 支持 | 支持 |
-| F11 | 插件化时钟 | `.slint + .wasm` 加载、计时器回调、UI 属性更新 | 支持 | 支持 | 支持 | 支持 |
+| F11 | 插件化时钟 | Rust 与 TypeScript SDK 使用同一模型构建 `widget.ftui + plugin.wasm`；宿主完成包/UI/WASM 校验、计时器回调、State Patch 与 UI 更新 | 支持 | 支持 | 支持 | 支持 |
 | F12 | 恶意插件被拒 | 未授权能力调用返回 permission denied，宿主不崩溃，审计留痕 | 支持 | 支持 | 支持 | 支持 |
 | F13 | 能力矩阵回填 | platform-matrix 三端实测数据完整 | 必测 | 必测 | 必测 | 必测 |
 
@@ -34,6 +34,7 @@
 | 冷启动到首帧（release） | ≤1.5 s | |
 | 布局持久化加载 | ≤200 ms（10 实例） | |
 | 恶意插件拒绝调用时宿主无卡顿 | 拒绝路径 ≤1 ms 平均 | |
+| State Patch 到 UI 应用（1 KiB） | ≤16 ms P95，且不阻塞 Slint 主线程 | |
 
 ## 3. 安全验收（P0 必测）
 
@@ -44,17 +45,23 @@
 3. 无限循环占用 CPU（验证 fuel 上限触发 trap）。
 4. 超大内存申请（验证线性内存上限）。
 5. 尝试构造文件名 `../../` 读取宿主文件（P0 无文件接口 → 应无路径；验证无崩溃）。
+6. 发送超大、过深、类型错误 State Patch，并以超限频率更新 UI。
+7. 伪造事件名/instance id、洪泛事件队列或在 suspend/stop 后调用能力。
 
 通过标准：
 
-- 1/3/4/5 → 拒绝/终止 + 审计记录 + 宿主进程存活。
+- 1/3/4/5/6/7 → 拒绝/终止 + 审计记录 + 宿主进程存活；失败 patch 不得部分修改 State。
 - 2 → 编译或链接失败（无宿主符号暴露）；若运行期可调用则直接判失败。
 - 宿主被整死、无审计、或插件读取到宿主内任意内存 → 判失败。
 
 ## 4. 工程验收
 
 - `cargo clippy -D warnings`、`cargo test`（core/store/platform 单测）在三端 CI 全绿。
-- WIT 单一源校验：`floatile-plugin-api` 与 `floatile-sdk` 绑定同源生成（CI 检查）。
+- WIT 单一源校验：host bindings、Rust SDK 与 TypeScript adapter 同源生成（CI 检查）。
+- UI schema 单一源校验：Rust/TypeScript 组件和 State/Event 类型、CLI、runtime 与 renderer 使用同一
+  `uiApiVersion` 和 contract vectors；生成物无 drift。
+- Rust/TypeScript 参考时钟使用相同行为向量；若 TypeScript runtime 尚未通过 ADR/性能门，F11 不得
+  以 Rust-only 冒充双 SDK 完成。
 - 无 `unsafe` 泄漏到业务 crate（仅 `floatile-platform` 允许隔离的 unsafe 且带注释与测试）。
 - 三端各自可以 `cargo build --release` 且产物可运行。
 - Wayland 降级路径在至少一个纯 Wayland 环境（如 sway）与一个 GNOME/Wayland 环境实测。

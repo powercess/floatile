@@ -55,12 +55,13 @@ cargo deny --locked check advisories bans sources
 
 | 变更 | 附加验证 |
 |---|---|
-| WIT/SDK/runtime | 生成物无 diff 或已提交；guest 构建；host/guest 契约与版本兼容测试；`wasm-tools validate` |
-| manifest/package | schema 正反例；路径穿越、链接、重复项、zip-bomb 与大小边界测试 |
+| WIT/lifecycle/runtime | host/Rust/TS adapter 生成物无 drift；guest 构建；串行 actor、超时/取消；版本兼容；`wasm-tools validate` |
+| UI schema/SDK/renderer | Rust/TS 类型与组件同源；IR/State/Event 正反例；patch 原子性/配额；preview 与行为 vectors |
+| manifest/package | schema 正反例；UI/WASM/assets；路径穿越、链接、规范碰撞、重复项、zip-bomb、大小与原子安装 |
 | Broker/能力 | allow/deny/scope/quota；审计脱敏；恶意插件；宿主存活 |
 | store/migration | 空库、旧版本升级、事务失败、重复运行与数据保留 |
 | platform/window | 对应 OS 构建；能力 probe；真实显示环境步骤；矩阵回填 |
-| UI/性能 | release 构建；首帧、CPU、RSS、帧率采样；环境与原始值 |
+| UI/性能 | release 构建；首帧、CPU、RSS、帧率、patch latency、单/10 实例；环境与原始值 |
 | 依赖升级 | `Cargo.lock` diff；cargo-deny；三平台构建；关键 API/行为回归 |
 
 ## 4. CI 与证据

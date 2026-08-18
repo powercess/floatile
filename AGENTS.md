@@ -43,12 +43,16 @@
 - `floatile-core` 保持纯领域模型与纯逻辑，不做 I/O、不依赖 runtime/UI/platform。
 - `floatile-sdk` 面向 `wasm32-wasip2` guest，不得依赖任何宿主 crate。
 - Slint 主线程不得阻塞 I/O、等待 Tokio 或同步执行不受信任 wasm。
-- 不受信任输入包括 manifest、zip 路径、`.slint`、WASM、插件配置和 WIT 参数；校验后再使用。
+- 不受信任输入包括 manifest、zip 路径、UI IR、WASM、assets、插件配置、State Patch、事件 payload
+  和 WIT 参数；校验后再使用。ADR-0001 下 P0/MVP 不接受第三方 `.slint`。
 - 许可 ADR 未通过前不得创建可对外分发的产物或放宽 license gate。
 
 ## 变更联动
 
-- 改 WIT：同步 API 文档、`floatile-plugin-api`、`floatile-sdk`、runtime 适配、版本与契约测试。
+- 改 WIT：同步 API 文档、`floatile-plugin-api`、`floatile-sdk`、TypeScript adapter、runtime 适配、
+  版本与契约测试。
+- 改 UI schema/组件/State/Event：同步 Rust/TypeScript SDK、CLI、runtime、shell renderer、
+  `uiApiVersion`、文档示例与双语言 contract vectors；不得手写两套语义。
 - 改权限：同步能力注册表、manifest 校验、Broker、审计脱敏和恶意插件测试。
 - 改平台能力：先改 platform trait/probe，再改上层降级行为、平台矩阵和平台测试证据。
 - 改持久化：新增前向 migration；禁止修改已发布 migration；补升级与回滚失败测试。

@@ -16,7 +16,9 @@
 | 不可逆决策 | `architecture/decisions/` | 兼容性、安全、持久化、许可或平台承诺变化 |
 | 风险与假设 | `architecture/risks.md` | 发现新风险或获得验证结论 |
 | 权限与网络安全 | `security/permission-model.md`、`security/http-broker.md` | 能力、scope、配额、脱敏或网络策略变化 |
-| 插件契约 | `plugin-sdk/manifest-v1.md`、`plugin-sdk/wit-api-v1.md` | manifest/WIT/包格式变化 |
+| 插件系统总体架构 | `plugin-sdk/plugin-system-architecture.md` | 数据流、生命周期、实例隔离、语言/runtime 或版本轴变化 |
+| 插件 SDK 与开发体验 | `plugin-sdk/sdk-developer-experience.md` | Rust/TypeScript API、组件、CLI、诊断、测试或 Agent 契约变化 |
+| 插件契约 | `plugin-sdk/manifest-v1.md`、`plugin-sdk/wit-api-v1.md`、`plugin-sdk/ui-ir-v1.md` | manifest/WIT/UI IR/包格式变化 |
 | 平台事实 | `platform-matrix/platform-matrix.md` | 获得新的实测证据 |
 | 工程规则 | `development/` | 本地流程、CI、代码或测试规范变化 |
 
@@ -40,4 +42,6 @@
 - 相对链接必须从当前文件可解析；重命名时全仓搜索反向引用。
 - 架构图只表达一个事实源，正文描述异常与降级路径。
 - 新增依赖要写入技术栈；新风险要写入风险清单；改变不可逆约束要新增 ADR。
+- 插件 UI、ABI、manifest、capability 或 SDK 变化必须从上述插件事实源定位全部联动；不得只修改
+  示例代码或单一语言 SDK。
 - 验证结果只追加真实证据，不预填成功；过期数据标明日期和替代记录。
