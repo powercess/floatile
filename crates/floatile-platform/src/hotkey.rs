@@ -3,7 +3,9 @@
 //! 设计约束：热键依赖原生窗口句柄与消息循环，全部收敛在本 crate；
 //! `floatile-shell` 只安装安全的平台回调并处理命中的热键 ID。
 
+#[cfg(target_os = "linux")]
 use std::sync::mpsc::SyncSender;
+#[cfg(target_os = "linux")]
 use std::thread::JoinHandle;
 
 use crate::PlatformError;
@@ -49,22 +51,34 @@ pub struct Hotkey {
 
 /// 后台热键监听注册。
 ///
-/// 当前用于 Linux X11：持有注册 passive grab 的连接和事件线程；销毁或调用 [`Self::stop`]
-/// 时释放资源。Windows 继续由 winit `msg_hook` 派发 `WM_HOTKEY`。
+/// Linux X11 持有注册 passive grab 的连接和事件线程；macOS 持有 Carbon 事件处理器与
+/// 热键引用。销毁或调用 [`Self::stop`] 时释放资源。Windows 继续由 winit `msg_hook`
+/// 派发 `WM_HOTKEY`。
 pub struct HotkeyListener {
+    #[cfg(target_os = "linux")]
     stop: Option<SyncSender<()>>,
+    #[cfg(target_os = "linux")]
     worker: Option<JoinHandle<()>>,
+    #[cfg(target_os = "macos")]
+    macos: Option<macos_impl::RegisteredHotkey>,
 }
 
 impl HotkeyListener {
     fn shutdown(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.try_send(());
-        }
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
+        #[cfg(target_os = "linux")]
         {
-            tracing::warn!("global hotkey listener panicked");
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.try_send(());
+            }
+            if let Some(worker) = self.worker.take()
+                && worker.join().is_err()
+            {
+                tracing::warn!("global hotkey listener panicked");
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(mut registered) = self.macos.take() {
+            registered.unregister();
         }
     }
 
@@ -82,7 +96,8 @@ impl Drop for HotkeyListener {
 /// 在支持后台派发的显示协议上监听全局热键。
 ///
 /// Linux X11 使用 root-window passive grab；回调在平台工作线程执行，调用方必须把 UI
-/// 更新投递回 UI 事件循环。其他平台返回显式不支持。
+/// 更新投递回 UI 事件循环。macOS 使用 Carbon `RegisterEventHotKey`（无需辅助功能授权），
+/// 回调在主线程事件循环派发。其他平台返回显式不支持。
 pub fn listen_hotkey(
     hotkey: Hotkey,
     on_trigger: impl Fn() + Send + 'static,
@@ -92,11 +107,16 @@ pub fn listen_hotkey(
         linux_impl::listen_hotkey(hotkey, on_trigger)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_impl::listen_hotkey(hotkey, on_trigger)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (hotkey, on_trigger);
         Err(PlatformError::Unsupported(
-            "background global hotkey listening is only implemented on Linux X11",
+            "background global hotkey listening is not implemented on this platform",
         ))
     }
 }
@@ -333,6 +353,256 @@ mod linux_impl {
             assert_eq!(mask & ModMask::CONTROL, ModMask::CONTROL);
             assert_eq!(mask & ModMask::SHIFT, ModMask::SHIFT);
             assert_eq!(mask & ModMask::M1, ModMask::default());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos_impl {
+    use std::ffi::c_void;
+    use std::mem::size_of;
+    use std::sync::Mutex;
+
+    use super::*;
+    const HOTKEY_SIGNATURE: u32 = 0x4650_4C45;
+
+    /// Carbon Event Manager 的少量 C 符号。
+    mod ffi {
+        use std::ffi::c_void;
+
+        pub type EventTargetRef = *mut c_void;
+        pub type EventHandlerRef = *mut c_void;
+        pub type EventHandlerCallRef = *mut c_void;
+        pub type EventRef = *mut c_void;
+        pub type EventHotKeyRef = *mut c_void;
+        pub type OSStatus = i32;
+
+        #[repr(C)]
+        #[derive(Debug, Clone, Copy)]
+        pub struct EventHotKeyID {
+            pub signature: u32,
+            pub id: u32,
+        }
+
+        #[repr(C)]
+        #[derive(Debug, Clone, Copy)]
+        pub struct EventTypeSpec {
+            pub event_class: u32,
+            pub event_kind: u32,
+        }
+
+        pub type EventHandlerUPP =
+            unsafe extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
+
+        /// `'keyb'`
+        pub const EVENT_CLASS_KEYBOARD: u32 = 0x6B65_7962;
+        pub const EVENT_HOTKEY_PRESSED: u32 = 1;
+        /// `'----'`（事件直接对象参数）。
+        pub const EVENT_PARAM_DIRECT_OBJECT: u32 = 0x2D2D_2D2D;
+        /// `'hkid'`（热键 ID 类型）。
+        pub const TYPE_EVENT_HOTKEY_ID: u32 = 0x686B_6964;
+
+        pub const MOD_CMD: u32 = 1 << 8;
+        pub const MOD_SHIFT: u32 = 1 << 9;
+        pub const MOD_OPTION: u32 = 1 << 11;
+        pub const MOD_CONTROL: u32 = 1 << 12;
+
+        pub const NO_ERR: OSStatus = 0;
+
+        #[link(name = "Carbon", kind = "framework")]
+        unsafe extern "C" {
+            pub fn GetEventDispatcherTarget() -> EventTargetRef;
+            pub fn RegisterEventHotKey(
+                hot_key_code: u32,
+                hot_key_modifiers: u32,
+                hot_key_id: EventHotKeyID,
+                target: EventTargetRef,
+                options: u32,
+                out_ref: *mut EventHotKeyRef,
+            ) -> OSStatus;
+            pub fn InstallEventHandler(
+                target: EventTargetRef,
+                handler: EventHandlerUPP,
+                num_types: usize,
+                type_list: *const EventTypeSpec,
+                user_data: *mut c_void,
+                out_ref: *mut EventHandlerRef,
+            ) -> OSStatus;
+            pub fn RemoveEventHandler(handler_ref: EventHandlerRef) -> OSStatus;
+            pub fn UnregisterEventHotKey(hot_key_ref: EventHotKeyRef) -> OSStatus;
+            pub fn GetEventParameter(
+                event: EventRef,
+                name: u32,
+                desired_type: u32,
+                actual_type: *mut u32,
+                buffer_size: usize,
+                actual_size: *mut usize,
+                data: *mut c_void,
+            ) -> OSStatus;
+        }
+    }
+
+    type CallbackBox = Mutex<Option<Box<dyn Fn() + Send>>>;
+
+    fn carbon_modifiers(modifiers: HotkeyModifiers) -> u32 {
+        let mut bits = 0;
+        if modifiers.alt {
+            bits |= ffi::MOD_OPTION;
+        }
+        if modifiers.control {
+            bits |= ffi::MOD_CONTROL;
+        }
+        if modifiers.shift {
+            bits |= ffi::MOD_SHIFT;
+        }
+        if modifiers.win {
+            bits |= ffi::MOD_CMD;
+        }
+        bits
+    }
+
+    /// Carbon 事件处理器：读取热键 ID 并调用宿主回调。
+    unsafe extern "C" fn hotkey_handler(
+        _call: ffi::EventHandlerCallRef,
+        event: ffi::EventRef,
+        user_data: *mut c_void,
+    ) -> ffi::OSStatus {
+        let mut hotkey_id = ffi::EventHotKeyID {
+            signature: 0,
+            id: 0,
+        };
+        // SAFETY: event 是 Carbon 派发的合法事件引用；数据写入 hotkey_id。
+        let status = unsafe {
+            ffi::GetEventParameter(
+                event,
+                ffi::EVENT_PARAM_DIRECT_OBJECT,
+                ffi::TYPE_EVENT_HOTKEY_ID,
+                std::ptr::null_mut(),
+                size_of::<ffi::EventHotKeyID>(),
+                std::ptr::null_mut(),
+                &mut hotkey_id as *mut _ as *mut c_void,
+            )
+        };
+        if status != ffi::NO_ERR || hotkey_id.signature != HOTKEY_SIGNATURE {
+            return ffi::NO_ERR;
+        }
+        // SAFETY: user_data 是 listen_hotkey 注册时泄漏的 CallbackBox 指针；
+        // 事件在注册注销之间串行派发，指针有效。
+        let callback_box = unsafe { &*(user_data as *const CallbackBox) };
+        let callback = callback_box
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(callback) = callback.as_ref() {
+            callback();
+        }
+        ffi::NO_ERR
+    }
+
+    pub(super) struct RegisteredHotkey {
+        hot_key_ref: ffi::EventHotKeyRef,
+        handler_ref: ffi::EventHandlerRef,
+        callback: *mut CallbackBox,
+    }
+
+    impl RegisteredHotkey {
+        pub(super) fn unregister(&mut self) {
+            // SAFETY: 引用来自注册成功时的返回值；先注销 handler 阻止后续回调，
+            // 再注销热键并释放回调盒。
+            unsafe {
+                ffi::RemoveEventHandler(self.handler_ref);
+                ffi::UnregisterEventHotKey(self.hot_key_ref);
+                drop(Box::from_raw(self.callback));
+            }
+            self.handler_ref = std::ptr::null_mut();
+            self.hot_key_ref = std::ptr::null_mut();
+            self.callback = std::ptr::null_mut();
+        }
+    }
+
+    pub(super) fn listen_hotkey(
+        hotkey: Hotkey,
+        on_trigger: impl Fn() + Send + 'static,
+    ) -> Result<HotkeyListener, PlatformError> {
+        let callback = Box::new(CallbackBox::new(Some(Box::new(on_trigger))));
+        let callback_ptr = Box::into_raw(callback);
+
+        let mut hot_key_ref: ffi::EventHotKeyRef = std::ptr::null_mut();
+        let hot_key_id = ffi::EventHotKeyID {
+            signature: HOTKEY_SIGNATURE,
+            id: hotkey.id,
+        };
+        // SAFETY: 参数合法；out_ref 指向 hot_key_ref；target 为事件分发目标。
+        let status = unsafe {
+            ffi::RegisterEventHotKey(
+                hotkey.virtual_key,
+                carbon_modifiers(hotkey.modifiers),
+                hot_key_id,
+                ffi::GetEventDispatcherTarget(),
+                0,
+                &mut hot_key_ref,
+            )
+        };
+        if status != ffi::NO_ERR {
+            // SAFETY: 释放尚未被 handler 引用的回调盒。
+            unsafe { drop(Box::from_raw(callback_ptr)) };
+            return Err(PlatformError::Platform(format!(
+                "RegisterEventHotKey failed: {status}"
+            )));
+        }
+
+        let spec = ffi::EventTypeSpec {
+            event_class: ffi::EVENT_CLASS_KEYBOARD,
+            event_kind: ffi::EVENT_HOTKEY_PRESSED,
+        };
+        let mut handler_ref: ffi::EventHandlerRef = std::ptr::null_mut();
+        // SAFETY: hotkey_handler 是 'static extern fn；user_data 指向泄漏的回调盒；
+        // type_list 指向栈上 spec（InstallEventHandler 同步拷贝）。
+        let status = unsafe {
+            ffi::InstallEventHandler(
+                ffi::GetEventDispatcherTarget(),
+                hotkey_handler,
+                1,
+                &spec,
+                callback_ptr.cast(),
+                &mut handler_ref,
+            )
+        };
+        if status != ffi::NO_ERR {
+            // SAFETY: 回滚已注册热键并释放回调盒。
+            unsafe {
+                ffi::UnregisterEventHotKey(hot_key_ref);
+                drop(Box::from_raw(callback_ptr));
+            }
+            return Err(PlatformError::Platform(format!(
+                "InstallEventHandler failed: {status}"
+            )));
+        }
+
+        Ok(HotkeyListener {
+            macos: Some(RegisteredHotkey {
+                hot_key_ref,
+                handler_ref,
+                callback: callback_ptr,
+            }),
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn carbon_modifiers_map_host_hotkey() {
+            let mask = carbon_modifiers(HotkeyModifiers {
+                control: true,
+                shift: true,
+                ..HotkeyModifiers::none()
+            });
+            assert_eq!(mask & ffi::MOD_CONTROL, ffi::MOD_CONTROL);
+            assert_eq!(mask & ffi::MOD_SHIFT, ffi::MOD_SHIFT);
+            assert_eq!(mask & ffi::MOD_CMD, 0);
+            assert_eq!(mask & ffi::MOD_OPTION, 0);
         }
     }
 }

@@ -31,6 +31,7 @@ pub enum MetricsError {
 /// 读取当前宿主进程的 CPU 累计时间与 RSS。
 ///
 /// Linux 使用 `/proc/self/schedstat` 的纳秒 CPU 时间和 `/proc/self/status` 的 `VmRSS`；
+/// macOS 使用 `task_info(MACH_TASK_BASIC_INFO)` 的驻留集与 `getrusage` 的 CPU 时间；
 /// 其他平台在实现对应原生 API 前返回 [`MetricsError::Unsupported`]。
 pub fn process_metrics() -> Result<ProcessMetrics, MetricsError> {
     #[cfg(target_os = "linux")]
@@ -38,10 +39,55 @@ pub fn process_metrics() -> Result<ProcessMetrics, MetricsError> {
         linux_process_metrics()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_process_metrics()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Err(MetricsError::Unsupported)
     }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn macos_process_metrics() -> Result<ProcessMetrics, MetricsError> {
+    use mach2::task::task_info;
+    use mach2::task_info::{MACH_TASK_BASIC_INFO_COUNT, mach_task_basic_info};
+    use mach2::traps::mach_task_self;
+
+    // `resident_size` 以字节计；`user_time`/`system_time` 为累计 CPU 时间。
+    let mut info = mach_task_basic_info::default();
+    let mut count = MACH_TASK_BASIC_INFO_COUNT;
+    // SAFETY: info 尺寸由 MACH_TASK_BASIC_INFO_COUNT 表达；task 为当前进程的 task。
+    let kern = unsafe {
+        task_info(
+            mach_task_self(),
+            mach2::task_info::MACH_TASK_BASIC_INFO,
+            &mut info as *mut mach_task_basic_info as *mut _,
+            &mut count,
+        )
+    };
+    if kern != mach2::kern_return::KERN_SUCCESS {
+        return Err(MetricsError::Invalid {
+            source_name: "mach task_info",
+        });
+    }
+
+    let user_usec = u64::try_from(info.user_time.seconds)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(1_000_000)
+        .saturating_add(info.user_time.microseconds.max(0) as u64);
+    let system_usec = u64::try_from(info.system_time.seconds)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(1_000_000)
+        .saturating_add(info.system_time.microseconds.max(0) as u64);
+
+    Ok(ProcessMetrics {
+        cpu_time: Duration::from_micros(user_usec.saturating_add(system_usec)),
+        rss_bytes: info.resident_size,
+    })
 }
 
 #[cfg(target_os = "linux")]

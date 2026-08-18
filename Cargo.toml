@@ -35,6 +35,11 @@ slint = { version = "1.17", features = ["backend-winit", "unstable-winit-030"] }
 winit = "0.30"
 x11rb = { version = "0.13", default-features = false, features = ["randr", "shape"] }
 windows-sys = "0.52"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSGraphics", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSDictionary", "NSEnumerator", "NSGeometry", "NSObject", "NSString"] }
+objc2-core-foundation = "0.3"
+mach2 = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
 wasmtime = { version = "47", features = ["component-model", "async"] }
 wit-bindgen = "0.60"
