@@ -13,8 +13,10 @@ workspace = true
 [dependencies]
 floatile-core = { workspace = true }
 floatile-ui-schema = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
 wasmtime = { workspace = true }
 zip = { workspace = true }
 

@@ -45,8 +45,8 @@ pub struct Component {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PropValue {
-    Literal(serde_json::Value),
     Binding(Binding),
+    Literal(serde_json::Value),
 }
 
 /// v1 绑定：State 绑定 `{"bind": "$.path"}` 或 ForEach item 绑定 `{"item": "field"}`。

@@ -97,8 +97,9 @@
 - `floatile new/dev/check/test/preview/build/inspect` 的 Rust 最小闭环与稳定 JSON 诊断。
 - 验收：作者不编辑 WIT/manifest/UI IR；Reference Clock 行为与插件 clock 对比。
 - 已实现：`#[derive(State)]`（schema 单源）、`Widget`/`View`/`Context`/`impl_export_widget!`，
-  clock-wasm 改用作者 SDK 并通过 runtime 集成测试。剩余：作者级 `Event` 类型化、build-time
-  UI IR 生成、`floatile new/dev/check` 命令与 test harness。
+  clock-wasm 改用作者 SDK 并通过 runtime 集成测试；`build_ftui`（宿主侧生成 widget.ftui）；
+  `floatile new/validate/build` 命令（模板、`.floatile` 校验、manifest 生成 + zip 打包 + 自校验）。
+  剩余：作者级 `Event` 类型化、`dev`/`preview`、test harness 与 CLI 全命令 JSON 输出。
 
 #### S5d — TypeScript SDK
 

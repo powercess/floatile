@@ -6,9 +6,9 @@
 //! wasm-tools validate target/wasm32-wasip2/debug/floatile_clock_wasm.wasm
 //! ```
 
-use floatile_sdk::{
-    Context, LogLevel, State, Widget, WidgetEvent, impl_export_widget, view, view::View,
-};
+#[cfg(target_arch = "wasm32")]
+use floatile_sdk::impl_export_widget;
+use floatile_sdk::{Context, LogLevel, State, Widget, WidgetEvent, view, view::View};
 use serde::{Deserialize, Serialize};
 
 // ---- State（derive State 生成 schema + initial）----
@@ -19,6 +19,8 @@ pub struct ClockState {
 }
 
 // ---- Widget ----
+// host 编译时仅用于 build_ftui（view 是静态方法，不构造实例）。
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 struct Clock;
 
 impl Widget for Clock {
@@ -87,5 +89,6 @@ impl Default for Clock {
     }
 }
 
-// ---- 导出 ----
+// ---- 导出（仅 wasm 目标；host 编译时用于 build_ftui）----
+#[cfg(target_arch = "wasm32")]
 impl_export_widget!(Clock);

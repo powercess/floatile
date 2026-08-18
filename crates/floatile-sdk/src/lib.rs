@@ -36,6 +36,8 @@ pub use floatile::widget::host_timer::TimerError;
 pub use floatile::widget::host_ui::UiError;
 
 // ---- 作者层 ----
+#[cfg(not(target_arch = "wasm32"))]
+pub mod build;
 pub mod context;
 pub mod export;
 pub mod state;
@@ -44,6 +46,6 @@ pub mod widget;
 
 pub use context::Context;
 pub use floatile_sdk_macros::State;
-pub use floatile_ui_schema::{JsonSchema, merge_patch};
+pub use floatile_ui_schema::{JsonSchema, merge_patch, validate_document};
 pub use state::State;
 pub use widget::Widget;
