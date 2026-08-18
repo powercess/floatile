@@ -81,6 +81,7 @@ pub struct EventSchema {
 /// `widget.ftui` v1 文档根。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiDocument {
+    #[serde(rename = "uiApiVersion")]
     pub ui_api_version: String,
     pub state: StateSchema,
     pub events: BTreeMap<String, EventSchema>,

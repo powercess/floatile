@@ -51,6 +51,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 wasmtime = { version = "47", features = ["component-model", "async"] }
 wasmtime-wasi = { version = "47", default-features = false, features = ["p2"] }
 wit-bindgen = "0.60"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

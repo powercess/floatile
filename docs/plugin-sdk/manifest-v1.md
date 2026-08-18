@@ -5,8 +5,9 @@
 > 关联：ADR-0001、FR-PACK-01、FR-PLUGIN-01、F11、F12
 
 `floatile-core` 已实现 manifest 纯模型与校验（字段/版本轴/semver/sizes/entrypoints/permissions）、
-capability 参数解析（未知字段拒绝）与包路径规范化规则，并带正反例测试；它是 manifest schema 的
-可执行单源。zip 归档、WASM world、UI IR 与 config schema 的深度校验属于 CLI 切片。
+capability 参数解析（未知字段拒绝）与包路径规范化规则；`floatile-cli` 已实现 `.floatile` zip 包校验
+（预算、路径穿越/碰撞/symlink/zip-bomb、manifest/UI IR/WASM world 校验与正反例 corpus）。build 打包、
+digest 与原子安装待后续切片。
 
 manifest 是安装与运行时的显式事实，不是开发者主要编辑界面。Rust/TypeScript 项目使用最小
 `floatile.toml`，CLI 结合代码生成的 UI/State/Event schema 和 capability 候选产生 manifest；作者

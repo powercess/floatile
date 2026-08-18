@@ -52,7 +52,7 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
 | 统一 UI + WASM Widget | 🧪 | ADR-0001 已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；WIT/bindings/`clock.wasm` 已迁移到统一生命周期与 UI State 契约并通过 `wasm-tools validate`；`floatile-ui-schema`、`floatile-runtime`（Wasmtime actor + State Patch）与 `floatile-services`（Broker）已实现，`clock-wasm` 集成测试通过；CLI、双 SDK、renderer spike 与契约测试待实现 |
 | Permission Broker 与审计 | 🧪 | deny-by-default 决策、scope/配额、脱敏审计（target `floatile::audit`）与 clock/log/timer/storage/metrics/theme 能力已实现并有测试；恶意插件 fixture 与 SQLite 审计持久化待做 |
-| 插件 SDK 与打包 CLI | 🗺️ | 计划提供 new/dev/check/test/preview/build/inspect、包路径与资源预算校验 |
+| 插件 SDK 与打包 CLI | 🧪 | `.floatile` 包校验核心（zip/路径/zip-bomb/manifest/UI IR/WASM world 校验）已实现；new/dev/build 命令待做 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
 
 权威进度与验收范围请查看[需求基线](docs/product/requirements.md)和
@@ -181,7 +181,7 @@ flowchart TB
 | `floatile-services` | 经 Broker 授权的宿主服务 | 🧪 |
 | `floatile-store` | SQLite、migration 与事务 | 🧪 |
 | `floatile-sdk` | WASI guest SDK 与 bindings；作者级 API 待实现 | 🧪 |
-| `floatile-cli` | 插件校验、构建与开发工具 | 🗺️ |
+| `floatile-cli` | 插件包校验、构建与开发工具 | 🧪 |
 
 crate 之间的依赖规则不是建议，而是安全与可移植性边界。详情见
 [Workspace 与 crate 边界](docs/architecture/workspace-and-crates.md)。

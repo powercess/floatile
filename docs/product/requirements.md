@@ -58,7 +58,7 @@ HTML/WebView、原生插件和完整无障碍均不在 P0。接口可以预留�
 | 布局/存储 | 部分验证 | 核心层已有强类型 monitor/DPI/物理坐标模型和平台无关恢复算法；SQLite v2 migration 已持久化物理尺寸、scale factor 与 `lost_monitor`；shell 已接入启动保存/恢复（位置/尺寸/模式）、拖动/缩放/模式/热键/退出保存与显示器变化重恢复，Xvfb+Openbox 与 macOS 单屏重启恢复已实测；真实多屏/DPI/热插拔与 Windows 实机验证待做 |
 | 插件系统/WASM/SDK | 部分实现 | ADR-0001 已确定统一 UI、State Patch、串行 actor 与 Rust/TypeScript 同语义目标；`wit/floatile-widget.wit`、guest/host bindings 与 `clock.wasm` 已迁移到 ADR-0001 目标契约形状并通过 `wasm-tools validate`；`floatile-ui-schema`（IR/registry/schema 校验/绑定解析/预算/契约测试）已实现；`floatile-runtime` 已实现 Wasmtime 加载、串行 actor、State Patch 原子应用与 WIT adapter 接入 Broker，`clock-wasm` 集成测试（start/1Hz tick/update-state）通过；manifest 模型与 capability 注册表（core）已实现；CLI、双 SDK、renderer spike 与契约测试仍缺失 |
 | Permission Broker | 部分实现 | `floatile-services` Broker（deny-by-default 决策、scope/配额、脱敏审计 target `floatile::audit`）与 clock/log/timer/storage/metrics/theme 能力实现已完成并有测试；SQLite audit 持久化、恶意插件 fixture 与真实容量数据仍缺失 |
-| 包工具链 | 未实现 | validate/build、schema、路径与 zip-bomb 防护缺失 |
+| 包工具链 | 部分实现 | `floatile-cli` 已实现 `.floatile` 包校验核心（zip 预算、路径穿越/碰撞/symlink/zip-bomb 拒绝、manifest/UI IR/WASM world 校验与正反例 corpus）；build 打包、schema 文件与原子安装待做 |
 | 跨平台/性能证据 | 部分验证 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已回填 S1/S2 子集，两个 Linux X11 环境的 F3 穿透往返通过；Wayland 协议层（headless weston）首帧/CPU/RSS 与 F3 降级已回填；macOS 15.7.5 已回填 S1 子集（置顶 layer=3、无边框、布局恢复、首帧/RSS/CPU）；穿透/拖拽/缩放的交互实测待人工复核 |
 
 ## 6. 阶段门槛与未决策

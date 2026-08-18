@@ -55,7 +55,7 @@ Legend: ✅ basic implementation exists · 🧪 in development or awaiting compl
 | SQLite layout persistence | 🧪 | Layout schema v2, CRUD, v1 upgrade/rollback, and reopen persistence tests are implemented; the shell now wires startup save/restore and display-change re-apply (verified on Xvfb+Openbox); real multi-display/hot-plug validation and multi-instance orchestration remain |
 | Unified-UI WASM widgets | 🧪 | ADR-0001 defines `widget.ftui + plugin.wasm`, State Patch, and serialized instance actors; WIT/bindings/`clock.wasm` migrated to the unified lifecycle and UI State contract and pass `wasm-tools validate`; `floatile-ui-schema`, `floatile-runtime` (Wasmtime actor + State Patch), and `floatile-services` (Broker) implemented with clock integration tests passing; CLI, dual-SDK, renderer spike, and contract tests remain |
 | Permission Broker and audit trail | 🧪 | deny-by-default decisions, scopes/quotas, redacted audit (target `floatile::audit`), and clock/log/timer/storage/metrics/theme services implemented with tests; hostile-plugin fixtures and SQLite audit persistence remain |
-| Plugin SDK and packaging CLI | 🗺️ | Planned new/dev/check/test/preview/build/inspect commands and package budget checks |
+| Plugin SDK and packaging CLI | 🧪 | `.floatile` package validation core (zip/paths/zip-bomb/manifest/UI IR/WASM world) implemented; new/dev/build commands remain |
 | Cross-platform and performance acceptance | 🗺️ | Numbers in the acceptance docs are targets, not measured results |
 
 See the authoritative [requirements baseline](docs/product/requirements.md) and
@@ -187,7 +187,7 @@ See the [technology stack document](docs/architecture/technology-stack.md) for v
 | `floatile-services` | Broker-mediated host services | 🧪 |
 | `floatile-store` | SQLite, migrations, and transactions | 🧪 |
 | `floatile-sdk` | WASI guest SDK and bindings; author-level API to be implemented | 🧪 |
-| `floatile-cli` | Plugin validation, builds, and development tools | 🗺️ |
+| `floatile-cli` | Plugin package validation, builds, and development tools | 🧪 |
 
 Crate dependency rules are security and portability boundaries, not suggestions. See
 [Workspace and crate boundaries](docs/architecture/workspace-and-crates.md).

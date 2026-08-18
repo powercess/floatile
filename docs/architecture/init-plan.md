@@ -107,6 +107,8 @@
 
 - 做：有界流式 validate/build，manifest/UI/WASM/assets、路径穿越/碰撞/symlink/zip-bomb、digest 与
   原子安装；PluginManager 加载 dev 包。
+- 已实现：`floatile-cli` 包校验核心（zip 预算、路径安全、manifest/UI IR/WASM world 校验、正反例
+  corpus）。剩余：build 打包、digest、原子安装与 PluginManager 集成。
 - 验收：合法 Rust/TS clock 包可安装运行；恶意 corpus 全拒绝且不留下半安装状态。
 
 ### S7 — 恶意插件安全测试 + 审计
