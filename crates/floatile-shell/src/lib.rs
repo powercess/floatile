@@ -508,7 +508,10 @@ mod tests {
     fn rejects_unsupported_plugin_shape() {
         let mut doc = clock_doc();
         doc.root.kind = "Row".into();
-        assert_eq!(project_plugin_ui(&doc), Err(PluginUiError::UnsupportedShape));
+        assert_eq!(
+            project_plugin_ui(&doc),
+            Err(PluginUiError::UnsupportedShape)
+        );
     }
 
     #[test]

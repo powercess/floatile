@@ -362,7 +362,7 @@ fn clock_state_schema() -> JsonSchema {
     }
 }
 
-fn clock_grants() -> floatile_core::InstanceGrant {
+fn clock_grants() -> Result<floatile_core::InstanceGrant, floatile_core::CapabilityError> {
     let plugin = Grants {
         plugin: PluginId("dev.floatile.clock".into()),
         trust: TrustLevel::Dev,
@@ -387,7 +387,6 @@ fn clock_grants() -> floatile_core::InstanceGrant {
             effective: EffectiveGrant::DerivedFromInstall,
         }],
     )
-    .expect("clock grants should narrow")
 }
 
 fn spawn_clock_runtime(
@@ -418,6 +417,13 @@ fn spawn_clock_runtime(
                         return;
                     }
                 };
+                let grants = match clock_grants() {
+                    Ok(grants) => grants,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to narrow clock grants; falling back to builtin timer");
+                        return;
+                    }
+                };
                 let config = WidgetConfig {
                     plugin: plugin.clone(),
                     instance: CLOCK_INSTANCE_ID,
@@ -425,7 +431,7 @@ fn spawn_clock_runtime(
                     initial_state: serde_json::json!({}),
                     state_schema: clock_state_schema(),
                     config_json: "{}".into(),
-                    grants: clock_grants(),
+                    grants,
                 };
                 let mut handle = match manager.spawn(config) {
                     Ok(handle) => handle,
@@ -914,13 +920,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Clock::new()?;
     let plugin_projection = load_clock_projection();
     app.set_time_text(now_hhmmss().into());
-    if let Some(projection) = &plugin_projection {
-        if let Ok(view) = resolve_plugin_view_state(
+    if let Some(projection) = &plugin_projection
+        && let Ok(view) = resolve_plugin_view_state(
             projection,
             &serde_json::json!({"time": now_hhmmss(), "running": false}),
-        ) {
-            app.set_time_text(view.time_text.into());
-        }
+        )
+    {
+        app.set_time_text(view.time_text.into());
     }
     let runtime_clock = plugin_projection
         .clone()
