@@ -126,7 +126,8 @@ asset 预算的进一步落地与 `uiApiVersion` 版本轴 contract vectors 仍�
 - `floatile-sdk-macros` proc-macro crate 已拆分：`#[derive(State)]` 生成 schema + initial。
 - S5c 已实现：`Widget<State,Event>` trait、`View` builder、`Context` 运行时封装（state/log/
   clock/timer/storage/metrics/theme）与 `impl_export_widget!` 导出适配；clock-wasm 已改用作者
-  SDK（作者不手写 WIT）。作者级 `Event` 类型化与 build-time UI IR 生成仍待后续切片。
+  SDK（作者不手写 WIT）。作者级 `Event` 类型化（`FromWidgetEvent`）已落地；build-time UI IR 生成
+  仍待后续切片。
 
 ### 3.10 TypeScript SDK（非 Cargo workspace crate）
 

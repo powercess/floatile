@@ -99,7 +99,7 @@
 - 已实现：`#[derive(State)]`（schema 单源）、`Widget`/`View`/`Context`/`impl_export_widget!`，
   clock-wasm 改用作者 SDK 并通过 runtime 集成测试；`build_ftui`（宿主侧生成 widget.ftui）；
   `floatile new/validate/build` 命令（模板、`.floatile` 校验、manifest 生成 + zip 打包 + 自校验）。
-  剩余：作者级 `Event` 类型化、`dev`/`preview`、test harness 与 CLI 全命令 JSON 输出。
+  作者级 `Event` 类型化（`FromWidgetEvent`）已落地；剩余 `dev`/`preview`、test harness 与 CLI 全命令 JSON 输出。
 
 #### S5d — TypeScript SDK
 

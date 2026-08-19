@@ -72,12 +72,15 @@ fn clock_grants() -> floatile_core::InstanceGrant {
 fn clock_state_schema() -> JsonSchema {
     JsonSchema::Object {
         required: vec![],
-        properties: BTreeMap::from([(
-            "time".into(),
-            JsonSchema::String {
-                max_length: Some(32),
-            },
-        )]),
+        properties: BTreeMap::from([
+            (
+                "time".into(),
+                JsonSchema::String {
+                    max_length: Some(32),
+                },
+            ),
+            ("running".into(), JsonSchema::Boolean),
+        ]),
         additional_properties: false,
     }
 }
@@ -129,7 +132,8 @@ async fn loads_starts_and_receives_state_update() {
     }
     assert!(got_update, "4 秒内未收到带 time 的 State 更新");
 
-    // UI 事件路径。
+    // UI 事件路径：typed 事件桥验证。
+    // Ui{name:"start"} → ClockEvent::Start → ctx.state().update(r#"{"running":true}"#) → UiUpdate。
     handle
         .handle_event(WidgetEvent::Ui(UiEvent {
             name: "start".into(),
@@ -137,6 +141,30 @@ async fn loads_starts_and_receives_state_update() {
         }))
         .await
         .expect("ui event 应成功");
+
+    // 断言 typed 事件链产出 running=true 的 State 更新。
+    let running_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut got_running = false;
+    while tokio::time::Instant::now() < running_deadline {
+        tokio::select! {
+            maybe = handle.ui_updates().recv() => {
+                match maybe {
+                    Some(update) => {
+                        if update.state.get("running").is_some_and(|v| v == &json!(true)) {
+                            got_running = true;
+                            break;
+                        }
+                    }
+                    None => panic!("UI 通道关闭（typed event 链）"),
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+    }
+    assert!(
+        got_running,
+        "typed 事件链：Ui(start) → ClockEvent::Start → running=true 未在 2 秒内收到"
+    );
 
     handle.shutdown().await.expect("shutdown 应正常返回");
 }
