@@ -10,16 +10,21 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use floatile_core::capability::{
+    CapabilityId, CapabilityParams, EffectiveGrant, Grant, Grants, TrustLevel, narrow_instance,
+};
 use floatile_core::layout::recover_layout;
 use floatile_core::{
-    LogicalPosition, LogicalRect, LogicalSize, MonitorLayout, PhysicalSize, PluginId, ScaleFactor,
-    SizeConstraints, WidgetMode,
+    InstanceId, LogicalPosition, LogicalRect, LogicalSize, MonitorLayout, PhysicalSize, PluginId,
+    ScaleFactor, SizeConstraints, WidgetMode,
 };
 use floatile_platform::capability::probe;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -35,7 +40,13 @@ use floatile_platform::{
 use floatile_platform::{
     install_hotkey_message_hook, register_hotkey, remove_window_decorations, unregister_hotkey,
 };
-use floatile_shell::{BUILTIN_CLOCK_PLUGIN, CLOCK_INSTANCE_ID, layout_from_window};
+use floatile_runtime::{WidgetConfig, WidgetManager};
+use floatile_shell::{
+    BUILTIN_CLOCK_PLUGIN, CLOCK_INSTANCE_ID, PluginProjection, layout_from_window,
+    project_plugin_ui, resolve_plugin_view_state,
+};
+use floatile_ui_schema::schema::JsonSchema;
+use floatile_ui_schema::{UiDocument, validate_document};
 use slint::Timer;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
@@ -229,6 +240,11 @@ struct PerfSampler {
     worker: JoinHandle<()>,
 }
 
+struct RuntimeSession {
+    stop: SyncSender<()>,
+    worker: JoinHandle<()>,
+}
+
 impl PerfSampler {
     fn start() -> std::io::Result<Self> {
         let (stop, receiver) = mpsc::sync_channel(1);
@@ -291,6 +307,180 @@ impl PerfSampler {
             tracing::warn!(target: "floatile::perf", "process metrics worker panicked");
         }
     }
+}
+
+const CLOCK_FTUI_JSON: &str = r#"{"uiApiVersion":"1.0.0","state":{"initial":{"running":false,"time":""},"schema":{"type":"object","required":["time","running"],"properties":{"running":{"type":"boolean"},"time":{"type":"string","max_length":64}},"additional_properties":false}},"events":{},"root":{"type":"Column","children":[{"type":"Text","props":{"text":{"bind":"$.time"}}}]}}"#;
+
+fn load_clock_projection() -> Option<PluginProjection> {
+    let doc: UiDocument = match serde_json::from_str(CLOCK_FTUI_JSON) {
+        Ok(doc) => doc,
+        Err(error) => {
+            tracing::warn!(%error, "embedded widget.ftui is invalid JSON; falling back to builtin clock");
+            return None;
+        }
+    };
+    if let Err(error) = validate_document(&doc) {
+        tracing::warn!(%error, "embedded widget.ftui failed validation; falling back to builtin clock");
+        return None;
+    }
+    match project_plugin_ui(&doc) {
+        Ok(projection) => Some(projection),
+        Err(error) => {
+            tracing::warn!(%error, "embedded widget.ftui unsupported by shell projection; falling back to builtin clock");
+            None
+        }
+    }
+}
+
+fn clock_wasm_bytes() -> Option<Vec<u8>> {
+    let wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("target/wasm32-wasip2/debug/floatile_clock_wasm.wasm");
+    match std::fs::read(&wasm_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            tracing::warn!(path = %wasm_path.display(), %error, "clock wasm missing; falling back to builtin timer");
+            None
+        }
+    }
+}
+
+fn clock_state_schema() -> JsonSchema {
+    JsonSchema::Object {
+        required: vec![],
+        properties: BTreeMap::from([
+            (
+                "time".into(),
+                JsonSchema::String {
+                    max_length: Some(32),
+                },
+            ),
+            ("running".into(), JsonSchema::Boolean),
+        ]),
+        additional_properties: false,
+    }
+}
+
+fn clock_grants() -> floatile_core::InstanceGrant {
+    let plugin = Grants {
+        plugin: PluginId("dev.floatile.clock".into()),
+        trust: TrustLevel::Dev,
+        caps: vec![Grant {
+            capability: CapabilityId::TimerSchedule,
+            params: Some(CapabilityParams::Timer {
+                max_per_minute: 60,
+                max_active: 4,
+            }),
+            effective: EffectiveGrant::DerivedFromInstall,
+        }],
+    };
+    narrow_instance(
+        &plugin,
+        InstanceId(1),
+        vec![Grant {
+            capability: CapabilityId::TimerSchedule,
+            params: Some(CapabilityParams::Timer {
+                max_per_minute: 60,
+                max_active: 4,
+            }),
+            effective: EffectiveGrant::DerivedFromInstall,
+        }],
+    )
+    .expect("clock grants should narrow")
+}
+
+fn spawn_clock_runtime(
+    app: slint::Weak<Clock>,
+    projection: PluginProjection,
+) -> Option<RuntimeSession> {
+    let wasm = clock_wasm_bytes()?;
+    let plugin = PluginId("dev.floatile.clock".into());
+    let (stop, stop_rx) = mpsc::sync_channel::<()>(1);
+    let worker = std::thread::Builder::new()
+        .name("floatile-runtime-clock".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to build tokio runtime; falling back to builtin timer");
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let manager = match WidgetManager::new() {
+                    Ok(manager) => manager,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to create widget manager; falling back to builtin timer");
+                        return;
+                    }
+                };
+                let config = WidgetConfig {
+                    plugin: plugin.clone(),
+                    instance: CLOCK_INSTANCE_ID,
+                    wasm,
+                    initial_state: serde_json::json!({}),
+                    state_schema: clock_state_schema(),
+                    config_json: "{}".into(),
+                    grants: clock_grants(),
+                };
+                let mut handle = match manager.spawn(config) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to spawn runtime clock; falling back to builtin timer");
+                        return;
+                    }
+                };
+                if let Err(error) = handle.start().await {
+                    tracing::warn!(%error, "runtime clock start failed; falling back to builtin timer");
+                    let _ = handle.shutdown().await;
+                    return;
+                }
+                tracing::info!(plugin_id = %plugin.0, "runtime clock started");
+
+                loop {
+                    match stop_rx.try_recv() {
+                        Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                    let next = tokio::time::timeout(
+                        Duration::from_millis(200),
+                        handle.ui_updates().recv(),
+                    )
+                    .await;
+                    let Some(update) = (match next {
+                        Ok(update) => update,
+                        Err(_) => continue,
+                    }) else {
+                        break;
+                    };
+                    match resolve_plugin_view_state(&projection, &update.state) {
+                        Ok(view) => {
+                            let text = view.time_text;
+                            if let Err(error) = app.upgrade_in_event_loop(move |app| {
+                                app.set_time_text(text.into());
+                            }) {
+                                tracing::debug!(%error, "event loop delivery failed; stopping runtime clock bridge");
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(seq = update.seq, %error, "runtime state rejected by shell projection");
+                        }
+                    }
+                }
+
+                if let Err(error) = handle.shutdown().await {
+                    tracing::warn!(%error, "runtime clock shutdown failed");
+                }
+            });
+        })
+        .ok()?;
+
+    Some(RuntimeSession { stop, worker })
 }
 
 fn now_hhmmss() -> String {
@@ -722,7 +912,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .select()?;
 
     let app = Clock::new()?;
+    let plugin_projection = load_clock_projection();
     app.set_time_text(now_hhmmss().into());
+    if let Some(projection) = &plugin_projection {
+        if let Ok(view) = resolve_plugin_view_state(
+            projection,
+            &serde_json::json!({"time": now_hhmmss(), "running": false}),
+        ) {
+            app.set_time_text(view.time_text.into());
+        }
+    }
+    let runtime_clock = plugin_projection
+        .clone()
+        .and_then(|projection| spawn_clock_runtime(app.as_weak(), projection));
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }
@@ -1087,18 +1289,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
     });
 
-    // 时钟定时器
+    // 回退路径：只有 runtime clock 未启动时才使用内建时钟文本。
+    let fallback_builtin_timer = runtime_clock.is_none();
     let weak = app.as_weak();
     let timer = Timer::default();
-    timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_secs(1),
-        move || {
-            if let Some(app) = weak.upgrade() {
-                app.set_time_text(now_hhmmss().into());
-            }
-        },
-    );
+    if fallback_builtin_timer {
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(1),
+            move || {
+                if let Some(app) = weak.upgrade() {
+                    app.set_time_text(now_hhmmss().into());
+                }
+            },
+        );
+    }
 
     // 注册全局热键（Windows 展示模式下切回编辑）。winit 窗口在事件循环首次迭代后
     // 才创建，因此用 Repeated Timer 重试直到注册成功。装饰移除与热键注册各自
@@ -1249,6 +1454,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(windows)]
     register_timer.stop();
+
+    if let Some(runtime_clock) = runtime_clock {
+        let _ = runtime_clock.stop.try_send(());
+        if runtime_clock.worker.join().is_err() {
+            tracing::warn!("runtime clock worker panicked");
+        }
+    }
 
     // Windows 退出时注销热键。
     #[cfg(windows)]

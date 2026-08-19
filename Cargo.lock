@@ -1674,10 +1674,17 @@ dependencies = [
 name = "floatile-shell"
 version = "0.1.0"
 dependencies = [
+ "floatile-clock-wasm",
  "floatile-core",
  "floatile-platform",
+ "floatile-plugin-api",
+ "floatile-runtime",
  "floatile-store",
+ "floatile-ui-schema",
+ "serde_json",
  "slint",
+ "thiserror 2.0.20",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

@@ -18,6 +18,20 @@ path = "src/main.rs"
 floatile-core = { workspace = true }
 floatile-platform = { workspace = true }
 floatile-store = { workspace = true }
+floatile-ui-schema = { workspace = true }
+floatile-runtime = { workspace = true }
+floatile-plugin-api = { workspace = true }
+floatile-clock-wasm = { path = "../../plugins/clock-wasm" }
+serde_json = { workspace = true }
 slint = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+floatile-runtime = { workspace = true }
+floatile-plugin-api = { workspace = true }
+floatile-clock-wasm = { path = "../../plugins/clock-wasm" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
