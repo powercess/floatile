@@ -42,6 +42,7 @@ mod tests {
     struct W;
     impl Widget for W {
         type State = S;
+        type Event = WidgetEvent;
         fn view(_: &S) -> crate::view::View {
             crate::view::column(vec![crate::view::text_bind("$.time")])
         }
@@ -57,6 +58,7 @@ mod tests {
     struct WButton;
     impl Widget for WButton {
         type State = S;
+        type Event = WidgetEvent;
         fn view(_: &S) -> crate::view::View {
             crate::view::button("Go")
         }

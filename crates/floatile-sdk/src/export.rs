@@ -32,8 +32,12 @@ macro_rules! impl_export_widget {
                     &self,
                     event: $crate::WidgetEvent,
                 ) -> Result<(), $crate::WidgetError> {
-                    let mut ctx = $crate::Context::new();
-                    self.0.borrow_mut().event(event, &mut ctx);
+                    if let Some(ev) =
+                        <<$widget as $crate::Widget>::Event as $crate::FromWidgetEvent>::from_widget_event(event)
+                    {
+                        let mut ctx = $crate::Context::new();
+                        self.0.borrow_mut().event(ev, &mut ctx);
+                    }
                     Ok(())
                 }
 

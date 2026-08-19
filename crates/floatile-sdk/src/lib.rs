@@ -48,4 +48,5 @@ pub use context::Context;
 pub use floatile_sdk_macros::State;
 pub use floatile_ui_schema::{JsonSchema, merge_patch, validate_document};
 pub use state::State;
+pub use widget::FromWidgetEvent;
 pub use widget::Widget;

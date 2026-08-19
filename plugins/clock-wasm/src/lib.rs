@@ -8,7 +8,9 @@
 
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
-use floatile_sdk::{Context, LogLevel, State, Widget, WidgetEvent, view, view::View};
+use floatile_sdk::{
+    Context, FromWidgetEvent, LogLevel, State, Widget, WidgetEvent, view, view::View,
+};
 use serde::{Deserialize, Serialize};
 
 // ---- State（derive State 生成 schema + initial）----
@@ -18,6 +20,23 @@ pub struct ClockState {
     pub running: bool,
 }
 
+// ---- 作者定义的事件类型 ----
+#[derive(Debug)]
+pub enum ClockEvent {
+    Start,
+    Tick,
+}
+
+impl FromWidgetEvent for ClockEvent {
+    fn from_widget_event(event: WidgetEvent) -> Option<Self> {
+        match event {
+            WidgetEvent::Ui(u) if u.name == "start" => Some(ClockEvent::Start),
+            WidgetEvent::Timer(_) => Some(ClockEvent::Tick),
+            _ => None,
+        }
+    }
+}
+
 // ---- Widget ----
 // host 编译时仅用于 build_ftui（view 是静态方法，不构造实例）。
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -25,6 +44,7 @@ struct Clock;
 
 impl Widget for Clock {
     type State = ClockState;
+    type Event = ClockEvent;
 
     fn view(_state: &Self::State) -> View {
         view::column(vec![view::text_bind("$.time")])
@@ -42,15 +62,13 @@ impl Widget for Clock {
         }
     }
 
-    fn event(&mut self, event: WidgetEvent, ctx: &mut Context<Self>) {
+    fn event(&mut self, event: ClockEvent, ctx: &mut Context<Self>) {
         match event {
-            WidgetEvent::Ui(ui) => {
-                let _ = ctx.log(
-                    LogLevel::Info,
-                    &format!("ui event: {} payload={}", ui.name, ui.payload_json),
-                );
+            ClockEvent::Start => {
+                let _ = ctx.log(LogLevel::Info, "clock start command received");
+                let _ = ctx.state().update(r#"{"running":true}"#);
             }
-            WidgetEvent::Timer(_id) => {
+            ClockEvent::Tick => {
                 let time = ctx.clock().now();
                 let seconds = (time.unix_millis / 1000) % 86_400;
                 let hh = seconds / 3600;
@@ -62,17 +80,6 @@ impl Widget for Clock {
                 let _ = ctx.log(LogLevel::Debug, &format!("tick {text}"));
                 // 重新调度一次性计时器。
                 let _ = ctx.timer().schedule(1000);
-            }
-            WidgetEvent::ModeChanged(mode) => {
-                let _ = ctx.log(LogLevel::Debug, &format!("mode: {mode:?}"));
-            }
-            WidgetEvent::ConfigChanged(_) => {}
-            WidgetEvent::ThemeChanged(_) => {}
-            WidgetEvent::Suspend => {
-                let _ = ctx.log(LogLevel::Debug, "suspend");
-            }
-            WidgetEvent::Resume => {
-                let _ = ctx.log(LogLevel::Debug, "resume");
             }
         }
     }

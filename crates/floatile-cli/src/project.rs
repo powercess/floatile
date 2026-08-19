@@ -229,6 +229,7 @@ struct MyWidget;
 
 impl Widget for MyWidget {
     type State = MyState;
+    type Event = WidgetEvent;
 
     fn view(_state: &Self::State) -> view::View {
         view::column(vec![view::text_bind("$.message")])
