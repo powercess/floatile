@@ -21,7 +21,6 @@ floatile-store = { workspace = true }
 floatile-ui-schema = { workspace = true }
 floatile-runtime = { workspace = true }
 floatile-plugin-api = { workspace = true }
-floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }
 serde_json = { workspace = true }
 slint = { workspace = true }
 thiserror = { workspace = true }
@@ -29,9 +28,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-[dev-dependencies]
-floatile-runtime = { workspace = true }
-floatile-plugin-api = { workspace = true }
+# 构建期生成参考时钟的 widget.ftui（单一事实源），不把 guest SDK 链入宿主二进制。
+[build-dependencies]
 floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }
-tokio = { workspace = true }
-serde_json = { workspace = true }
+
+[dev-dependencies]
+floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }

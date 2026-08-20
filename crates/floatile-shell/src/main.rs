@@ -309,9 +309,17 @@ impl PerfSampler {
     }
 }
 
-const CLOCK_FTUI_JSON: &str = r#"{"uiApiVersion":"1.0.0","state":{"initial":{"running":false,"time":""},"schema":{"type":"object","required":["time","running"],"properties":{"running":{"type":"boolean"},"time":{"type":"string","max_length":64}},"additional_properties":false}},"events":{},"root":{"type":"Column","children":[{"type":"Text","props":{"text":{"bind":"$.time"}}}]}}"#;
+/// 构建期由 `floatile_sdk::build::build_ftui` 生成的参考时钟 `widget.ftui`
+/// （`build.rs` 固化，单一事实源，不手写第二份 JSON）。
+const CLOCK_FTUI_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/clock_ftui.json"));
 
-fn load_clock_projection() -> Option<PluginProjection> {
+/// 参考时钟的投影 + 宿主下发的 canonical initial State。
+struct ProjectedClock {
+    projection: PluginProjection,
+    initial_state: serde_json::Value,
+}
+
+fn load_clock_projection() -> Option<ProjectedClock> {
     let doc: UiDocument = match serde_json::from_str(CLOCK_FTUI_JSON) {
         Ok(doc) => doc,
         Err(error) => {
@@ -324,7 +332,10 @@ fn load_clock_projection() -> Option<PluginProjection> {
         return None;
     }
     match project_plugin_ui(&doc) {
-        Ok(projection) => Some(projection),
+        Ok(projection) => Some(ProjectedClock {
+            projection,
+            initial_state: doc.state.initial.clone(),
+        }),
         Err(error) => {
             tracing::warn!(%error, "embedded widget.ftui unsupported by shell projection; falling back to builtin clock");
             None
@@ -392,6 +403,7 @@ fn clock_grants() -> Result<floatile_core::InstanceGrant, floatile_core::Capabil
 fn spawn_clock_runtime(
     app: slint::Weak<Clock>,
     projection: PluginProjection,
+    initial_state: serde_json::Value,
 ) -> Option<RuntimeSession> {
     let wasm = clock_wasm_bytes()?;
     let plugin = PluginId("dev.floatile.clock".into());
@@ -428,7 +440,7 @@ fn spawn_clock_runtime(
                     plugin: plugin.clone(),
                     instance: CLOCK_INSTANCE_ID,
                     wasm,
-                    initial_state: serde_json::json!({}),
+                    initial_state,
                     state_schema: clock_state_schema(),
                     config_json: "{}".into(),
                     grants,
@@ -920,17 +932,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Clock::new()?;
     let plugin_projection = load_clock_projection();
     app.set_time_text(now_hhmmss().into());
-    if let Some(projection) = &plugin_projection
-        && let Ok(view) = resolve_plugin_view_state(
-            projection,
-            &serde_json::json!({"time": now_hhmmss(), "running": false}),
-        )
+    if let Some(clock) = &plugin_projection
+        && let Ok(view) = resolve_plugin_view_state(&clock.projection, &clock.initial_state)
+        && !view.time_text.is_empty()
     {
         app.set_time_text(view.time_text.into());
     }
-    let runtime_clock = plugin_projection
-        .clone()
-        .and_then(|projection| spawn_clock_runtime(app.as_weak(), projection));
+    let runtime_clock = plugin_projection.and_then(|clock| {
+        spawn_clock_runtime(app.as_weak(), clock.projection, clock.initial_state)
+    });
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }
