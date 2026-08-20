@@ -11,7 +11,7 @@ use floatile_core::capability::{
 use floatile_core::types::{InstanceId, PluginId};
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
 use floatile_runtime::{WidgetConfig, WidgetManager};
-use floatile_shell::{project_plugin_ui, resolve_plugin_view_state};
+use floatile_shell::{PluginBinding, resolve_binding_string};
 use floatile_ui_schema::UiDocument;
 use floatile_ui_schema::schema::JsonSchema;
 use serde_json::json;
@@ -104,16 +104,34 @@ fn spawn_clock() -> floatile_runtime::WidgetHandle {
     manager.spawn(config).expect("spawn 失败")
 }
 
-#[test]
-fn host_generated_clock_ftui_projects_to_shell_text_binding() {
+/// 从 renderer 构建期输出的 binding 槽位构造宿主消费模型。
+///
+/// 与 `floatile-shell/build.rs` 写入 `plugin_meta.json` 的 slot(单一事实源)一致:
+/// shell 运行时读取该 JSON 驱动投影,渲染由 renderer 生成的 `ClockPluginUI` 组件负责。
+fn clock_binding() -> PluginBinding {
     let doc = clock_ftui_document();
-    let projection = project_plugin_ui(&doc).expect("clock ftui 应能投影为 shell 文本");
-    assert_eq!(projection.text_binding, "$.time");
+    let rendered = floatile_renderer::render_component(&doc).expect("clock UI 应可渲染");
+    let time_slot = rendered
+        .bindings
+        .iter()
+        .find(|b| b.path == "$.time")
+        .expect("renderer 应暴露 $.time 绑定槽位");
+    PluginBinding {
+        path: time_slot.path.clone(),
+        prop: time_slot.prop.clone(),
+    }
+}
+
+#[test]
+fn host_generated_clock_ftui_projects_to_renderer_binding() {
+    let binding = clock_binding();
+    assert_eq!(binding.path, "$.time");
+    assert_eq!(binding.prop, "prop_time");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn runtime_clock_updates_resolve_through_shell_projection() {
-    let projection = project_plugin_ui(&clock_ftui_document()).expect("clock ftui 应可投影");
+    let binding = clock_binding();
     let mut handle = spawn_clock();
     handle.start().await.expect("start 应成功");
 
@@ -125,9 +143,9 @@ async fn runtime_clock_updates_resolve_through_shell_projection() {
                 match maybe {
                     Some(update) => {
                         if update.state.get("time").is_some() {
-                            let view = resolve_plugin_view_state(&projection, &update.state)
+                            let text = resolve_binding_string(&binding, &update.state)
                                 .expect("shell 应能解析 runtime 状态");
-                            projected = Some(view.time_text);
+                            projected = Some(text);
                             break;
                         }
                     }
@@ -157,9 +175,9 @@ async fn runtime_clock_updates_resolve_through_shell_projection() {
                 match maybe {
                     Some(update) => {
                         if update.state.get("running").is_some_and(|v| v == &json!(true)) {
-                            let view = resolve_plugin_view_state(&projection, &update.state)
+                            let text = resolve_binding_string(&binding, &update.state)
                                 .expect("running patch 后仍可投影");
-                            assert!(!view.time_text.is_empty() || update.state["time"] == json!(""));
+                            assert!(!text.is_empty() || update.state["time"] == json!(""));
                             got_running = true;
                             break;
                         }
@@ -175,25 +193,38 @@ async fn runtime_clock_updates_resolve_through_shell_projection() {
     handle.shutdown().await.expect("shutdown 应正常返回");
 }
 
-/// renderer 生成的 binding 元数据与 shell 投影一致(meta-driven 契约)。
+/// renderer 生成的组件可被宿主 `slint!` 编译实例化的契约向量。
 ///
-/// shell 运行时用 renderer 构建期输出的 binding 槽位(plugin_meta.json)驱动投影,
-/// 不再手写提取;此测试交叉验证 renderer 的 `$.time` 槽位与旧投影结果同源。
+/// shell 的 `slint!` 通过 `import { ClockPluginUI } from "generated/clock_plugin.slnt"`
+/// 把 renderer 输出作为插件内容区嵌入窗口(构建期由 `build.rs` 写到 gitignore 源路径)。
+/// 这里断言:组件以 `export component` 形式暴露、具备 binding 槽位属性与事件槽位回调,
+/// 是可嵌入内容组件而非 Window,与宿主壳 `Clock` 的静态接线语义一致。
 #[test]
-fn renderer_meta_binding_matches_shell_projection() {
+fn renderer_slots_are_importable_embeddable_component() {
     let d = clock_ftui_document();
     let rendered = floatile_renderer::render_component(&d).expect("clock UI 应可渲染");
+    assert!(
+        rendered
+            .source
+            .contains("export component ClockPluginUI inherits Rectangle"),
+        "生成组件必须以 export 命名,宿主壳才能 import;实际:\n{}",
+        rendered.source
+    );
+    // 绑定槽位属性名可从渲染源码定位,供 `ClockPluginUI { <prop>: root.time-text }` 接线。
     let time_slot = rendered
         .bindings
         .iter()
         .find(|b| b.path == "$.time")
         .expect("renderer 应暴露 $.time 绑定槽位");
-    // renderer 槽位路径与旧投影提取的 text_binding 一致(同源契约)。
-    let projection = project_plugin_ui(&d).expect("clock ftui 应可投影");
-    assert_eq!(
-        time_slot.path, projection.text_binding,
-        "renderer 与 shell 投影应同源"
-    );
-    // 属性名可预测(路径派生),供宿主壳绑定。
     assert_eq!(time_slot.prop, "prop_time");
+    assert!(
+        rendered
+            .source
+            .contains(&format!("in property <string> {}", time_slot.prop))
+    );
+    assert!(
+        rendered
+            .source
+            .contains(&format!("text: root.{};", time_slot.prop))
+    );
 }

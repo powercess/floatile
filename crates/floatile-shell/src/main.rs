@@ -42,14 +42,17 @@ use floatile_platform::{
 };
 use floatile_runtime::{WidgetConfig, WidgetManager};
 use floatile_shell::{
-    BUILTIN_CLOCK_PLUGIN, CLOCK_INSTANCE_ID, PluginProjection, layout_from_window,
-    resolve_plugin_view_state,
+    BUILTIN_CLOCK_PLUGIN, CLOCK_INSTANCE_ID, PluginBinding, layout_from_window,
+    resolve_binding_string,
 };
 use floatile_ui_schema::schema::JsonSchema;
 use slint::Timer;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
 slint::slint! {
+    // renderer 构建期生成插件内容组件;由 build.rs 写入 gitignore 的源路径。
+    import { ClockPluginUI } from "generated/clock_plugin.slnt";
+
     export component Clock inherits Window {
         width: 260px;
         height: 120px;
@@ -92,15 +95,14 @@ slint::slint! {
                 y: 18px;
             }
 
-            Text {
-                text: root.time-text;
-                font-size: 34px;
-                font-weight: 700;
-                color: white;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                y: 30px;
-                height: 60px;
+            // 插件内容区:renderer 生成的 ClockPluginUI,`prop_time` 绑定到宿主
+            // `time-text`(runtime 依 renderer binding 槽位下发权威 State)。
+            ClockPluginUI {
+                prop_time: root.time-text;
+                x: 0px;
+                y: 40px;
+                width: parent.width;
+                height: parent.height - 40px;
             }
 
         }
@@ -343,9 +345,12 @@ struct EventSlot {
     callback: String,
 }
 
-/// 参考时钟的投影 + 宿主下发的 canonical initial State。
+/// 参考时钟的投影模型 + 宿主下发的 canonical initial State。
+///
+/// `binding` 直接来自 renderer 构建期输出的 binding 槽位(plugin_meta.json),
+/// 是宿主把权威 State 投影进 `ClockPluginUI` 绑定属性的唯一事实源,不手写提取。
 struct ProjectedClock {
-    projection: PluginProjection,
+    binding: PluginBinding,
     initial_state: serde_json::Value,
 }
 
@@ -359,20 +364,22 @@ fn load_clock_projection() -> Option<ProjectedClock> {
             return None;
         }
     };
-    let binding = meta
-        .bindings
-        .iter()
-        .find(|b| b.path == "$.time")
-        .or_else(|| meta.bindings.first())?;
     if meta.bindings.is_empty() {
         tracing::warn!("plugin UI 没有 State 绑定; falling back to builtin clock");
         return None;
     }
-    let projection = PluginProjection {
-        text_binding: binding.path.clone(),
+    // 参考时钟仅单绑定:优先 `$.time`,否则取首个槽位(与 ClockPluginUI 静态接线一致)。
+    let slot = meta
+        .bindings
+        .iter()
+        .find(|b| b.path == "$.time")
+        .unwrap_or(&meta.bindings[0]);
+    let binding = PluginBinding {
+        path: slot.path.clone(),
+        prop: slot.prop.clone(),
     };
     Some(ProjectedClock {
-        projection,
+        binding,
         initial_state: meta.initial_state,
     })
 }
@@ -436,7 +443,7 @@ fn clock_grants() -> Result<floatile_core::InstanceGrant, floatile_core::Capabil
 
 fn spawn_clock_runtime(
     app: slint::Weak<Clock>,
-    projection: PluginProjection,
+    binding: PluginBinding,
     initial_state: serde_json::Value,
 ) -> Option<RuntimeSession> {
     let wasm = clock_wasm_bytes()?;
@@ -509,9 +516,9 @@ fn spawn_clock_runtime(
                     }) else {
                         break;
                     };
-                    match resolve_plugin_view_state(&projection, &update.state) {
-                        Ok(view) => {
-                            let text = view.time_text;
+                    // 沿 renderer binding 槽位路径把权威 State 投影为宿主属性值。
+                    match resolve_binding_string(&binding, &update.state) {
+                        Ok(text) => {
                             if let Err(error) = app.upgrade_in_event_loop(move |app| {
                                 app.set_time_text(text.into());
                             }) {
@@ -967,14 +974,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plugin_projection = load_clock_projection();
     app.set_time_text(now_hhmmss().into());
     if let Some(clock) = &plugin_projection
-        && let Ok(view) = resolve_plugin_view_state(&clock.projection, &clock.initial_state)
-        && !view.time_text.is_empty()
+        && let Ok(text) = resolve_binding_string(&clock.binding, &clock.initial_state)
+        && !text.is_empty()
     {
-        app.set_time_text(view.time_text.into());
+        app.set_time_text(text.into());
     }
-    let runtime_clock = plugin_projection.and_then(|clock| {
-        spawn_clock_runtime(app.as_weak(), clock.projection, clock.initial_state)
-    });
+    let runtime_clock = plugin_projection
+        .and_then(|clock| spawn_clock_runtime(app.as_weak(), clock.binding, clock.initial_state));
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }

@@ -42,9 +42,24 @@ fn main() {
     let out = env::var_os("OUT_DIR").expect("OUT_DIR 应存在");
     let out_dir = PathBuf::from(out);
 
-    // 输出生成的插件内容组件源码(供未来 shell renderer 实例化/人工检查)。
+    // 输出生成的插件内容组件源码(供人工检查)。
     std::fs::write(out_dir.join("clock_plugin.slnt"), &rendered.source)
         .expect("写入 clock_plugin.slnt 失败");
+
+    // 生成组件还需被宿主 `slint!` 编译实例化:写一份到 gitignore 的源路径,
+    // 使 `main.rs` 的 `import { ClockPluginUI } from "generated/clock_plugin.slnt"`
+    // 可解析(import 相对 .rs 文件解析,不能指向 OUT_DIR)。
+    let source_gen =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR 存在"))
+            .join("src/generated/clock_plugin.slnt");
+    if let Some(parent) = source_gen.parent() {
+        std::fs::create_dir_all(parent).expect("创建 generated 目录失败");
+    }
+    std::fs::write(&source_gen, &rendered.source)
+        .expect("写入 src/generated/clock_plugin.slnt 失败");
+    // 注意:不对 source_gen 声明 rerun-if-changed。该文件由本脚本写入,声明它会在
+    // 每次写入后再次命中变化导致无限重建;IR/renderer 变化已由上方 rerun 声明覆盖。
+    // 若生成文件路径变化导致 import 找不到,cargo 会以编译错误显现(main.rs 的 slint!)。
 
     // 输出运行时元数据:binding/event 槽位 + canonical initial State(renderer 已复验)。
     let meta = serde_json::json!({
