@@ -1699,6 +1699,7 @@ dependencies = [
  "floatile-plugin-api",
  "floatile-renderer",
  "floatile-runtime",
+ "floatile-services",
  "floatile-store",
  "floatile-ui-schema",
  "serde",
