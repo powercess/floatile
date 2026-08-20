@@ -35,7 +35,6 @@ floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }
 floatile-renderer = { workspace = true }
 floatile-ui-schema = { workspace = true }
 serde_json = { workspace = true }
-slint-build = "1.17"
 
 [dev-dependencies]
 floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }

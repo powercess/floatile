@@ -7,10 +7,16 @@
 //! 脚本,不进入宿主运行时二进制。
 //!
 //! renderer 生成的 `.slnt` 是宿主控制的"插件内容区组件"(非 Window,遵循
-//! renderer 中立原则);由集成测试用 `slint-build` 编译,证明生成输出可被宿主
-//! 编译为合法 Slint 组件(arch 路径二的可编译证据)。`plugin_meta.json` 输出
-//! binding/event 槽位与 canonical initial State,`main.rs` 运行时据此把权威
-//! State 投影到宿主属性、把输入事件转发回 runtime。
+//! renderer 中立原则)。`plugin_meta.json` 输出 binding/event 槽位与 canonical
+//! initial State,`main.rs` 运行时据此把权威 State 投影到宿主属性、把输入事件
+//! 转发回 runtime。
+//!
+//! 注意:本脚本不调用 `slint-build` 编译生成物——`slint-build` 引入 Slint 图像/
+//! AVIF 依赖链(含 unmaintained `paste`,触发 cargo-deny advisory RUSTSEC-2024-0436)。
+//! 生成物是否可被宿主编译,由 CI 的 `cargo build -p floatile-shell`(其 `slint!`
+//! 宿主壳编译)间接保证;renderer 输出文本的结构/转义/契约由 renderer 单测与
+//! 集成测试断言。若需显式编译验证,运行 `floatile-renderer` 的
+//! `compile_evidence` 示例(仅当显式启用 feature,不进入默认门禁)。
 //!
 //! 构建脚本是受信任的构建期代码:失败即整体构建失败,`expect` 是标准失败路径,
 //! 不进入生产代码,故豁免 clippy 的 unwrap/expect 提示。
@@ -36,20 +42,9 @@ fn main() {
     let out = env::var_os("OUT_DIR").expect("OUT_DIR 应存在");
     let out_dir = PathBuf::from(out);
 
-    let plugin_path = out_dir.join("clock_plugin.slnt");
-    std::fs::write(&plugin_path, &rendered.source).expect("写入 clock_plugin.slnt 失败");
-
-    // 用 slint-build 编译生成的插件内容组件:这是 renderer spike 的"可编译"证据,
-    // 也是未来 shell renderer 实例化生成组件的前置。生成物是非 Window 内容组件
-    // (renderer 中立),slint 1.17 会给出 deprecation 提示;编译结果必须成功。
-    #[allow(clippy::let_unit_value, unused_must_use)]
-    {
-        slint_build::compile_with_config(
-            plugin_path,
-            slint_build::CompilerConfiguration::new().with_include_paths(vec![out_dir.clone()]),
-        )
-        .expect("slint-build 编译 clock_plugin.slnt 失败");
-    }
+    // 输出生成的插件内容组件源码(供未来 shell renderer 实例化/人工检查)。
+    std::fs::write(out_dir.join("clock_plugin.slnt"), &rendered.source)
+        .expect("写入 clock_plugin.slnt 失败");
 
     // 输出运行时元数据:binding/event 槽位 + canonical initial State(renderer 已复验)。
     let meta = serde_json::json!({
