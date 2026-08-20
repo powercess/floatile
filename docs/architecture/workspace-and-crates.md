@@ -13,6 +13,7 @@
   floatile-sdk ───┘
                          │
   floatile-cli ──────────┤ validate / build / inspect
+    floatile-renderer ───┘（IR → 宿主控制的 Slint 源码文本，host-only）
                          ▼
 宿主侧
   floatile-shell → floatile-runtime → floatile-plugin-api
@@ -65,8 +66,10 @@
 一致性证明；不得手写两套 UI 类型。
 
 S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校验、JSONPath 绑定路径解析、
-结构/预算校验与契约测试，host 与 `wasm32-wasip2` 均可编译。CLI/renderer/runtime 的联动、animation/
-asset 预算的进一步落地与 `uiApiVersion` 版本轴 contract vectors 仍待后续切片。
+结构/预算校验与契约测试，host 与 `wasm32-wasip2` 均可编译。renderer spike（IR→Slint，见
+`floatile-renderer`）已选定路径二变体并证明参考时钟生成物可经 `slint-build` 编译；
+`uiApiVersion` 版本轴 contract vectors、animation/asset 预算的进一步落地与运行时第三方插件
+UI 渲染（依赖 interpreter/运行时编译 ADR）仍待后续切片。
 
 ### 3.3 `floatile-shell`
 
@@ -143,6 +146,15 @@ asset 预算的进一步落地与 `uiApiVersion` 版本轴 contract vectors 仍�
 - `--json --no-interactive` 是 CI/Agent 稳定接口。
 - dev/test 使用 mock capability 或受控 runtime，不绕过生产 Broker 语义。
 
+### 3.12 `floatile-renderer`
+
+- host-only；依赖 `floatile-ui-schema`（含 `validate_document`），不依赖 Slint/Wasmtime 运行时。
+- 把已验证 `widget.ftui` 结构化生成为宿主控制的 Slint 源码文本（ADR-0001 路径二变体），
+  输出 `component <PluginUI>` 内容组件 + binding/event 槽位。
+- 生成前独立复验预算/结构；所有字符串值经结构化转义，组件/属性/回调名由本 crate 生成。
+- 参考时钟由 `floatile-shell/build.rs` 调本 crate 生成并通过 `slint-build` 编译（可编译证据）；
+  运行时第三方插件 UI 渲染待 interpreter/运行时编译 ADR（本 crate 输出契约不变）。
+
 ## 4. 事实源
 
 | 契约 | 唯一源 | 生成/消费方 |
@@ -169,6 +181,7 @@ crates/
   floatile-services/
   floatile-store/
   floatile-sdk/
+  floatile-renderer/          # IR → 宿主控制 Slint 源码，host-only（S5a renderer spike）
   floatile-cli/
 wit/
   floatile-widget.wit

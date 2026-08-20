@@ -43,10 +43,9 @@ use floatile_platform::{
 use floatile_runtime::{WidgetConfig, WidgetManager};
 use floatile_shell::{
     BUILTIN_CLOCK_PLUGIN, CLOCK_INSTANCE_ID, PluginProjection, layout_from_window,
-    project_plugin_ui, resolve_plugin_view_state,
+    resolve_plugin_view_state,
 };
 use floatile_ui_schema::schema::JsonSchema;
-use floatile_ui_schema::{UiDocument, validate_document};
 use slint::Timer;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
@@ -309,9 +308,40 @@ impl PerfSampler {
     }
 }
 
-/// 构建期由 `floatile_sdk::build::build_ftui` 生成的参考时钟 `widget.ftui`
-/// （`build.rs` 固化，单一事实源，不手写第二份 JSON）。
-const CLOCK_FTUI_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/clock_ftui.json"));
+/// 参考时钟插件的运行元数据:binding/event 槽位(renderer 构建期输出,`FTUI_IR` 单源)。
+///
+/// shell 运行时只消费这份稳定 JSON 把权威 State 投影到宿主属性、把输入事件转发
+/// 回 runtime;不解析生成文本,不把 Slint 类型/错误变成公开 UI API。
+const PLUGIN_META_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/plugin_meta.json"));
+
+/// renderer 输出的 binding/event 槽位(反序列化自 `PLUGIN_META_JSON`)。
+///
+/// 这些字段是构建期契约快照:binding 槽位当前已用于把 State 投影到宿主属性,
+/// event 槽位预留给后续 shell renderer 的输入事件回投。允许 dead_code,因为
+/// 字段存在本身即契约;删除字段应同步 renderer 输出。
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct PluginMeta {
+    bindings: Vec<BindingSlot>,
+    events: Vec<EventSlot>,
+    initial_state: serde_json::Value,
+}
+
+/// 一个 State 绑定槽位:实例路径 → 生成属性名。
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct BindingSlot {
+    path: String,
+    prop: String,
+}
+
+/// 一个输入事件槽位:声明事件 → 生成回调名。
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct EventSlot {
+    event: String,
+    callback: String,
+}
 
 /// 参考时钟的投影 + 宿主下发的 canonical initial State。
 struct ProjectedClock {
@@ -320,27 +350,31 @@ struct ProjectedClock {
 }
 
 fn load_clock_projection() -> Option<ProjectedClock> {
-    let doc: UiDocument = match serde_json::from_str(CLOCK_FTUI_JSON) {
-        Ok(doc) => doc,
+    // 从 renderer 构建期输出读取参考时钟投影契约;参考时钟是单绑定 `$.time`,
+    // 与 shell 的 time-text 属性对应。绑定槽位由 renderer 生成,不手写 JSON。
+    let meta: PluginMeta = match serde_json::from_str(PLUGIN_META_JSON) {
+        Ok(meta) => meta,
         Err(error) => {
-            tracing::warn!(%error, "embedded widget.ftui is invalid JSON; falling back to builtin clock");
+            tracing::warn!(%error, "plugin_meta.json invalid; falling back to builtin clock");
             return None;
         }
     };
-    if let Err(error) = validate_document(&doc) {
-        tracing::warn!(%error, "embedded widget.ftui failed validation; falling back to builtin clock");
+    let binding = meta
+        .bindings
+        .iter()
+        .find(|b| b.path == "$.time")
+        .or_else(|| meta.bindings.first())?;
+    if meta.bindings.is_empty() {
+        tracing::warn!("plugin UI 没有 State 绑定; falling back to builtin clock");
         return None;
     }
-    match project_plugin_ui(&doc) {
-        Ok(projection) => Some(ProjectedClock {
-            projection,
-            initial_state: doc.state.initial.clone(),
-        }),
-        Err(error) => {
-            tracing::warn!(%error, "embedded widget.ftui unsupported by shell projection; falling back to builtin clock");
-            None
-        }
-    }
+    let projection = PluginProjection {
+        text_binding: binding.path.clone(),
+    };
+    Some(ProjectedClock {
+        projection,
+        initial_state: meta.initial_state,
+    })
 }
 
 fn clock_wasm_bytes() -> Option<Vec<u8>> {

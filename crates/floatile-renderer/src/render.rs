@@ -1,0 +1,818 @@
+//! IR → 宿主控制的 Slint 源码文本生成。
+//!
+//! 将已验证 `UiDocument` 递归展开为单个 `component PluginContent` 的 Slint 定义。
+//! 输出除源码文本外,还给出:
+//! - `bindings`:State 路径 → 生成的属性名(runtime 按下发 State 逐项 set property);
+//! - `events`:输入事件名 → 生成的回调名(runtime 绑定 callback 转发 handle_event)。
+
+use std::collections::BTreeMap;
+
+use floatile_ui_schema::ir::{Binding, Component, PropValue, UiDocument};
+use floatile_ui_schema::path::PathSegments;
+use floatile_ui_schema::{MAX_BINDINGS, MAX_NODES, MAX_TREE_DEPTH, validate_document};
+
+use crate::RendererError;
+
+/// 一个 State 绑定:实例路径 → 生成的 Slint 属性名。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BindingSlot {
+    /// 规范 JSONPath(`$.time`)。
+    pub path: String,
+    /// 生成的宿主属性名(如 `prop_time`)。
+    pub prop: String,
+}
+
+/// 一个输入事件:声明事件名 → 生成的回调名。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EventSlot {
+    /// 声明事件名(顶层 `events` 键,如 `toggle`)。
+    pub event: String,
+    /// 生成的回调名(如 `emit_toggle`)。
+    pub callback: String,
+}
+
+/// 生成的组件文本与绑定/事件槽位。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderedComponent {
+    /// `component PluginContent` 的 Slint 源码文本。
+    pub source: String,
+    /// 全部 State 绑定槽位(去重)。
+    pub bindings: Vec<BindingSlot>,
+    /// 全部输入事件槽位(去重)。
+    pub events: Vec<EventSlot>,
+}
+
+/// 生成开始,先复验输入。
+pub fn render_component(doc: &UiDocument) -> Result<RenderedComponent, RendererError> {
+    // renderer 独立复验(CLI/runtime 通过不代表本层可跳过)。
+    validate_document(doc)?;
+    let mut ctx = Ctx::default();
+    let body = render_node(&doc.root, &mut ctx, 0)?;
+    let bindings: Vec<BindingSlot> = ctx.bindings.into_values().collect();
+    let events: Vec<EventSlot> = ctx.events.values().cloned().collect();
+    let source = wrap_component(&body, &bindings, &events);
+    Ok(RenderedComponent {
+        source,
+        bindings,
+        events,
+    })
+}
+
+/// 生成期上下文:属性/回调命名与预算复验。
+#[derive(Default)]
+struct Ctx {
+    bindings: BTreeMap<String, BindingSlot>,
+    events: BTreeMap<String, EventSlot>,
+    nodes: usize,
+    callback_counter: usize,
+}
+
+fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot]) -> String {
+    let mut out = String::new();
+    out.push_str("// 由 floatile-renderer 生成;宿主控制,勿手编。\n");
+    out.push_str("component ClockPluginUI inherits Rectangle {\n");
+    for slot in bindings {
+        out.push_str(&format!("    in property <string> {}: \"\";\n", slot.prop));
+    }
+    for slot in callbacks {
+        out.push_str(&format!("    callback {};\n", slot.callback));
+    }
+    out.push_str("    background: transparent;\n");
+    out.push_str(body);
+    out.push_str("}\n");
+    out
+}
+
+fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, RendererError> {
+    if depth > MAX_TREE_DEPTH {
+        return Err(RendererError::BudgetExceeded(format!(
+            "组件树深度 {depth} 超过 renderer 上限 {MAX_TREE_DEPTH}"
+        )));
+    }
+    ctx.nodes += 1;
+    if ctx.nodes > MAX_NODES {
+        return Err(RendererError::BudgetExceeded(format!(
+            "组件节点数 {} 超过 renderer 上限 {MAX_NODES}",
+            ctx.nodes
+        )));
+    }
+    if ctx.bindings.len() > MAX_BINDINGS {
+        return Err(RendererError::BudgetExceeded(format!(
+            "绑定数 {} 超过 renderer 上限 {MAX_BINDINGS}",
+            ctx.bindings.len()
+        )));
+    }
+
+    match comp.kind.as_str() {
+        "Column" => render_layout(comp, ctx, depth, "VerticalLayout"),
+        "Row" => render_layout(comp, ctx, depth, "HorizontalLayout"),
+        "Stack" => render_layout(comp, ctx, depth, "StackLayout"),
+        "Grid" => render_layout(comp, ctx, depth, "GridLayout"),
+        "Text" => render_text(comp, ctx),
+        "Button" => render_button(comp, ctx),
+        "Toggle" => render_toggle(comp, ctx),
+        "Progress" => render_meter(comp, ctx, false),
+        "Gauge" => render_meter(comp, ctx, true),
+        "If" => render_if(comp, ctx, depth),
+        "ForEach" => render_foreach(comp, ctx, depth),
+        kind => Err(RendererError::UnsupportedComponent(
+            kind.to_owned(),
+            "renderer 暂不映射该组件;请移除或等待后续切片".to_owned(),
+        )),
+    }
+}
+
+/// 布局容器:展开 children,并映射公共样式 props。
+fn render_layout(
+    comp: &Component,
+    ctx: &mut Ctx,
+    depth: usize,
+    layout: &str,
+) -> Result<String, RendererError> {
+    let mut children = String::new();
+    for child in &comp.children {
+        children.push_str(&render_node(child, ctx, depth + 1)?);
+        children.push('\n');
+    }
+    let props = render_layout_props(comp)?;
+    Ok(format!("{layout} {{\n{props}{children}}}\n"))
+}
+
+/// 布局的公共样式 props 映射(Slint layout spacing/padding 语义)。
+fn render_layout_props(comp: &Component) -> Result<String, RendererError> {
+    let mut out = String::new();
+    if let Some(PropValue::Literal(v)) = comp.props.get("padding")
+        && let Some(px) = v.as_f64()
+    {
+        out.push_str(&format!("    padding: {px}px;\n"));
+    }
+    if let Some(PropValue::Literal(v)) = comp.props.get("gap")
+        && let Some(px) = v.as_f64()
+    {
+        out.push_str(&format!("    spacing: {px}px;\n"));
+    }
+    Ok(out)
+}
+
+/// Text:绑定或字面量 + 文本样式 prop。
+fn render_text(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    let Some(prop) = comp.props.get("text") else {
+        return Err(RendererError::BindingError(
+            "Text 缺少 text prop".to_owned(),
+        ));
+    };
+    match prop {
+        PropValue::Binding(Binding::State { bind }) => {
+            let slot = binding_slot(bind, ctx)?;
+            let mut out = String::from("    Text {\n");
+            out.push_str(&format!("        text: root.{0};\n", slot.prop));
+            out.push_str(&text_style_props(comp)?);
+            out.push_str("    }\n");
+            Ok(out)
+        }
+        PropValue::Binding(Binding::Item { item }) => {
+            // ForEach template 内的 item 绑定由 item 变量提供,非根属性。
+            let mut out = String::from("    Text {\n");
+            out.push_str(&format!("        text: {item};\n"));
+            out.push_str(&text_style_props(comp)?);
+            out.push_str("    }\n");
+            Ok(out)
+        }
+        PropValue::Literal(v) => {
+            let text = encode_string(&value_to_string(v)?)?;
+            let mut out = String::from("    Text {\n");
+            out.push_str(&format!("        text: {text};\n"));
+            out.push_str(&text_style_props(comp)?);
+            out.push_str("    }\n");
+            Ok(out)
+        }
+    }
+}
+
+fn text_style_props(comp: &Component) -> Result<String, RendererError> {
+    let mut out = String::new();
+    if let Some(PropValue::Literal(v)) = comp.props.get("color")
+        && let Some(s) = v.as_str()
+    {
+        out.push_str(&format!("        color: {0};\n", color_literal(s)?));
+    }
+    if let Some(PropValue::Literal(v)) = comp.props.get("opacity")
+        && let Some(f) = v.as_f64()
+    {
+        out.push_str(&format!("        opacity: {f};\n"));
+    }
+    Ok(out)
+}
+
+/// Button:TouchArea + 绘制矩形 + 标签,点击发出声明事件。
+///
+/// Slint 无 Button 内建基础组件(需 std-widgets 主题),宿主用基础元素绘制,
+/// 保持与 registry 相同的输入事件语义(`activate`)。
+fn render_button(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    let label = match comp.props.get("label") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let slot = binding_slot(bind, ctx)?;
+            format!("root.{0}", slot.prop)
+        }
+        Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
+        Some(PropValue::Literal(v)) => encode_string(&value_to_string(v)?)?,
+        None => {
+            return Err(RendererError::BindingError(
+                "Button 缺少 label prop".to_owned(),
+            ));
+        }
+    };
+    let callback = event_callback(comp, ctx, "activate")?;
+    let callback_name = callback.callback.clone();
+    let mut out = String::from("    TouchArea {\n");
+    out.push_str("        Rectangle {\n");
+    out.push_str("            border-radius: 4px;\n");
+    out.push_str("            background: #2a2f3a;\n");
+    out.push_str("            Text {\n");
+    out.push_str(&format!("                text: {label};\n"));
+    out.push_str("                color: white;\n");
+    out.push_str("                horizontal-alignment: center;\n");
+    out.push_str("                vertical-alignment: center;\n");
+    out.push_str("            }\n");
+    out.push_str("        }\n");
+    out.push_str(&format!(
+        "        clicked => {{ root.{callback_name}(); }}\n"
+    ));
+    out.push_str("    }\n");
+    Ok(out)
+}
+
+/// Toggle:TouchArea + 按 checked 状态换色,点击发出 `toggle` 事件。
+fn render_toggle(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    let checked = match comp.props.get("checked") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let slot = binding_slot(bind, ctx)?;
+            format!("root.{0}", slot.prop)
+        }
+        Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
+        Some(PropValue::Literal(v)) => {
+            let b = v.as_bool().ok_or_else(|| {
+                RendererError::BindingError("Toggle checked 必须是布尔值".to_owned())
+            })?;
+            b.to_string()
+        }
+        None => {
+            return Err(RendererError::BindingError(
+                "Toggle 缺少 checked prop".to_owned(),
+            ));
+        }
+    };
+    let callback = event_callback(comp, ctx, "toggle")?;
+    let callback_name = callback.callback.clone();
+    let mut out = String::from("    TouchArea {\n");
+    out.push_str("        Rectangle {\n");
+    out.push_str("            border-radius: 2px;\n");
+    out.push_str("            border-width: 1px;\n");
+    out.push_str("            border-color: #4a90e2;\n");
+    out.push_str(&format!("            background: {};\n", tied(checked)));
+    // 状态指示圆点(Toggle 语义的视觉呈现,值随 checked 绑定)。
+    out.push_str("        }\n");
+    out.push_str(&format!(
+        "        clicked => {{ root.{callback_name}(); }}\n"
+    ));
+    out.push_str("    }\n");
+    Ok(out)
+}
+
+/// 布尔绑定转 Slint 颜色:true 亮色表示开启,false 暗色表示关闭。
+fn tied(checked: String) -> String {
+    format!("(if {checked} ? #3a7dff : #2a2f3a)")
+}
+
+/// Progress/Gauge:按绑定数值绘制填充条(Gauge 为环形语义的简化水平填充)。
+fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String, RendererError> {
+    let value = match comp.props.get("value") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let slot = binding_slot(bind, ctx)?;
+            format!("root.{0}", slot.prop)
+        }
+        Some(PropValue::Binding(Binding::Item { .. })) => {
+            return Err(RendererError::BindingError(
+                "meter 不支持 ForEach item 绑定".to_owned(),
+            ));
+        }
+        Some(PropValue::Literal(v)) => {
+            let f = v
+                .as_f64()
+                .ok_or_else(|| RendererError::BindingError("meter value 必须是数字".to_owned()))?;
+            format!("{f}%")
+        }
+        None => {
+            return Err(RendererError::BindingError(
+                "meter 缺少 value prop".to_owned(),
+            ));
+        }
+    };
+    let mut out = String::from("    Rectangle {\n");
+    out.push_str("        border-radius: 2px;\n");
+    out.push_str("        background: #2a2f3a;\n");
+    out.push_str("        width: 100%;\n");
+    out.push_str("        height: 8px;\n");
+    out.push_str("        Rectangle {\n");
+    out.push_str("            border-radius: 2px;\n");
+    out.push_str("            background: #4a90e2;\n");
+    out.push_str(&format!("            width: {value};\n"));
+    out.push_str("            height: 8px;\n");
+    out.push_str("        }\n");
+    out.push_str("    }\n");
+    Ok(out)
+}
+
+/// If:when 布尔绑定 → Slint `if` 结构。
+fn render_if(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, RendererError> {
+    let Some(Binding::State { bind }) = &comp.when else {
+        return Err(RendererError::BindingError(
+            "If 缺少 when 布尔 State 绑定".to_owned(),
+        ));
+    };
+    let slot = binding_slot(bind, ctx)?;
+    let Some(then) = &comp.then else {
+        return Err(RendererError::BindingError("If 缺少 then 分支".to_owned()));
+    };
+    let then_text = render_node(then, ctx, depth + 1)?;
+    let mut out = String::new();
+    out.push_str(&format!("if root.{0}: {{\n", slot.prop));
+    out.push_str(&then_text);
+    out.push_str("}\n");
+    if let Some(els) = &comp.else_ {
+        let else_text = render_node(els, ctx, depth + 1)?;
+        out.push_str("else {\n");
+        out.push_str(&else_text);
+        out.push_str("}\n");
+    }
+    Ok(out)
+}
+
+/// ForEach:items 数组绑定 → Slint `for` 循环(模板内 item 绑定)。
+fn render_foreach(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, RendererError> {
+    let Some(Binding::State { bind }) = &comp.items else {
+        return Err(RendererError::BindingError(
+            "ForEach 缺少 items 数组 State 绑定".to_owned(),
+        ));
+    };
+    let slot = binding_slot(bind, ctx)?;
+    let Some(template) = &comp.template else {
+        return Err(RendererError::BindingError(
+            "ForEach 缺少 template".to_owned(),
+        ));
+    };
+    // 模板内的 item 绑定(`{"item": "field"}`)由 for 变量提供,进入独立命名空间。
+    let template_text = render_node(template, ctx, depth + 1)?;
+    let mut out = String::new();
+    out.push_str(&format!(
+        "for item[{0}] in root.{1}: {{\n",
+        item_key(comp)?,
+        slot.prop
+    ));
+    out.push_str(&template_text);
+    out.push_str("}\n");
+    Ok(out)
+}
+
+fn item_key(comp: &Component) -> Result<String, RendererError> {
+    if let Some(key) = &comp.key {
+        if key.is_empty() {
+            return Err(RendererError::BindingError(
+                "ForEach key 不能为空".to_owned(),
+            ));
+        }
+        Ok(key.clone())
+    } else {
+        Ok("item".to_owned())
+    }
+}
+
+/// 登记一个 State 绑定并返回生成的属性名(同路径复用同一属性)。
+fn binding_slot(bind: &str, ctx: &mut Ctx) -> Result<BindingSlot, RendererError> {
+    PathSegments::parse(bind).map_err(|e| RendererError::BindingError(format!("{bind}: {e}")))?;
+    if let Some(slot) = ctx.bindings.get(bind) {
+        return Ok(slot.clone());
+    }
+    if ctx.bindings.len() >= MAX_BINDINGS {
+        return Err(RendererError::BudgetExceeded(format!(
+            "绑定数超过 renderer 上限 {MAX_BINDINGS}"
+        )));
+    }
+    let prop = format!("prop_{}", path_prop_name(bind));
+    let slot = BindingSlot {
+        path: bind.to_owned(),
+        prop,
+    };
+    ctx.bindings.insert(bind.to_owned(), slot.clone());
+    Ok(slot)
+}
+
+/// 从规范 JSONPath 派生稳定属性名(`$.a.b` → `a_b`),点号/元字符转义为 `_`。
+fn path_prop_name(bind: &str) -> String {
+    let segments = PathSegments::parse(bind)
+        .map(|s| s.segments().join("_"))
+        .unwrap_or_else(|_| {
+            bind.trim_start_matches("$.")
+                .replace(['.', ' ', '-', '['], "_")
+        });
+    if segments.is_empty() {
+        "state".to_owned()
+    } else {
+        segments
+    }
+}
+
+/// 登记输入事件并返回生成的回调名(同事件复用同一回调)。
+fn event_callback(
+    comp: &Component,
+    ctx: &mut Ctx,
+    input_event: &str,
+) -> Result<EventSlot, RendererError> {
+    let Some(emitted) = comp.events.get(input_event) else {
+        return Err(RendererError::BindingError(format!(
+            "组件 {} 未声明输入事件 `{input_event}`",
+            comp.kind
+        )));
+    };
+    let event = emitted.emit.clone();
+    if let Some(slot) = ctx.events.get(&event) {
+        return Ok(slot.clone());
+    }
+    let callback = format!("emit_{}", ctx.callback_counter);
+    ctx.callback_counter += 1;
+    let slot = EventSlot { event, callback };
+    ctx.events.insert(slot.event.clone(), slot.clone());
+    Ok(slot)
+}
+
+/// 字符串值编码为 Slint 双引号字符串字面量(结构化转义)。
+fn encode_string(s: &str) -> Result<String, RendererError> {
+    let mut out = String::from("\"");
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                return Err(RendererError::EncodeError(format!(
+                    "字符串含控件字符 U+{:04X},拒绝嵌入 Slint 文本",
+                    c as u32
+                )));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Ok(out)
+}
+
+/// 颜色字符串编码为 Slint 颜色字面量(仅接受受限形式)。
+fn color_literal(s: &str) -> Result<String, RendererError> {
+    let s = s.trim();
+    let valid = s.starts_with('#')
+        && matches!(s.len(), 4 | 7 | 9)
+        && s[1..].chars().all(|c| c.is_ascii_hexdigit());
+    if valid {
+        Ok(s.to_owned())
+    } else {
+        Err(RendererError::EncodeError(format!(
+            "颜色 `{s}` 不是受限 #RRGGBB[AA] 字面量"
+        )))
+    }
+}
+
+/// 把字面量 JSON 值转字符串(仅标量)。
+fn value_to_string(v: &serde_json::Value) -> Result<String, RendererError> {
+    match v {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        serde_json::Value::Null => Ok(String::new()),
+        other => Err(RendererError::EncodeError(format!(
+            "prop 字面量不支持非字符串值 {other}"
+        ))),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use floatile_ui_schema::ir::Component;
+    use serde_json::json;
+
+    fn doc(root: Component) -> UiDocument {
+        UiDocument {
+            ui_api_version: floatile_ui_schema::UI_API_VERSION.into(),
+            state: floatile_ui_schema::ir::StateSchema {
+                initial: json!({"time": "00:00:00", "running": false, "items": []}),
+                schema: floatile_ui_schema::JsonSchema::Object {
+                    required: vec![],
+                    properties: BTreeMap::from([
+                        (
+                            "time".into(),
+                            floatile_ui_schema::JsonSchema::String {
+                                max_length: Some(32),
+                            },
+                        ),
+                        ("running".into(), floatile_ui_schema::JsonSchema::Boolean),
+                        (
+                            "items".into(),
+                            floatile_ui_schema::JsonSchema::Array {
+                                max_items: Some(16),
+                                items: Box::new(floatile_ui_schema::JsonSchema::String {
+                                    max_length: Some(64),
+                                }),
+                            },
+                        ),
+                    ]),
+                    additional_properties: false,
+                },
+            },
+            events: BTreeMap::new(),
+            root,
+        }
+    }
+
+    fn doc_with_items() -> UiDocument {
+        UiDocument {
+            ui_api_version: floatile_ui_schema::UI_API_VERSION.into(),
+            state: floatile_ui_schema::ir::StateSchema {
+                initial: json!({"time": "00:00:00", "running": false, "items": []}),
+                schema: floatile_ui_schema::JsonSchema::Object {
+                    required: vec![],
+                    properties: BTreeMap::from([
+                        (
+                            "time".into(),
+                            floatile_ui_schema::JsonSchema::String {
+                                max_length: Some(32),
+                            },
+                        ),
+                        ("running".into(), floatile_ui_schema::JsonSchema::Boolean),
+                        (
+                            "items".into(),
+                            floatile_ui_schema::JsonSchema::Array {
+                                max_items: Some(16),
+                                items: Box::new(floatile_ui_schema::JsonSchema::String {
+                                    max_length: Some(64),
+                                }),
+                            },
+                        ),
+                    ]),
+                    additional_properties: false,
+                },
+            },
+            events: BTreeMap::new(),
+            root: Component::default(),
+        }
+    }
+
+    fn text_bind(path: &str) -> Component {
+        Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([(
+                "text".into(),
+                PropValue::Binding(Binding::State { bind: path.into() }),
+            )]),
+            ..Default::default()
+        }
+    }
+
+    fn column(children: Vec<Component>) -> Component {
+        Component {
+            kind: "Column".into(),
+            children,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn renders_column_text_with_binding_slot() {
+        let root = column(vec![text_bind("$.time")]);
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(
+            rendered
+                .source
+                .contains("component ClockPluginUI inherits Rectangle")
+        );
+        assert!(rendered.source.contains("VerticalLayout"));
+        assert!(rendered.source.contains("text: root.prop_time;"));
+        assert_eq!(
+            rendered.bindings,
+            vec![BindingSlot {
+                path: "$.time".into(),
+                prop: "prop_time".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn reuses_binding_slot_for_same_path() {
+        let root = column(vec![text_bind("$.time"), text_bind("$.time")]);
+        let rendered = render_component(&doc(root)).unwrap();
+        assert_eq!(rendered.bindings.len(), 1);
+    }
+
+    #[test]
+    fn escapes_literal_text() {
+        let root = Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([(
+                "text".into(),
+                PropValue::Literal(json!("a \"quoted\" \\ path\nline")),
+            )]),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(
+            rendered
+                .source
+                .contains(r#"text: "a \"quoted\" \\ path\nline";"#)
+        );
+        assert!(!rendered.source.contains("a \"quoted\" \\ path\n"));
+    }
+
+    #[test]
+    fn rejects_unknown_component() {
+        // 未知组件(不在 registry)由 validate_document 先拒绝,renderer 不改写该语义。
+        let root = Component {
+            kind: "Canvas".into(),
+            ..Default::default()
+        };
+        let err = render_component(&doc(root)).unwrap_err();
+        assert_eq!(err.code(), "RNDR_INVALID_IR");
+    }
+
+    #[test]
+    fn rejects_registry_but_unmapped_component() {
+        // registry 通过、但 renderer 尚未映射的组件(如 Scroll/List)由 renderer 层拒绝。
+        let root = Component {
+            kind: "List".into(),
+            ..Default::default()
+        };
+        let err = render_component(&doc(root)).unwrap_err();
+        assert_eq!(err.code(), "RNDR_UNSUPPORTED_COMPONENT");
+    }
+
+    #[test]
+    fn rejects_unvalidated_missing_text_prop() {
+        let root = Component {
+            kind: "Text".into(),
+            ..Default::default()
+        };
+        assert!(render_component(&doc(root)).is_err());
+    }
+
+    #[test]
+    fn renders_button_event_slot() {
+        let mut d = doc(Component {
+            kind: "Button".into(),
+            props: BTreeMap::from([("label".into(), PropValue::Literal(json!("Go")))]),
+            events: BTreeMap::from([(
+                "activate".into(),
+                floatile_ui_schema::ir::EmittedEvent {
+                    emit: "toggle".into(),
+                    payload: json!({}),
+                },
+            )]),
+            ..Default::default()
+        });
+        d.events.insert(
+            "toggle".into(),
+            floatile_ui_schema::ir::EventSchema {
+                payload: floatile_ui_schema::JsonSchema::Object {
+                    required: vec![],
+                    properties: BTreeMap::new(),
+                    additional_properties: false,
+                },
+            },
+        );
+        let rendered = render_component(&d).unwrap();
+        assert!(rendered.source.contains("TouchArea"));
+        assert!(rendered.source.contains("clicked => { root.emit_0(); }"));
+        assert_eq!(
+            rendered.events,
+            vec![EventSlot {
+                event: "toggle".into(),
+                callback: "emit_0".into(),
+            }]
+        );
+    }
+    #[test]
+    fn renders_if_when_else_branches() {
+        // If 生成 `if root.prop_running:` + then/else 分支。
+        let root = Component {
+            kind: "If".into(),
+            when: Some(Binding::State {
+                bind: "$.running".into(),
+            }),
+            then: Some(Box::new(text_bind("$.time"))),
+            else_: Some(Box::new(Component {
+                kind: "Text".into(),
+                props: BTreeMap::from([("text".into(), PropValue::Literal(json!("stopped")))]),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        let src = &rendered.source;
+        assert!(
+            src.contains("if root.prop_running: {"),
+            "缺少 if 分支: {src}"
+        );
+        assert!(src.contains("else {"), "缺少 else 分支: {src}");
+        assert!(
+            src.contains("text: root.prop_time;"),
+            "then 分支应渲染 time 绑定"
+        );
+        assert!(src.contains(r#"text: "stopped";"#), "else 分支应渲染字面量");
+        assert!(
+            rendered.bindings.iter().any(|b| b.path == "$.running"),
+            "when 绑定应登记"
+        );
+    }
+
+    #[test]
+    fn renders_foreach_items_template() {
+        // ForEach 生成 `for item[N] in root.prop_items:` 循环,模板内 item 绑定。
+        let template_root = Component {
+            kind: "Column".into(),
+            children: vec![Component {
+                kind: "Text".into(),
+                props: BTreeMap::from([(
+                    "text".into(),
+                    PropValue::Binding(Binding::Item {
+                        item: "value".into(),
+                    }),
+                )]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let root = Component {
+            kind: "ForEach".into(),
+            items: Some(Binding::State {
+                bind: "$.items".into(),
+            }),
+            key: Some("value".into()),
+            template: Some(Box::new(template_root)),
+            ..Default::default()
+        };
+        let mut d = doc_with_items();
+        d.root = root;
+        let rendered = render_component(&d).unwrap();
+        let src = &rendered.source;
+        assert!(
+            src.contains("for item[value] in root.prop_items:"),
+            "缺少 for: {src}"
+        );
+        assert!(src.contains("text: value;"), "模板 item 绑定应渲染");
+    }
+
+    #[test]
+    fn renders_toggle_event_slot() {
+        let root = Component {
+            kind: "Toggle".into(),
+            props: BTreeMap::from([(
+                "checked".into(),
+                PropValue::Binding(Binding::State {
+                    bind: "$.running".into(),
+                }),
+            )]),
+            events: BTreeMap::from([(
+                "toggle".into(),
+                floatile_ui_schema::ir::EmittedEvent {
+                    emit: "toggle".into(),
+                    payload: json!({}),
+                },
+            )]),
+            ..Default::default()
+        };
+        let mut d = doc(root);
+        d.events.insert(
+            "toggle".into(),
+            floatile_ui_schema::ir::EventSchema {
+                payload: floatile_ui_schema::JsonSchema::Object {
+                    required: vec![],
+                    properties: BTreeMap::new(),
+                    additional_properties: false,
+                },
+            },
+        );
+        let rendered = render_component(&d).unwrap();
+        assert!(rendered.source.contains("TouchArea"));
+        // checked 绑定经受限三元映射为颜色(布尔 → 亮/暗色),无直接属性引用。
+        assert!(
+            rendered
+                .source
+                .contains("root.prop_running ? #3a7dff : #2a2f3a")
+        );
+        assert_eq!(
+            rendered.events,
+            vec![EventSlot {
+                event: "toggle".into(),
+                callback: "emit_0".into(),
+            }]
+        );
+    }
+}

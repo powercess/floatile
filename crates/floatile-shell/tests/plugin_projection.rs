@@ -174,3 +174,26 @@ async fn runtime_clock_updates_resolve_through_shell_projection() {
 
     handle.shutdown().await.expect("shutdown 应正常返回");
 }
+
+/// renderer 生成的 binding 元数据与 shell 投影一致(meta-driven 契约)。
+///
+/// shell 运行时用 renderer 构建期输出的 binding 槽位(plugin_meta.json)驱动投影,
+/// 不再手写提取;此测试交叉验证 renderer 的 `$.time` 槽位与旧投影结果同源。
+#[test]
+fn renderer_meta_binding_matches_shell_projection() {
+    let d = clock_ftui_document();
+    let rendered = floatile_renderer::render_component(&d).expect("clock UI 应可渲染");
+    let time_slot = rendered
+        .bindings
+        .iter()
+        .find(|b| b.path == "$.time")
+        .expect("renderer 应暴露 $.time 绑定槽位");
+    // renderer 槽位路径与旧投影提取的 text_binding 一致(同源契约)。
+    let projection = project_plugin_ui(&d).expect("clock ftui 应可投影");
+    assert_eq!(
+        time_slot.path, projection.text_binding,
+        "renderer 与 shell 投影应同源"
+    );
+    // 属性名可预测(路径派生),供宿主壳绑定。
+    assert_eq!(time_slot.prop, "prop_time");
+}
