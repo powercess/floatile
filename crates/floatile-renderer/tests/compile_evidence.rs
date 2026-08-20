@@ -113,3 +113,46 @@ fn rendered_rejects_unmapped_components() {
     let err = floatile_renderer::render_component(&d).unwrap_err();
     assert_eq!(err.code(), "RNDR_INVALID_IR");
 }
+
+/// 事件契约:widget.ftui 声明的输入事件(Button activate→emit)生成稳定回调槽位,
+/// 事件名即 runtime `WidgetEvent::Ui{name}` 对接的语义(方案第 3 项)。
+///
+/// Slint 输入事件经 renderer 映射为 `emit_N`,槽位 `event` 字段保持插件的声明
+/// 事件名;runtime 用同名 `WidgetEvent::Ui{name}` 投递,二者同源(不重命名)。
+#[test]
+fn rendered_event_slots_match_runtime_ui_event_semantics() {
+    let mut d = doc(Component {
+        kind: "Button".into(),
+        props: std::collections::BTreeMap::from([(
+            "label".into(),
+            PropValue::Literal(json!("Start / Stop")),
+        )]),
+        events: std::collections::BTreeMap::from([(
+            "activate".into(),
+            floatile_ui_schema::ir::EmittedEvent {
+                emit: "toggle".into(),
+                payload: json!({}),
+            },
+        )]),
+        ..Default::default()
+    });
+    // 顶层 events 声明(与 ui-ir-v1 单源一致)。
+    d.events.insert(
+        "toggle".into(),
+        floatile_ui_schema::ir::EventSchema {
+            payload: floatile_ui_schema::JsonSchema::Object {
+                required: vec![],
+                properties: std::collections::BTreeMap::new(),
+                additional_properties: false,
+            },
+        },
+    );
+    validate_document(&d).unwrap();
+    let rendered = floatile_renderer::render_component(&d).unwrap();
+    assert_eq!(rendered.events.len(), 1);
+    // 槽位事件名保留插件语义,是 runtime 转发 `WidgetEvent::Ui{name}` 的目标。
+    assert_eq!(rendered.events[0].event, "toggle");
+    // 生成组件有对应回调声明(宿主壳绑定/转发).
+    assert!(rendered.source.contains("callback emit_0;"));
+    assert!(rendered.source.contains("clicked => { root.emit_0(); }"));
+}
