@@ -96,7 +96,7 @@ fn spawn_clock() -> floatile_runtime::WidgetHandle {
         plugin: PluginId("dev.floatile.clock".into()),
         instance: InstanceId(1),
         wasm: clock_wasm_bytes(),
-        initial_state: json!({}),
+        initial_state: json!({"time": "", "running": false}),
         state_schema: clock_state_schema(),
         config_json: "{}".into(),
         grants: clock_grants(),

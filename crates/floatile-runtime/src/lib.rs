@@ -17,6 +17,7 @@ use floatile_plugin_api::exports::floatile::widget::widget_contract::{
 };
 use floatile_services::{AuditSink, Broker, TimerSink};
 use floatile_ui_schema::schema::JsonSchema;
+use floatile_ui_schema::validate_value;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{Component, HasSelf, Linker};
@@ -211,6 +212,13 @@ async fn run_actor(
 
     let initial_state_json = serde_json::to_string(&config.initial_state)
         .map_err(|e| RuntimeError::InstanceFailed(format!("initial state 序列化失败: {e}")))?;
+
+    // 宿主下发的 initial State 必须先通过 schema 校验（与 update-state 同一
+    // 校验器），fail-fast 防止把与契约不符的初始状态交给实例造成下游漂移。
+    validate_value(&config.state_schema, &config.initial_state, "$", 0).map_err(|e| {
+        RuntimeError::InstanceFailed(format!("initial state 未通过 schema 校验: {e}"))
+    })?;
+
     let host = state::InstanceHostState::new(
         config.instance,
         broker,

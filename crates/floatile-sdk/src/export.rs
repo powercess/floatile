@@ -16,10 +16,22 @@ macro_rules! impl_export_widget {
             struct _FloatileWidgetAdapter(RefCell<$widget>);
 
             impl $crate::GuestWidgetInstance for _FloatileWidgetAdapter {
-                fn new(_init: $crate::WidgetInit) -> Self {
-                    _FloatileWidgetAdapter(RefCell::new(
-                        <$widget as ::core::default::Default>::default(),
-                    ))
+                fn new(init: $crate::WidgetInit) -> Self {
+                    // canonical initial State 是宿主校验后下发的唯一权威；guest
+                    // 不得自行猜默认值（WIT widget-init 注释）。反序列化失败 =
+                    // 插件 State 类型与宿主校验的 UI IR 契约 drift，以 trap 终止
+                    // 本实例（per 架构文档：宿主与其他实例必须存活）。
+                    let initial = $crate::serde_json::from_str::<
+                        <$widget as $crate::Widget>::State,
+                    >(&init.initial_state_json)
+                    .unwrap_or_else(|error| {
+                        ::core::panic!(
+                            "host initial state 与插件 State 类型不匹配: {error}"
+                        )
+                    });
+                    let mut widget = <$widget as ::core::default::Default>::default();
+                    <$widget as $crate::Widget>::init(&mut widget, &initial);
+                    _FloatileWidgetAdapter(RefCell::new(widget))
                 }
 
                 fn start(&self) -> Result<(), $crate::WidgetError> {

@@ -23,6 +23,8 @@ impl FromWidgetEvent for WidgetEvent {
 
 /// 标准 Widget 契约。`State` 由 `#[derive(State)]` 生成 schema。
 ///
+/// - `init`：构造期收到宿主下发的 canonical initial State（host 为权威，guest
+///   不得自行猜默认值）；默认空实现，读取镜像状态的插件可覆写
 /// - `view`：构建期定义 UI 组件树（host 侧编译为 widget.ftui）
 /// - `start`：实例启动，可 schedule 计时器、初始化
 /// - `event`：统一事件入口（UI / timer / mode / config / theme / suspend / resume）
@@ -33,6 +35,7 @@ pub trait Widget: Sized + Default {
     type State: crate::State;
     type Event: FromWidgetEvent;
     fn view(state: &Self::State) -> View;
+    fn init(&mut self, _initial: &Self::State) {}
     fn start(&mut self, ctx: &mut Context<Self>);
     fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>);
     fn stop(&mut self) {}
