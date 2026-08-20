@@ -269,9 +269,10 @@ fn validate_wasm(bytes: &[u8]) -> Result<Vec<u8>, PackageError> {
     let ty = component.component_type();
 
     for (name, _extern) in ty.imports(&engine) {
-        // 只允许 floatile:widget/* 与 wasi:*/*（零 ambient 之外的一律拒绝）。
-        let namespace = name.split(':').next().unwrap_or("");
-        if namespace != "floatile" && namespace != "wasi" {
+        // 只允许 floatile:widget/*（当前契约包）与 wasi:*/*（空 WASI 上下文）；
+        // 其余命名空间（含 floatile:evil 之类的同名不同包）一律拒绝。
+        let allowed = name.starts_with("floatile:widget") || name.starts_with("wasi:");
+        if !allowed {
             return Err(PackageError::DisallowedImport(name.to_owned()));
         }
     }
@@ -332,12 +333,27 @@ mod tests {
         .to_string()
     }
 
-    /// 真实 clock-wasm 组件字节（读自 target；构建则由 runtime 测试负责）。
+    /// 真实 clock-wasm 组件字节（读自 target；缺失时先构建，保证干净 checkout
+    /// 上测试也可复现——与 runtime/shell 集成测试的构建策略一致）。
     fn real_wasm() -> Vec<u8> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join("..")
-            .join("target/wasm32-wasip2/debug/floatile_clock_wasm.wasm");
+            .join("..");
+        let path = root.join("target/wasm32-wasip2/debug/floatile_clock_wasm.wasm");
+        if !path.exists() {
+            let status = std::process::Command::new("cargo")
+                .current_dir(&root)
+                .args([
+                    "build",
+                    "-p",
+                    "floatile-clock-wasm",
+                    "--target",
+                    "wasm32-wasip2",
+                ])
+                .status()
+                .expect("failed to run cargo build for clock-wasm");
+            assert!(status.success(), "clock-wasm 构建失败");
+        }
         std::fs::read(&path).unwrap_or_default()
     }
 
