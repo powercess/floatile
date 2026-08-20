@@ -224,12 +224,7 @@ async fn run_actor(
     if let Some(listener) = &audit_listener {
         audit = audit.with_listener(Arc::clone(listener));
     }
-    let broker = Broker::new(
-        config.plugin.clone(),
-        config.grants,
-        audit,
-        sink,
-    );
+    let broker = Broker::new(config.plugin.clone(), config.grants, audit, sink);
 
     let initial_state_json = serde_json::to_string(&config.initial_state)
         .map_err(|e| RuntimeError::InstanceFailed(format!("initial state 序列化失败: {e}")))?;
