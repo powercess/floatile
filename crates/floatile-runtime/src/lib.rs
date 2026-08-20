@@ -191,6 +191,7 @@ impl WidgetHandle {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_actor(
     engine: wasmtime::Engine,
     config: WidgetConfig,

@@ -73,12 +73,12 @@ impl Widget for Evil {
 
     fn start(&mut self, ctx: &mut Context<Self>) {
         match self.mode.as_str() {
+            // loop 不进 start:让实例先成功启动,测试再以事件触发无限循环,fuel 才 trap。
             "deny" => self.deny_call(ctx),
             "bad-patch" => self.bad_patch(ctx),
             "alloc" => self.alloc_memory(),
-            "loop" => self.loop_forever(),
             mode => {
-                let _ = ctx.log(LogLevel::Info, &format!("unknown evil mode {mode}"));
+                let _ = ctx.log(LogLevel::Info, &format!("start mode {mode}"));
             }
         }
     }
