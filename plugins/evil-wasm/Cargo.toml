@@ -1,0 +1,19 @@
+[package]
+name = "floatile-evil-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+# 恶意/对抗性插件 fixture：只用于安全验收（tests + CI），不进入任何分发产物。
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+floatile-sdk = { workspace = true }
+serde = { workspace = true }

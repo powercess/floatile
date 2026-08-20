@@ -14,6 +14,7 @@ members = [
     "crates/floatile-ui-schema",
     "crates/floatile-cli",
     "plugins/clock-wasm",
+    "plugins/evil-wasm",
 ]
 
 [workspace.package]
