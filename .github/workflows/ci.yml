@@ -23,14 +23,16 @@ jobs:
           targets: wasm32-wasip2
       # 缓存 ~/.cargo 注册表与 target/(按 Cargo.lock + 工具链分 key,跨平台各自独立)。
       # 显著减少三平台重复编译同一依赖集的时间;cache-key 变化时自动失效并重建。
-      # 注意:clock-wasm 独立 manifest 构建的 wasm 产物也落在 workspace 根 target/,
-      # 故仅声明根工作区即可覆盖全部产物(含 wasm32-wasip2 target 依赖)。
+      # add-job-id-key: false 是关键——rust-cache 默认把每次 run 的 job id 加入
+      # cache key,导致每次 run 的 key 都不同从而永远 miss;关闭后才按 Cargo.lock
+      # 稳定复用,跨 run/跨 PR 命中缓存。
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
           cache-on-failure: true
+          add-job-id-key: false
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -91,6 +93,7 @@ jobs:
         with:
           workspaces: |
             . -> target
+          add-job-id-key: false
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           rust-version: "1.97.1"
