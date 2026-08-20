@@ -11,3 +11,13 @@ publish = false
 workspace = true
 
 [dependencies]
+floatile-core = { workspace = true }
+floatile-plugin-api = { workspace = true }
+floatile-services = { workspace = true }
+floatile-ui-schema = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }

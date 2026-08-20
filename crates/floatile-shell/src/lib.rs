@@ -8,6 +8,9 @@ use floatile_core::{
     InstanceId, LayoutValidationError, LogicalPosition, LogicalRect, LogicalSize, MonitorLayout,
     PhysicalSize, PluginId, ScaleFactor, SizeConstraints, WidgetLayout, WidgetMode,
 };
+use floatile_ui_schema::path::PathSegments;
+use floatile_ui_schema::{Binding, Component, PropValue, UiDocument};
+use serde_json::Value;
 
 /// 单窗口宿主内建参考时钟的实例 ID。
 pub const CLOCK_INSTANCE_ID: InstanceId = InstanceId(1);
@@ -79,6 +82,80 @@ impl ShellController {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResizeRequest {
     pub size: LogicalSize,
+}
+
+/// Shell 当前支持的最小插件 UI 投影。
+///
+/// 这是把已验证 `widget.ftui` 映射到现有 Slint shell 的过渡层：当前仅消费
+/// 单文本时钟插件所需的 `Column -> Text($.time)` 形状，不伪装成完整 renderer。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginProjection {
+    pub text_binding: String,
+}
+
+/// 运行时 UI 状态：从插件 State 中解析出的当前展示文本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginViewState {
+    pub time_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PluginUiError {
+    #[error("当前 shell 仅支持单根 Text 插件视图")]
+    UnsupportedShape,
+    #[error("Text 组件缺少 text 绑定")]
+    MissingTextBinding,
+    #[error("Text 绑定必须是 State 路径")]
+    UnsupportedBinding,
+    #[error("State 路径无效: {0}")]
+    InvalidPath(String),
+    #[error("State 字段 `{0}` 不是字符串")]
+    NonStringField(String),
+}
+
+/// 从已验证 `widget.ftui` 提取 shell 当前能消费的最小投影。
+///
+/// 只接受 `Column` 包含单个 `Text` 子节点，且 `text` prop 为 `$.field` 形式的
+/// State 绑定。后续完整 renderer 接入前，超出该子集显式拒绝。
+pub fn project_plugin_ui(doc: &UiDocument) -> Result<PluginProjection, PluginUiError> {
+    let text = match &doc.root {
+        Component { kind, children, .. } if kind == "Column" && children.len() == 1 => &children[0],
+        Component { kind, .. } if kind == "Text" => &doc.root,
+        _ => return Err(PluginUiError::UnsupportedShape),
+    };
+
+    let Some(prop) = text.props.get("text") else {
+        return Err(PluginUiError::MissingTextBinding);
+    };
+    let PropValue::Binding(Binding::State { bind }) = prop else {
+        return Err(PluginUiError::UnsupportedBinding);
+    };
+
+    PathSegments::parse(bind).map_err(|e| PluginUiError::InvalidPath(e.to_string()))?;
+    Ok(PluginProjection {
+        text_binding: bind.clone(),
+    })
+}
+
+/// 把 runtime 的权威 State 投影为 shell 当前窗口可显示的文本。
+pub fn resolve_plugin_view_state(
+    projection: &PluginProjection,
+    state: &Value,
+) -> Result<PluginViewState, PluginUiError> {
+    let segments = PathSegments::parse(&projection.text_binding)
+        .map_err(|e| PluginUiError::InvalidPath(e.to_string()))?;
+    let mut current = state;
+    for segment in segments.segments() {
+        current = current
+            .get(segment)
+            .ok_or_else(|| PluginUiError::NonStringField(segment.clone()))?;
+    }
+    let text = current
+        .as_str()
+        .ok_or_else(|| PluginUiError::NonStringField(projection.text_binding.clone()))?;
+    Ok(PluginViewState {
+        time_text: text.to_owned(),
+    })
 }
 
 /// 将期望尺寸按约束钳制为可用的窗口尺寸。
@@ -196,6 +273,9 @@ fn contains(bounds: LogicalRect, point: LogicalPosition) -> bool {
 mod tests {
     use super::*;
     use floatile_core::MonitorKey;
+    use floatile_ui_schema::{JsonSchema, StateSchema};
+    use serde_json::json;
+    use std::collections::BTreeMap;
 
     fn monitor(key: &str, x: f32, y: f32, w: f32, h: f32, primary: bool) -> MonitorLayout {
         MonitorLayout {
@@ -221,6 +301,43 @@ mod tests {
             },
             scale_factor: ScaleFactor::new(1.0).unwrap(),
             mode,
+        }
+    }
+
+    fn clock_doc() -> UiDocument {
+        UiDocument {
+            ui_api_version: "1.0.0".into(),
+            state: StateSchema {
+                initial: json!({"time": "", "running": false}),
+                schema: JsonSchema::Object {
+                    required: vec!["time".into(), "running".into()],
+                    properties: BTreeMap::from([
+                        (
+                            "time".into(),
+                            JsonSchema::String {
+                                max_length: Some(64),
+                            },
+                        ),
+                        ("running".into(), JsonSchema::Boolean),
+                    ]),
+                    additional_properties: false,
+                },
+            },
+            events: BTreeMap::new(),
+            root: Component {
+                kind: "Column".into(),
+                children: vec![Component {
+                    kind: "Text".into(),
+                    props: BTreeMap::from([(
+                        "text".into(),
+                        PropValue::Binding(Binding::State {
+                            bind: "$.time".into(),
+                        }),
+                    )]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
         }
     }
 
@@ -371,6 +488,30 @@ mod tests {
         .unwrap();
         assert_eq!(layout.scale_factor, ScaleFactor::new(2.0).unwrap());
         layout.validate().unwrap();
+    }
+
+    #[test]
+    fn projects_minimal_clock_plugin_ui() {
+        let projection = project_plugin_ui(&clock_doc()).unwrap();
+        assert_eq!(projection.text_binding, "$.time");
+    }
+
+    #[test]
+    fn resolves_plugin_state_to_text() {
+        let projection = project_plugin_ui(&clock_doc()).unwrap();
+        let state = json!({"time": "12:34:56", "running": true});
+        let view = resolve_plugin_view_state(&projection, &state).unwrap();
+        assert_eq!(view.time_text, "12:34:56");
+    }
+
+    #[test]
+    fn rejects_unsupported_plugin_shape() {
+        let mut doc = clock_doc();
+        doc.root.kind = "Row".into();
+        assert_eq!(
+            project_plugin_ui(&doc),
+            Err(PluginUiError::UnsupportedShape)
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@
 ## 2. 硬边界
 
 1. `floatile-core` 是纯宿主领域模型，不做 I/O，不依赖 runtime/UI/platform。
-2. `floatile-ui-schema` 是计划在 S5 新增的纯、guest-safe 共享 crate；不依赖 Slint、Wasmtime、Tokio、
+2. `floatile-ui-schema` 是纯、guest-safe 共享 crate；不依赖 Slint、Wasmtime、Tokio、
    SQLite、平台 API 或宿主服务。
 3. `floatile-platform` 是唯一允许直接依赖 windows-sys/objc2/x11rb/wayland-client 和平台 unsafe 的
    crate。
@@ -53,7 +53,7 @@
 - host/runtime 使用的稳定错误分类与版本值对象。
 - 不放 UI IR/WIT 生成物，避免 guest 为 UI 类型依赖全部宿主 domain。
 
-### 3.2 `floatile-ui-schema`（S5 计划新增）
+### 3.2 `floatile-ui-schema`
 
 - `widget.ftui` v1 的纯类型：组件树、State/Event schema、binding、有限 If/ForEach、animation、asset ref。
 - UI component registry 的机器可读 schema 与版本。
@@ -63,6 +63,10 @@
 
 如最终采用 schema-first code generation 而不增加 crate，必须在实现计划中给出同等的单源与 host/guest
 一致性证明；不得手写两套 UI 类型。
+
+S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校验、JSONPath 绑定路径解析、
+结构/预算校验与契约测试，host 与 `wasm32-wasip2` 均可编译。CLI/renderer/runtime 的联动、animation/
+asset 预算的进一步落地与 `uiApiVersion` 版本轴 contract vectors 仍待后续切片。
 
 ### 3.3 `floatile-shell`
 
@@ -84,8 +88,8 @@
 - WIT import/export 的薄 adapter traits 与 engine API 版本。
 - 不实现 Broker、Storage、Timer、UI renderer 或 Wasmtime Engine。
 - 与 `floatile-sdk` 的 binding/version 由 CI contract test 对齐。
-- 当前已有 ADR-0001 前的实验 host async bindings；只证明生成链路，目标 WIT 迁移完成前不得接入
-  runtime 或标记为统一插件契约 Implemented。
+- 当前 host async bindings 已迁移到 ADR-0001 目标契约，`floatile-runtime` 已接入；
+  契约测试与 CLI 包校验落地前不得标记为统一插件契约 Implemented。
 
 ### 3.6 `floatile-runtime`
 
@@ -95,6 +99,8 @@
 - WIT host adapter 只持 `InstanceContext + PermissionBroker` 门面；不得持 service/OS raw handle。
 - 把 UI snapshot/patch 通过有界通道发送 shell；不直接操作 Slint。
 - trap/restart/isolation 与宿主存活保证。
+- S5b 已实现：Wasmtime 47 + 空 WASI 上下文（零 ambient）、fuel/内存限制、串行 actor、State Patch
+  原子应用、WIT adapter 经 Broker，`clock-wasm` 集成测试（start/1Hz/deny/fuel trap 存活）通过。
 
 ### 3.7 `floatile-services`
 
@@ -102,6 +108,8 @@
 - Timer/Storage/Metrics/Theme/Clock/Log capability 的实现。
 - 固有能力和声明能力使用同一 Broker 入口；固有能力只是固定 grant/scope。
 - 后续 Notification/Keyring/HTTP 仍必须经 Broker；P0 不留可调用 stub 假装实现。
+- S5b 已实现：Broker 决策/配额/脱敏审计（target `floatile::audit`）与七个能力服务；
+  SQLite 审计持久化、decision cache 与真实容量数据待后续切片。
 
 ### 3.8 `floatile-store`
 
@@ -115,9 +123,11 @@
 - re-export 生成的 guest bindings，但普通作者只使用 `Widget/State/View/Event/Context`。
 - UI builder/proc macro、State/Event schema、manifest capability 候选与 export glue。
 - capability wrapper 保留稳定错误，不暴露 raw generated module/handle。
-- 可拆 `floatile-sdk-macros` proc-macro crate；拆分时仍属于 SDK 单一发布单元。
-- 当前实验实现仍 re-export raw WIT bindings 与 `export_widget!`，供 clock Component 验证；这是待迁移
-  基线，不是普通作者 API，不能据此放宽上述边界。
+- `floatile-sdk-macros` proc-macro crate 已拆分：`#[derive(State)]` 生成 schema + initial。
+- S5c 已实现：`Widget<State,Event>` trait、`View` builder、`Context` 运行时封装（state/log/
+  clock/timer/storage/metrics/theme）与 `impl_export_widget!` 导出适配；clock-wasm 已改用作者
+  SDK（作者不手写 WIT）。作者级 `Event` 类型化（`FromWidgetEvent`）已落地；build-time UI IR 生成
+  仍待后续切片。
 
 ### 3.10 TypeScript SDK（非 Cargo workspace crate）
 
@@ -151,7 +161,7 @@
 Cargo.toml
 crates/
   floatile-core/
-  floatile-ui-schema/       # S5 新增或等价 schema-first 实现
+  floatile-ui-schema/       # IR/组件/State/Event schema 单源（S5a 已实现）
   floatile-shell/
   floatile-platform/
   floatile-plugin-api/

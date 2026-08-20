@@ -50,9 +50,9 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 平台能力探测与降级 | 🧪 | Windows 原生探测、X11 compositor/SHAPE/EWMH/RandR 实探测与 macOS 探测（点击穿透/置顶/显示器/指标/热键）已落地；Wayland 仅有显式协议降级 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
-| 统一 UI + WASM Widget | 🧪 | ADR-0001 已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；现有 WIT/bindings/`clock.wasm` 只证明实验性 Component 工具链，仍需迁移到统一生命周期与 UI State 契约 |
-| Permission Broker 与审计 | 🗺️ | 默认零权限、scope/配额、参数脱敏与恶意插件测试尚未实现 |
-| 插件 SDK 与打包 CLI | 🗺️ | 计划提供 new/dev/check/test/preview/build/inspect、包路径与资源预算校验 |
+| 统一 UI + WASM Widget | 🧪 | ADR-0001 已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；WIT/bindings/`clock.wasm` 已迁移到统一生命周期与 UI State 契约并通过 `wasm-tools validate`；`floatile-ui-schema`、`floatile-runtime`（Wasmtime actor + State Patch）、`floatile-services`（Broker）与 Rust 作者 SDK（`Widget`/`View`/`Context`/`#[derive(State)]`）已实现，`clock-wasm` 集成测试通过；TypeScript SDK、renderer spike 与契约测试待实现 |
+| Permission Broker 与审计 | 🧪 | deny-by-default 决策、scope/配额、脱敏审计（target `floatile::audit`）与 clock/log/timer/storage/metrics/theme 能力已实现并有测试；恶意插件 fixture 与 SQLite 审计持久化待做 |
+| 插件 SDK 与打包 CLI | 🧪 | Rust 作者 SDK（Widget/View/Context/derive State）+ `floatile new/validate/build` 命令（模板、`.floatile` 校验、manifest 生成 + 打包）已实现；dev 预览（依赖 renderer spike）待做 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
 
 权威进度与验收范围请查看[需求基线](docs/product/requirements.md)和
@@ -128,10 +128,10 @@ cargo test --workspace --all-targets --locked
 ```mermaid
 flowchart TB
     Shell["floatile-shell<br/>画布 · 模式 · 生命周期"]
-    Runtime["floatile-runtime<br/>实例 Actor · State · Wasmtime（开发中）"]
+    Runtime["floatile-runtime<br/>实例 Actor · State · Wasmtime（已实现）"]
     UI["Floatile UI Renderer<br/>widget.ftui → Slint（开发中）"]
-    Broker["PermissionBroker<br/>授权 · 配额 · 审计（开发中）"]
-    Services["floatile-services<br/>计时器 · 存储 · 指标（开发中）"]
+    Broker["PermissionBroker<br/>授权 · 配额 · 审计（已实现）"]
+    Services["floatile-services<br/>计时器 · 存储 · 指标（已实现）"]
     Store["floatile-store<br/>SQLite（开发中）"]
     Platform["floatile-platform<br/>唯一的 OS / 窗口系统边界"]
     Plugin["Widget Plugin<br/>widget.ftui + plugin.wasm（开发中）"]
@@ -157,10 +157,10 @@ flowchart TB
 |---|---|---|
 | 语言与工具链 | Rust 2024 · Rust 1.97.1 | ✅ 固定 patch 工具链与 lockfile |
 | UI 与窗口 | Slint 1.17 · winit 0.30 | 🧪 参考时钟和基础窗口属性已接入 |
-| 插件 UI | Floatile UI IR v1 | 🗺️ 静态组件树、State/Event schema；Slint 仅为宿主实现 |
-| 插件 ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🧪 实验契约与双端 bindings 已构建；ADR-0001 目标契约待迁移 |
-| 插件运行时 | Wasmtime | 🗺️ 异步组件调用、fuel 与资源限制 |
-| 异步运行时 | Tokio | 🗺️ 承载后台 I/O，避免阻塞 Slint 主线程 |
+| 插件 UI | Floatile UI IR v1 | 🧪 IR 类型、组件 registry 与 State/Event schema 校验已实现；renderer/CLI 联动待做 |
+| 插件 ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🧪 ADR-0001 目标契约与双端 bindings 已迁移并通过 `wasm-tools validate` |
+| 插件运行时 | Wasmtime 47 + wasmtime-wasi p2 | 🧪 异步组件调用、fuel/内存限制与空 WASI 上下文（零 ambient） |
+| 异步运行时 | Tokio | 🧪 runtime/services 已接入，承载后台 I/O，避免阻塞 Slint 主线程 |
 | 持久化 | SQLite · rusqlite (bundled) | 🧪 layout schema v2 与恢复元数据；插件 KV 与审计日志 🗺️ |
 | 数据与错误 | serde · serde_json · thiserror | ✅/🧪 逐阶段接入契约与错误模型 |
 | 可观测性 | tracing · tracing-subscriber | ✅ 基础日志；结构化审计 🗺️ |
@@ -176,12 +176,12 @@ flowchart TB
 | `floatile-platform` | 平台能力探测与全部 OS 窗口差异 | 🧪 |
 | `floatile-shell` | 桌面宿主、画布、模式与应用编排 | 🧪 |
 | `floatile-plugin-api` | WIT host bindings 与契约类型 | 🧪 |
-| `floatile-ui-schema`（计划） | guest-safe UI IR、组件与 State/Event schema 单源 | 🗺️ |
-| `floatile-runtime` | 实例 actor、State、预算与 Wasmtime 执行 | 🗺️ |
-| `floatile-services` | 经 Broker 授权的宿主服务 | 🗺️ |
+| `floatile-ui-schema` | guest-safe UI IR、组件与 State/Event schema 单源 | 🧪 |
+| `floatile-runtime` | 实例 actor、State、预算与 Wasmtime 执行 | 🧪 |
+| `floatile-services` | 经 Broker 授权的宿主服务 | 🧪 |
 | `floatile-store` | SQLite、migration 与事务 | 🧪 |
-| `floatile-sdk` | WASI guest SDK 与 bindings；作者级 API 待迁移 | 🧪 |
-| `floatile-cli` | 插件校验、构建与开发工具 | 🗺️ |
+| `floatile-sdk` | WASI guest SDK + 作者层（Widget/View/Context/derive State） | 🧪 |
+| `floatile-cli` | 插件包校验、构建与开发工具 | 🧪 |
 
 crate 之间的依赖规则不是建议，而是安全与可移植性边界。详情见
 [Workspace 与 crate 边界](docs/architecture/workspace-and-crates.md)。
@@ -203,8 +203,8 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 - **S1 · 浮窗基线（进行中）**：参考时钟、透明/无边框/置顶、拖拽和真实平台探测
 - **S2 · 桌面交互（进行中）**：Edit/Show、点击穿透和缩放已在 Windows/Linux X11 子路径落地；真实多屏与 DPI 仍待验证
 - **S3 · 布局持久化（进行中）**：monitor-local 恢复算法、SQLite v2、shell 启动恢复/保存与显示器变化重恢复已落地；真实多屏/热插拔实机验证与多实例编排待做
-- **S4 · 插件契约（架构完成、实验链路待迁移）**：ADR-0001、统一 UI、WIT、manifest 与双 SDK 架构；旧 WIT/clock 已证明 Component 构建
-- **S5 · 沙箱运行时（规划中）**：UI schema、实例 actor、State Patch、Wasmtime、Broker、Rust/TypeScript 时钟与恶意插件测试
+- **S4 · 插件契约（架构完成、契约已迁移）**：ADR-0001、统一 UI、WIT、manifest 与双 SDK 架构；WIT/bindings/clock 已迁移到统一 lifecycle 并 validate 通过
+- **S5 · 沙箱运行时（进行中）**：UI schema、runtime actor、State Patch、Wasmtime 与 Broker 已实现并通过 clock 集成测试；CLI 包校验、Rust SDK 作者闭环与恶意插件测试待做
 - **P0 验收（规划中）**：Windows/macOS/X11/Wayland 证据、性能数据、风险复盘与许可 ADR
 
 路线图会随验证证据调整。某项技术不可行但被准确记录和降级，同样是 P0 的有效产出。

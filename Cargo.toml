@@ -9,6 +9,8 @@ members = [
     "crates/floatile-services",
     "crates/floatile-store",
     "crates/floatile-sdk",
+    "crates/floatile-sdk-macros",
+    "crates/floatile-ui-schema",
     "crates/floatile-cli",
     "plugins/clock-wasm",
 ]
@@ -23,14 +25,22 @@ authors = ["Floatile Project"]
 [workspace.dependencies]
 floatile-core = { path = "crates/floatile-core", version = "0.1.0" }
 floatile-platform = { path = "crates/floatile-platform", version = "0.1.0" }
+floatile-plugin-api = { path = "crates/floatile-plugin-api", version = "0.1.0" }
+floatile-runtime = { path = "crates/floatile-runtime", version = "0.1.0" }
+floatile-services = { path = "crates/floatile-services", version = "0.1.0" }
 floatile-store = { path = "crates/floatile-store", version = "0.1.0" }
+floatile-ui-schema = { path = "crates/floatile-ui-schema", version = "0.1.0" }
 floatile-sdk = { path = "crates/floatile-sdk", version = "0.1.0" }
+floatile-sdk-macros = { path = "crates/floatile-sdk-macros", version = "0.1.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+semver = { version = "1", default-features = false }
 thiserror = "2"
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
 slint = { version = "1.17", features = ["backend-winit", "unstable-winit-030"] }
 winit = "0.30"
 x11rb = { version = "0.13", default-features = false, features = ["randr", "shape"] }
@@ -42,7 +52,9 @@ objc2-core-foundation = "0.3"
 mach2 = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
 wasmtime = { version = "47", features = ["component-model", "async"] }
+wasmtime-wasi = { version = "47", default-features = false, features = ["p2"] }
 wit-bindgen = "0.60"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

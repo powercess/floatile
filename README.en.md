@@ -53,9 +53,9 @@ Legend: ✅ basic implementation exists · 🧪 in development or awaiting compl
 | Capability probing and degradation | 🧪 | Native Windows, X11 compositor/SHAPE/EWMH/RandR, and macOS window/display/metrics/hotkey probes are implemented; Wayland has explicit protocol degradation |
 | Edit/show modes, resize, and multi-display layout | 🧪 | Edit/show, click-through coordination, dragging, and resizing are implemented on the Windows and Linux X11 paths; platform-neutral primary-display fallback/original-display recovery is implemented, while Canvas integration and real multi-display/DPI/hot-plug evidence remain |
 | SQLite layout persistence | 🧪 | Layout schema v2, CRUD, v1 upgrade/rollback, and reopen persistence tests are implemented; the shell now wires startup save/restore and display-change re-apply (verified on Xvfb+Openbox); real multi-display/hot-plug validation and multi-instance orchestration remain |
-| Unified-UI WASM widgets | 🧪 | ADR-0001 defines `widget.ftui + plugin.wasm`, State Patch, and serialized instance actors; existing WIT/bindings/`clock.wasm` only prove the experimental Component toolchain and must migrate to the unified lifecycle and UI State contract |
-| Permission Broker and audit trail | 🗺️ | Default-deny grants, quotas, redaction, and hostile-plugin tests remain |
-| Plugin SDK and packaging CLI | 🗺️ | Planned new/dev/check/test/preview/build/inspect commands and package budget checks |
+| Unified-UI WASM widgets | 🧪 | ADR-0001 defines `widget.ftui + plugin.wasm`, State Patch, and serialized instance actors; WIT/bindings/`clock.wasm` migrated to the unified lifecycle and UI State contract and pass `wasm-tools validate`; `floatile-ui-schema`, `floatile-runtime` (Wasmtime actor + State Patch), and `floatile-services` (Broker) implemented with clock integration tests passing; CLI, dual-SDK, renderer spike, and contract tests remain |
+| Permission Broker and audit trail | 🧪 | deny-by-default decisions, scopes/quotas, redacted audit (target `floatile::audit`), and clock/log/timer/storage/metrics/theme services implemented with tests; hostile-plugin fixtures and SQLite audit persistence remain |
+| Plugin SDK and packaging CLI | 🧪 | `.floatile` package validation core (zip/paths/zip-bomb/manifest/UI IR/WASM world) implemented; new/dev/build commands remain |
 | Cross-platform and performance acceptance | 🗺️ | Numbers in the acceptance docs are targets, not measured results |
 
 See the authoritative [requirements baseline](docs/product/requirements.md) and
@@ -133,10 +133,10 @@ cargo test --workspace --all-targets --locked
 ```mermaid
 flowchart TB
     Shell["floatile-shell<br/>canvas · modes · lifecycle"]
-    Runtime["floatile-runtime<br/>instance actor · State · Wasmtime (in development)"]
+    Runtime["floatile-runtime<br/>instance actor · State · Wasmtime (implemented)"]
     UI["Floatile UI renderer<br/>widget.ftui → Slint (in development)"]
-    Broker["PermissionBroker<br/>grants · quotas · audit (in development)"]
-    Services["floatile-services<br/>timers · storage · metrics (in development)"]
+    Broker["PermissionBroker<br/>grants · quotas · audit (implemented)"]
+    Services["floatile-services<br/>timers · storage · metrics (implemented)"]
     Store["floatile-store<br/>SQLite (in development)"]
     Platform["floatile-platform<br/>the only OS/window-system boundary"]
     Plugin["Widget plugin<br/>widget.ftui + plugin.wasm (in development)"]
@@ -163,8 +163,8 @@ with bounded messages posted back to the UI.
 |---|---|---|
 | Language/toolchain | Rust 2024 · Rust 1.97.1 | ✅ pinned patch toolchain and lockfile |
 | UI/windowing | Slint 1.17 · winit 0.30 | 🧪 reference clock and base window attributes |
-| Plugin UI | Floatile UI IR v1 | 🗺️ static component tree and State/Event schema; Slint remains host-internal |
-| Plugin ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🧪 experimental contract and both bindings build; ADR-0001 target migration remains |
+| Plugin UI | Floatile UI IR v1 | 🧪 IR types, component registry, and State/Event schema validation implemented; renderer/CLI wiring pending |
+| Plugin ABI | WIT · WASM Component Model · `wasm32-wasip2` | 🧪 ADR-0001 target contract and both bindings migrated and pass `wasm-tools validate` |
 | Plugin runtime | Wasmtime | 🗺️ async component calls, fuel, and resource limits |
 | Async runtime | Tokio | 🗺️ background I/O without blocking the Slint thread |
 | Persistence | SQLite · bundled rusqlite | 🧪 layout schema v2 and recovery metadata; plugin KV and audit records 🗺️ |
@@ -182,12 +182,12 @@ See the [technology stack document](docs/architecture/technology-stack.md) for v
 | `floatile-platform` | Capability probes and all OS/window-system differences | 🧪 |
 | `floatile-shell` | Desktop host, canvas, modes, and application composition | 🧪 |
 | `floatile-plugin-api` | WIT host bindings and contract types | 🧪 |
-| `floatile-ui-schema` (planned) | Guest-safe UI IR, components, and State/Event schema source | 🗺️ |
-| `floatile-runtime` | Instance actors, State, budgets, and Wasmtime execution | 🗺️ |
-| `floatile-services` | Broker-mediated host services | 🗺️ |
+| `floatile-ui-schema` | Guest-safe UI IR, components, and State/Event schema source | 🧪 |
+| `floatile-runtime` | Instance actors, State, budgets, and Wasmtime execution | 🧪 |
+| `floatile-services` | Broker-mediated host services | 🧪 |
 | `floatile-store` | SQLite, migrations, and transactions | 🧪 |
-| `floatile-sdk` | WASI guest SDK and bindings; author-level API migration remains | 🧪 |
-| `floatile-cli` | Plugin validation, builds, and development tools | 🗺️ |
+| `floatile-sdk` | WASI guest SDK + author layer (Widget/View/Context/derive State) | 🧪 |
+| `floatile-cli` | Plugin package validation, builds, and development tools | 🧪 |
 
 Crate dependency rules are security and portability boundaries, not suggestions. See
 [Workspace and crate boundaries](docs/architecture/workspace-and-crates.md).
@@ -210,8 +210,8 @@ Crate dependency rules are security and portability boundaries, not suggestions.
   dragging, and real platform probes
 - **S2 · Desktop interaction (in progress):** edit/show, click-through, resizing, and Linux X11 monitor enumeration; real multi-display/DPI evidence remains
 - **S3 · Layout persistence (in progress):** monitor-local recovery, SQLite v2, shell startup save/restore, and display-change re-apply are implemented; real multi-display/hot-plug validation and multi-instance orchestration remain
-- **S4 · Plugin contract (architecture complete, experimental path awaiting migration):** ADR-0001, unified UI, WIT, manifest, and dual-SDK architecture; the old WIT/clock proves Component builds
-- **S5 · Sandboxed runtime (planned):** UI schema, instance actors, State Patch, Wasmtime, Broker, Rust/TypeScript clocks, and hostile-plugin tests
+- **S4 · Plugin contract (architecture complete, contract migrated):** ADR-0001, unified UI, WIT, manifest, and dual-SDK architecture; WIT/bindings/clock migrated to the unified lifecycle and pass `wasm-tools validate`
+- **S5 · Sandboxed runtime (in progress):** UI schema, runtime actor, State Patch, Wasmtime, and Broker implemented with clock integration tests passing; CLI packaging, Rust SDK author loop, and hostile-plugin tests remain
 - **P0 acceptance (planned):** Windows/macOS/X11/Wayland evidence, performance measurements, risk review,
   and licensing ADR
 

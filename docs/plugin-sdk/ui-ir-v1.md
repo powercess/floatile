@@ -5,6 +5,10 @@
 > 版本：`uiApiVersion = 1.0.0`
 > 关联：ADR-0001、FR-PLUGIN-01、F11
 
+`floatile-ui-schema` 已实现 IR 类型、组件 registry v1、State/Event JSON Schema 校验、JSONPath 绑定
+解析、结构/预算校验与 JSON Merge Patch（`merge_patch` + State/update 预算常量），host+wasm 双编译；
+renderer spike（IR→Slint）与正反例向量冻结仍待后续切片。
+
 UI IR 是 Rust/TypeScript View 在构建期产生的、宿主可验证的静态 UI 文档。它不是作者手写格式、
 不是 WIT、不是虚拟 DOM、不是 Slint 源码，也不能调用宿主能力。
 
