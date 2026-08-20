@@ -400,101 +400,33 @@ mod tests {
     }
 
     #[test]
-    fn deny_is_audited_via_tracing() {
-        use tracing::field::{Field, Visit};
-        use tracing::span;
-        use tracing::{Event, Metadata, Subscriber};
+    fn deny_is_audited_with_redacted_record() {
+        use crate::audit::AuditListener;
+        use std::sync::mpsc;
+        use std::time::Duration;
 
-        /// 结构化捕获审计事件：直接用最小 subscriber 记录字段，不依赖
-        /// tracing-subscriber fmt 的渲染/writer 细节（避免平台相关的脆弱性）。
-        #[derive(Default)]
-        struct AuditRecord {
-            capability: String,
-            decision: String,
-            plugin: String,
-            reason: String,
-            instance: u64,
-        }
-
-        #[derive(Default)]
-        struct Capture(Mutex<Option<AuditRecord>>);
-
-        impl Visit for AuditRecord {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                match field.name() {
-                    "capability" => self.capability = value.to_owned(),
-                    "decision" => self.decision = value.to_owned(),
-                    "plugin_id" => self.plugin = value.to_owned(),
-                    _ => {}
-                }
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                // `%`（Display）与 `?`（Debug）字段都经 record_debug 到达；
-                // Display 包装值的 Debug 输出即其显示文本。
-                match field.name() {
-                    "plugin_id" => self.plugin = format!("{value:?}"),
-                    "reason" => self.reason = format!("{value:?}"),
-                    _ => {}
-                }
-            }
-            fn record_u64(&mut self, field: &Field, value: u64) {
-                if field.name() == "instance_id" {
-                    self.instance = value;
-                }
-            }
-        }
-
-        impl Subscriber for Capture {
-            fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
-                true
-            }
-            fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
-                span::Id::from_u64(1)
-            }
-            fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
-            fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
-            fn event(&self, event: &Event<'_>) {
-                if event.metadata().target() != "floatile::audit" {
-                    return;
-                }
-                let mut record = AuditRecord::default();
-                event.record(&mut record);
-                let Ok(mut captured) = self.0.lock() else {
-                    return;
-                };
-                *captured = Some(record);
-            }
-            fn enter(&self, _span: &span::Id) {}
-            fn exit(&self, _span: &span::Id) {}
-        }
-
-        let capture = Arc::new(Capture::default());
-        let guard = tracing::dispatcher::set_default(&tracing::Dispatch::new(capture.clone()));
+        let (tx, rx) = mpsc::sync_channel(1);
+        let listener: AuditListener = Arc::new(move |event| {
+            // 通道容量 1，够用且不阻塞；失败即拒绝实例化。
+            let _ = tx.send(event.clone());
+        });
         let broker = Broker::new(
             PluginId("dev.floatile.clock".into()),
             test_grants(),
-            AuditSink::new("dev.floatile.clock", 7),
+            AuditSink::new("dev.floatile.clock", 7).with_listener(listener),
             sink(),
         );
-        // 未授权能力 → deny，且写脱敏审计（结构化字段）。
+        // 未授权能力 → deny，且写结构化脱敏审计。
         assert_eq!(
             broker.authorize(CapabilityId::SystemMemory, None, "metrics memory"),
             Err(DenyReason::NotGranted)
         );
-        drop(guard);
-
-        let captured = capture
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match captured.as_ref() {
-            Some(record) => {
-                assert_eq!(record.decision, "deny");
-                assert_eq!(record.capability, "system:memory");
-                assert_eq!(record.plugin, "dev.floatile.clock");
-                assert_eq!(record.instance, 7);
-            }
-            None => panic!("应捕获到 floatile::audit 审计事件"),
-        }
+        let event = rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_else(|_| panic!("deny 应同步产生审计事件"));
+        assert_eq!(event.decision, "deny");
+        assert_eq!(event.capability, "system:memory");
+        assert_eq!(event.plugin, "dev.floatile.clock");
+        assert_eq!(event.instance, 7);
     }
 }
