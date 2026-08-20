@@ -401,42 +401,100 @@ mod tests {
 
     #[test]
     fn deny_is_audited_via_tracing() {
-        use std::io::Write;
+        use tracing::field::{Field, Visit};
+        use tracing::span;
+        use tracing::{Event, Metadata, Subscriber};
 
-        #[derive(Clone)]
-        struct BufWriter(Arc<Mutex<Vec<u8>>>);
-        impl Write for BufWriter {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(buf);
-                Ok(buf.len())
+        /// 结构化捕获审计事件：直接用最小 subscriber 记录字段，不依赖
+        /// tracing-subscriber fmt 的渲染/writer 细节（避免平台相关的脆弱性）。
+        #[derive(Default)]
+        struct AuditRecord {
+            capability: String,
+            decision: String,
+            plugin: String,
+            reason: String,
+            instance: u64,
+        }
+
+        #[derive(Default)]
+        struct Capture(Mutex<Option<AuditRecord>>);
+
+        impl Visit for AuditRecord {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                match field.name() {
+                    "capability" => self.capability = value.to_owned(),
+                    "decision" => self.decision = value.to_owned(),
+                    "plugin_id" => self.plugin = value.to_owned(),
+                    _ => {}
+                }
             }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                // `%`（Display）与 `?`（Debug）字段都经 record_debug 到达；
+                // Display 包装值的 Debug 输出即其显示文本。
+                match field.name() {
+                    "plugin_id" => self.plugin = format!("{value:?}"),
+                    "reason" => self.reason = format!("{value:?}"),
+                    _ => {}
+                }
+            }
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                if field.name() == "instance_id" {
+                    self.instance = value;
+                }
             }
         }
 
-        let inner = Arc::new(Mutex::new(Vec::new()));
-        let inner_writer = inner.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(move || BufWriter(inner_writer.clone()))
-            .finish();
-        tracing::subscriber::with_default(subscriber, || {
-            let broker = Broker::new(
-                PluginId("dev.floatile.clock".into()),
-                test_grants(),
-                AuditSink::new("dev.floatile.clock", 7),
-                sink(),
-            );
-            // 未授权能力 → deny，且写脱敏审计。
-            assert_eq!(
-                broker.authorize(CapabilityId::SystemMemory, None, "metrics memory"),
-                Err(DenyReason::NotGranted)
-            );
-        });
-        let text = String::from_utf8(inner.lock().unwrap().clone()).unwrap();
-        assert!(text.contains("floatile::audit"), "审计 target 缺失: {text}");
-        assert!(text.contains("deny"), "应有 deny: {text}");
-        assert!(text.contains("system:memory"), "应有能力名: {text}");
+        impl Subscriber for Capture {
+            fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+                span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+            fn event(&self, event: &Event<'_>) {
+                if event.metadata().target() != "floatile::audit" {
+                    return;
+                }
+                let mut record = AuditRecord::default();
+                event.record(&mut record);
+                let Ok(mut captured) = self.0.lock() else {
+                    return;
+                };
+                *captured = Some(record);
+            }
+            fn enter(&self, _span: &span::Id) {}
+            fn exit(&self, _span: &span::Id) {}
+        }
+
+        let capture = Arc::new(Capture::default());
+        let guard = tracing::dispatcher::set_default(&tracing::Dispatch::new(capture.clone()));
+        let broker = Broker::new(
+            PluginId("dev.floatile.clock".into()),
+            test_grants(),
+            AuditSink::new("dev.floatile.clock", 7),
+            sink(),
+        );
+        // 未授权能力 → deny，且写脱敏审计（结构化字段）。
+        assert_eq!(
+            broker.authorize(CapabilityId::SystemMemory, None, "metrics memory"),
+            Err(DenyReason::NotGranted)
+        );
+        drop(guard);
+
+        let captured = capture
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match captured.as_ref() {
+            Some(record) => {
+                assert_eq!(record.decision, "deny");
+                assert_eq!(record.capability, "system:memory");
+                assert_eq!(record.plugin, "dev.floatile.clock");
+                assert_eq!(record.instance, 7);
+            }
+            None => panic!("应捕获到 floatile::audit 审计事件"),
+        }
     }
 }
