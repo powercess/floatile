@@ -101,7 +101,9 @@ P0/MVP 只实现固有能力与 L0。
 
 ## 6. 审计（Audit）
 
-- 所有敏感调用写审计日志（`tracing` target `floatile::audit` → SQLite `audit_log`）。
+- 所有敏感调用写审计日志（`tracing` target `floatile::audit`，并经宿主注入的
+  `AuditListener` 持久化到 SQLite `audit_log`——store migration v3 + shell 运行时
+  `with_audit_listener`；已实现并有安全集成测试断言「拒绝 + 审计落库 + 宿主存活」）。
 - 字段：时间、plugin_id、instance_id、capability、decision、reason、**redacted args**。
 - 脱敏规则：
   - `storage:*` 的 value 不落盘（只记 key + 长度 hash）；
