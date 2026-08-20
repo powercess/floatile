@@ -5,6 +5,7 @@ members = [
     "crates/floatile-shell",
     "crates/floatile-platform",
     "crates/floatile-plugin-api",
+    "crates/floatile-renderer",
     "crates/floatile-runtime",
     "crates/floatile-services",
     "crates/floatile-store",
@@ -26,6 +27,7 @@ authors = ["Floatile Project"]
 floatile-core = { path = "crates/floatile-core", version = "0.1.0" }
 floatile-platform = { path = "crates/floatile-platform", version = "0.1.0" }
 floatile-plugin-api = { path = "crates/floatile-plugin-api", version = "0.1.0" }
+floatile-renderer = { path = "crates/floatile-renderer", version = "0.1.0" }
 floatile-runtime = { path = "crates/floatile-runtime", version = "0.1.0" }
 floatile-services = { path = "crates/floatile-services", version = "0.1.0" }
 floatile-store = { path = "crates/floatile-store", version = "0.1.0" }

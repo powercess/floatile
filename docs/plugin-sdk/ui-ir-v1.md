@@ -222,6 +222,14 @@ CLI 与 runtime 使用同一验证库和 contract vectors；CLI 通过不能让 
 
 ## 12. Renderer spike
 
+> 状态：路径已选定（2026-08）。本仓库以 host-only `floatile-renderer` crate 实现
+> 路径二变体：从已验证 IR 结构化生成为宿主控制的 Slint 源码文本，构建期由
+> `slint-build` 编译。参考时钟的生成物可经 `slint-build` 编译为合法 Slint 组件
+> （`floatile-shell/build.rs` 承担该可编译证据）。运行时任意 IR 树的即时渲染
+> 依赖 `slint-interpreter`（1.17 中 `create_with_existing_window` 为 internal
+> feature），尚未通过独立 ADR，故当前仅支持构建期已知 IR（如参考时钟），
+> 运行时加载第三方插件 UI 待 interpreter/运行时编译 ADR 后再落地。
+
 P0 比较：
 
 - 预编译通用 Slint 组件 + host 数据模型；
@@ -230,6 +238,22 @@ P0 比较：
 后一方案不得拼接插件源文本，所有 token/value 经结构化 encoder；两方案都不能把 Slint 类型/错误变成
 公开 UI API。比较嵌套布局/If/ForEach/动画、首帧、缓存、patch、销毁、错误定位和恶意 IR。结果写入
 风险 R2，并在冻结 IR 前形成实现记录；失败不能用 raw `.slint` 绕过。
+
+### 12.1 本仓库采取的实现（`floatile-renderer`）
+
+- 输入必须是已通过 `floatile_ui_schema::validate_document` 的 `UiDocument`；renderer
+  在生成前再次复验预算/结构（validate 与 renderer 双层防线，任一拒绝都是安全结果）。
+- 输出是纯文本：所有字符串字面量经结构化转义，组件名/属性名/回调名由 renderer 生成，
+  插件不能定义标识符，杜绝把 IR 原始文本拼进 Slint 语法位置。
+- 组件映射（v1 子集）：Column→`VerticalLayout`、Row→`HorizontalLayout`、Stack/Grid→布局容器；
+  Text/Button/Toggle/Progress/Gauge→宿主基础元素；If→`if` 结构、ForEach→`for` 循环（模板内 item
+  绑定进入独立命名空间）。公共样式 prop（padding/gap/color/opacity 等）映射为受限 Slint 属性。
+  Canvas/Path 等未映射组件稳定拒绝（`RNDR_UNSUPPORTED_COMPONENT`）。
+- 输出 `component ClockPluginUI`（非 Window 内容组件，遵循 renderer 中立）+ binding/event 槽位：
+  binding 槽位（State 路径→生成属性名）驱动运行时把权威 State 按路径写入宿主属性；event 槽位
+  （声明事件→生成回调名）供未来 shell renderer 把输入事件转发回 runtime。
+- 恶意 IR（超节点/深度/绑定、未知组件、病态字面量）在 renderer 层拒绝并以固定码
+  （`RNDR_*`）返回，不泄漏宿主内部。
 
 ## 13. Contract tests
 

@@ -693,4 +693,123 @@ mod tests {
             Err(UiSchemaError::LimitExceeded(_))
         ));
     }
+    // ---- uiApiVersion 版本轴与契约正反例向量 ----
+    //
+    // 这些向量是 host/CLI/Rust/TypeScript 共用的稳定契约基准:相同文档在
+    // 各语言 validate_document 必须得到相同 pass/fail/code。新增/删除组件、
+    // prop、事件或版本语义变更时,必须同步本表与
+    // `docs/plugin-sdk/ui-ir-v1.md` §13 contract tests。
+
+    fn version_doc(version: &str) -> UiDocument {
+        let mut d = valid_doc();
+        d.ui_api_version = version.into();
+        d
+    }
+
+    fn with_single(root: Component) -> UiDocument {
+        let mut d = valid_doc();
+        d.root.children = vec![root];
+        d
+    }
+
+    #[test]
+    fn contract_vector_ui_api_version_axis() {
+        // 正例:当前支持的 major 1(含 minor/patch 与预发布——版本轴按 major 匹配)。
+        assert!(validate_document(&version_doc("1.0.0")).is_ok());
+        assert!(validate_document(&version_doc("1.2.3")).is_ok());
+        assert!(validate_document(&version_doc("1.0.0-rc.1")).is_ok());
+        // 反例:major 不匹配(2.x)拒绝。
+        assert!(matches!(
+            validate_document(&version_doc("2.0.0")),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+        assert!(matches!(
+            validate_document(&version_doc("2.1.0-beta")),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+        // 反例:非版本结构。
+        assert!(matches!(
+            validate_document(&version_doc("banana")),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+    }
+
+    #[test]
+    fn contract_vector_positive_components() {
+        // 正例:registry 元素组件结构合法。
+        for kind in [
+            "Text", "Button", "Toggle", "Progress", "Gauge", "Icon", "Image",
+        ] {
+            let root = Component {
+                kind: kind.into(),
+                props: BTreeMap::new(),
+                children: vec![],
+                events: BTreeMap::new(),
+                when: None,
+                then: None,
+                else_: None,
+                items: None,
+                key: None,
+                template: None,
+            };
+            // 结构本身合法(必填 prop 缺失的组件会单独触发 MissingProp,非未知组件)。
+            let result = validate_document(&with_single(root));
+            match result {
+                Ok(()) | Err(UiSchemaError::MissingProp { .. }) => {}
+                Err(other) => panic!("{kind} 应合法或仅缺 prop,实际 {other:?}"),
+            }
+        }
+        // 正例:控制组件 If/ForEach 结构合法。
+        for kind in ["If", "ForEach"] {
+            let root = Component {
+                kind: kind.into(),
+                props: BTreeMap::new(),
+                children: vec![],
+                events: BTreeMap::new(),
+                when: Some(Binding::State {
+                    bind: "$.running".into(),
+                }),
+                then: Some(Box::new(text(PropValue::Literal(json!("x"))))),
+                else_: None,
+                items: None,
+                key: None,
+                template: None,
+            };
+            let result = validate_document(&with_single(root));
+            match result {
+                Ok(()) | Err(UiSchemaError::InvalidControl(_)) => {}
+                Err(other) => panic!("{kind} 应合法或控制结构错误,实际 {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn contract_vector_negative_unknowns() {
+        // 反例:未知组件/未知 prop/未知输入事件均拒绝。
+        let root = Component {
+            kind: "BogusComponent".into(),
+            props: BTreeMap::new(),
+            children: vec![],
+            events: BTreeMap::new(),
+            when: None,
+            then: None,
+            else_: None,
+            items: None,
+            key: None,
+            template: None,
+        };
+        assert!(matches!(
+            validate_document(&with_single(root)),
+            Err(UiSchemaError::UnknownComponent(_))
+        ));
+
+        let mut d = valid_doc();
+        d.root.children[0]
+            .props
+            .insert("not-a-prop".into(), PropValue::Literal(json!("x")));
+        assert!(matches!(
+            validate_document(&d),
+            Err(UiSchemaError::UnknownProp { .. })
+        ));
+    }
 }

@@ -6,7 +6,7 @@
 > 进度：S0 已完成；S1 有 Windows、Linux 与 macOS 子集证据；S2/S3 部分实现；Wayland 协议层已在
 > headless weston 实测；ADR-0001 与插件/SDK 架构已确定，WIT/Component 链路已迁移到 ADR-0001 目标契约。
 
-## 0. 当前基线（2026-08-18）
+## 0. 当前基线（2026-08-20）
 
 - Rust 1.97.1、`wasm32-wasip2`、rustfmt、Clippy、wasm-tools 已可用。
 - Workspace、九个宿主/SDK crate、一个 WASM clock fixture、CI/依赖策略和工程文档已建立；Windows
@@ -19,9 +19,12 @@
   manifest、安全与 crate 文档已形成实施约束，但对应代码不算完成。
 - `wit/`、guest/host bindings 与 `clock.wasm` 已迁移到 ADR-0001 目标契约（`host-ui`/`host-clock`、canonical State、
   统一 `start/handle-event/stop` 与稳定 guest error）并通过 `wasm-tools validate`；`floatile-ui-schema`
-  S5a 切片已实现（IR/registry/schema 校验/绑定解析/预算校验/契约测试，host+wasm 可编译）。manifest
-  模型与 capability 注册表已在 `floatile-core` 实现。S5b 的 runtime actor + Broker + clock 集成测试
-  已落地；CLI 包校验、shell renderer spike、恶意插件 fixture 与契约测试仍待实现，不能作为 F11 完成证据。
+  S5a 切片已实现（IR/registry/schema 校验/绑定解析/预算校验/契约测试 + `uiApiVersion` 版本轴 vectors，
+  host+wasm 可编译）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。S5b 的 runtime actor +
+  Broker + clock 集成测试已落地。`floatile-renderer`（host-only）已实现 S5a renderer spike 路径二变体：
+  从已验证 IR 结构化生成宿主控制 Slint 源码 + binding/event 槽位，参考时钟生成物经 `slint-build` 编译
+  通过。仍待实现/未完成证据：CLI 包校验联动、运行时第三方插件 UI 渲染（依赖 interpreter/运行时编译
+  ADR）、恶意插件 fixture；不能作为 F11 完成证据。
 
 ## 1. 已完成脚手架
 
@@ -76,9 +79,10 @@
 - 当前基线已有 ADR-0001 目标契约 `floatile:widget@1.0.0`：Rust guest/host bindings 与 `plugins/clock-wasm`
   已按统一 `start/handle-event/stop` lifecycle、`host-ui`/`host-clock` 与 canonical State 迁移并通过
   `wasm-tools validate`。`floatile-ui-schema` 的 IR/registry/schema 校验/绑定解析/预算校验与契约测试
-  已落地（S5a 切片）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。S5a 剩余：CLI
-  包校验（zip/路径/资源预算）与版本轴/正反例 contract vectors；runtime adapter 落地前不得标记为
-  统一插件契约已实现。
+  已落地（S5a 切片）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。`floatile-renderer`
+  已落地 S5a renderer spike 路径二变体（参考时钟生成物经 `slint-build` 编译通过）；`uiApiVersion`
+  版本轴/正反例 contract vectors 已补。S5a 剩余：CLI 包校验（zip/路径/资源预算）联动、运行时第三方
+  插件 UI 渲染 ADR；runtime adapter 落地前不得标记为统一插件契约已实现。
 
 #### S5b — Runtime actor + Broker
 
@@ -88,8 +92,10 @@
 - 验收：Rust clock 1 Hz 更新；deny、超 patch、队列洪泛、fuel/内存 trap 后宿主存活。
 - 已实现：`floatile-runtime`（Wasmtime 47 + 空 WASI 上下文、fuel/内存限制、串行 actor、State Patch
   原子应用、WIT adapter 经 Broker）；`floatile-services` Broker 与 clock/log/timer/storage/metrics/theme
-  能力；`clock-wasm` 集成测试（start/1Hz tick/update-state/deny 存活/fuel trap 存活）。剩余：shell
-  renderer（IR→Slint）、队列洪泛与内存超限的恶意 fixture 级测试。
+  能力；`clock-wasm` 集成测试（start/1Hz tick/update-state/deny 存活/fuel trap 存活）。renderer 侧：
+  `floatile-renderer` 已生成可编译的宿主控制 Slint 组件与 binding/event 槽位（shell 按槽位把权威
+  State 投影到宿主属性）。剩余：把生成组件实例化进窗口（shell renderer 接入）、队列洪泛与内存超限的
+  恶意 fixture 级测试。
 
 #### S5c — Rust SDK 与作者闭环
 
