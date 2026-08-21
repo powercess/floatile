@@ -68,8 +68,8 @@
 S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校验、JSONPath 绑定路径解析、
 结构/预算校验与契约测试，host 与 `wasm32-wasip2` 均可编译。renderer spike（IR→Slint，见
 `floatile-renderer`）已选定路径二变体并证明参考时钟生成物可经 `slint-build` 编译；
-`uiApiVersion` 版本轴 contract vectors、animation/asset 预算的进一步落地与运行时第三方插件
-UI 渲染（依赖 interpreter/运行时编译 ADR）仍待后续切片。
+`uiApiVersion` 版本轴 contract vectors、animation/asset 预算的进一步落地仍待后续切片；
+运行时第三方插件 UI 渲染按 ADR-0002（`slint-interpreter`）落地，见 §3.12。
 
 ### 3.3 `floatile-shell`
 
@@ -155,7 +155,8 @@ UI 渲染（依赖 interpreter/运行时编译 ADR）仍待后续切片。
   输出 `component <PluginUI>` 内容组件 + binding/event 槽位。
 - 生成前独立复验预算/结构；所有字符串值经结构化转义，组件/属性/回调名由本 crate 生成。
 - 参考时钟由 `floatile-shell/build.rs` 调本 crate 生成并通过 `slint-build` 编译（可编译证据）；
-  运行时第三方插件 UI 渲染待 interpreter/运行时编译 ADR（本 crate 输出契约不变）。
+  运行时第三方插件 UI 渲染按 ADR-0002 用 `slint-interpreter` 编译本 crate 输出（输出契约不变；
+  spike 已验证编译+实例化+State 投影）。
 
 ## 4. 事实源
 
