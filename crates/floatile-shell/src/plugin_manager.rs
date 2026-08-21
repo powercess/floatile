@@ -76,9 +76,55 @@ pub fn load_installed(store: &Path, id: &str) -> Result<Option<InstalledPlugin>,
     if !id_dir.is_dir() {
         return Ok(None);
     }
+    let Some((_version, dir)) = select_highest_version(&id_dir)? else {
+        return Ok(None);
+    };
+    load_from_dir(&dir).map(Some)
+}
 
+/// 枚举插件存储下全部已安装插件，每个 id 取最高已安装版本并逐一做 digest 复核。
+///
+/// 这是宿主运行多个插件的加载策略：返回稳定的已安装插件集合，供 UI 层按 id 创建
+/// 各自实例；任意一个插件 digest 不匹配都会返回错误（拒绝加载，交由调用方决定是
+/// 隔离失败还是整体拒绝），绝不会静默跳过被篡改的插件。
+pub fn list_installed(store: &Path) -> Result<Vec<InstalledPlugin>, LoadError> {
+    let store_entries = std::fs::read_dir(store).map_err(|e| LoadError::Read(e.to_string()))?;
+    let mut plugins = Vec::new();
+    for entry in store_entries {
+        let entry = entry.map_err(|e| LoadError::Read(e.to_string()))?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !entry.path().is_dir() {
+            continue;
+        }
+        // 只枚举「规范 id 目录」（安装目录布局 `<store>/<id>/<version>`）；跳过
+        // 非 id 命名的杂项目录，避免把 store 下的临时/无关目录当作插件加载。
+        if !is_valid_plugin_id_dir(&id) {
+            continue;
+        }
+        if let Some((_version, dir)) = select_highest_version(&entry.path())? {
+            plugins.push(load_from_dir(&dir)?);
+        }
+    }
+    // 按 id 稳定排序，保证多插件集合输出确定、可测试。
+    plugins.sort_by(|a, b| a.manifest.id.0.cmp(&b.manifest.id.0));
+    Ok(plugins)
+}
+
+/// 判断目录名是否形如合法插件 id（反向域名，含点分段）；不是则跳过。
+fn is_valid_plugin_id_dir(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+        && name.contains('.')
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+}
+
+/// 在插件的 `<id>/` 目录下挑选最高版本子目录。
+fn select_highest_version(id_dir: &Path) -> Result<Option<(Version, PathBuf)>, LoadError> {
     let mut best: Option<(Version, PathBuf)> = None;
-    let entries = std::fs::read_dir(&id_dir).map_err(|e| LoadError::Read(e.to_string()))?;
+    let entries = std::fs::read_dir(id_dir).map_err(|e| LoadError::Read(e.to_string()))?;
     for entry in entries {
         let entry = entry.map_err(|e| LoadError::Read(e.to_string()))?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -93,11 +139,7 @@ pub fn load_installed(store: &Path, id: &str) -> Result<Option<InstalledPlugin>,
             best = Some((version, dir));
         }
     }
-
-    let Some((_version, dir)) = best else {
-        return Ok(None);
-    };
-    load_from_dir(&dir).map(Some)
+    Ok(best)
 }
 
 /// 从单个已安装版本目录加载，重算并校验 digest 后解析 manifest/入口。
@@ -183,6 +225,12 @@ mod tests {
         .to_string()
     }
 
+    fn manifest_json_for(id: &str) -> String {
+        let mut manifest = serde_json::from_str::<serde_json::Value>(&manifest_json()).unwrap();
+        manifest["id"] = serde_json::json!(id);
+        manifest.to_string()
+    }
+
     fn temp_store(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("floatile-pm-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -191,9 +239,9 @@ mod tests {
     }
 
     /// 安装一个模拟版本目录（直接按 CLI 布列写 install.json + 文件）。
-    fn write_install(store: &Path, version: &str, tamper: Option<&str>) {
+    fn write_install(store: &Path, id: &str, version: &str, tamper: Option<&str>) {
         let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        files.insert("manifest.json".into(), manifest_json().into_bytes());
+        files.insert("manifest.json".into(), manifest_json_for(id).into_bytes());
         files.insert("ui/widget.ftui".into(), b"{\"ui\":1}".to_vec());
         files.insert("logic/plugin.wasm".into(), vec![1, 2, 3, 4]);
 
@@ -204,7 +252,7 @@ mod tests {
         // 可选：篡改某文件内容后仍按伪造 digest 写，或改 content 后再校验失败。
         let meta = InstallMeta {
             manifest_version: 1,
-            id: "dev.floatile.clock".into(),
+            id: id.into(),
             version: version.into(),
             engine_api_version: "1.0.0".into(),
             ui_api_version: "1.0.0".into(),
@@ -214,7 +262,7 @@ mod tests {
             digest: hex_encode(&content_digest(&files)),
         };
 
-        let version_dir = store.join("dev.floatile.clock").join(version);
+        let version_dir = store.join(id).join(version);
         std::fs::create_dir_all(&version_dir).unwrap();
         for (name, bytes) in &files {
             let path = version_dir.join(name);
@@ -235,8 +283,8 @@ mod tests {
     #[test]
     fn loads_highest_version_and_verifies_digest() {
         let store = temp_store("load");
-        write_install(&store, "0.1.0", None);
-        write_install(&store, "0.2.0", None);
+        write_install(&store, "dev.floatile.clock", "0.1.0", None);
+        write_install(&store, "dev.floatile.clock", "0.2.0", None);
 
         let plugin = load_installed(&store, "dev.floatile.clock")
             .unwrap()
@@ -260,9 +308,65 @@ mod tests {
     #[test]
     fn rejects_tampered_file() {
         let store = temp_store("tamper");
-        write_install(&store, "0.1.0", Some("logic/plugin.wasm"));
+        write_install(
+            &store,
+            "dev.floatile.clock",
+            "0.1.0",
+            Some("logic/plugin.wasm"),
+        );
         let err = load_installed(&store, "dev.floatile.clock").unwrap_err();
         assert!(matches!(err, LoadError::DigestMismatch { .. }));
         assert_eq!(err.code(), "FLOAD_DIGEST_MISMATCH");
+    }
+
+    #[test]
+    fn lists_multiple_installed_plugins_sorted() {
+        let store = temp_store("list");
+        // 两个不同插件，各一版本。
+        write_install(&store, "dev.floatile.clock", "1.0.0", None);
+        write_install(&store, "dev.floatile.cpu", "0.3.0", None);
+
+        let plugins = list_installed(&store).unwrap();
+        assert_eq!(plugins.len(), 2);
+        // 按 id 稳定排序。
+        assert_eq!(plugins[0].manifest.id.0, "dev.floatile.clock");
+        assert_eq!(plugins[1].manifest.id.0, "dev.floatile.cpu");
+    }
+
+    #[test]
+    fn lists_each_plugin_highest_version() {
+        let store = temp_store("list-vers");
+        write_install(&store, "dev.floatile.cpu", "0.1.0", None);
+        write_install(&store, "dev.floatile.cpu", "0.2.0", None);
+        write_install(&store, "dev.floatile.clock", "1.0.0", None);
+
+        let plugins = list_installed(&store).unwrap();
+        assert_eq!(plugins.len(), 2);
+        let cpu = plugins
+            .iter()
+            .find(|p| p.manifest.id.0 == "dev.floatile.cpu")
+            .unwrap();
+        assert_eq!(cpu.meta.version, "0.2.0");
+    }
+
+    #[test]
+    fn list_skips_non_id_and_returns_error_on_tamper() {
+        let store = temp_store("list-tamper");
+        // 非 id 目录不应被当作插件。
+        let junk = store.join("..junk");
+        std::fs::create_dir_all(&junk).unwrap();
+        std::fs::write(junk.join("install.json"), b"{}").unwrap();
+        // 被篡改的插件 → 整体返回 digest 错误，不清零静默跳过。
+        write_install(
+            &store,
+            "dev.floatile.clock",
+            "1.0.0",
+            Some("logic/plugin.wasm"),
+        );
+
+        assert!(matches!(
+            list_installed(&store),
+            Err(LoadError::DigestMismatch { .. })
+        ));
     }
 }
