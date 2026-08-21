@@ -14,7 +14,7 @@ pub mod storage;
 pub mod theme;
 pub mod timer;
 
-pub use audit::{AuditSink, fnv1a};
+pub use audit::{AuditEvent, AuditListener, AuditSink, fnv1a};
 pub use broker::Broker;
 pub use clock::{Clock, ClockSnapshot};
 pub use errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};

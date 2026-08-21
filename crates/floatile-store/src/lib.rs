@@ -22,7 +22,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -55,6 +55,9 @@ impl Store {
         }
         if current < 2 {
             self.migration_v2()?;
+        }
+        if current < 3 {
+            self.migration_v3()?;
         }
         Ok(())
     }
@@ -104,10 +107,54 @@ impl Store {
             .map_err(|e| StoreError::Migration(format!("v2 提交失败: {e}")))
     }
 
+    fn migration_v3(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS audit_log (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                unix_ts    INTEGER NOT NULL,
+                plugin     TEXT NOT NULL,
+                instance   INTEGER NOT NULL,
+                capability TEXT NOT NULL,
+                decision   TEXT NOT NULL CHECK (decision IN ('allow','deny')),
+                reason     TEXT,
+                detail     TEXT NOT NULL
+            );
+            PRAGMA user_version = 3;",
+        )
+        .map_err(|e| StoreError::Migration(format!("v3 建表失败: {e}")))?;
+        tx.commit()
+            .map_err(|e| StoreError::Migration(format!("v3 提交失败: {e}")))
+    }
+
     /// 布局存储接口。
     pub fn layout(&self) -> LayoutStore<'_> {
         LayoutStore { conn: &self.conn }
     }
+
+    /// 脱敏能力审计存储接口。
+    ///
+    /// 审计记录按插入顺序写入（`list` 依 `id` 升序返回），供一致性断言/宿主查看。
+    /// 值字段（detail）由调用方负责脱敏——本层只持久化已脱敏的结构化记录，语义见
+    /// `floatile-services::audit`（长度/哈希，不落 secret 或完整值）。
+    pub fn audit(&self) -> AuditStore<'_> {
+        AuditStore { conn: &self.conn }
+    }
+}
+
+/// 一条已脱敏的能力审计记录（`audit_log` 表行）。
+///
+/// `detail` 必须已脱敏（长度/哈希摘要，不落 secret 或完整 State/Storage 值）。
+/// `decision` 为 `allow` 或 `deny`；`reason` 仅拒绝时存在。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRecord {
+    pub plugin: String,
+    pub instance: u64,
+    pub capability: String,
+    pub decision: String,
+    pub reason: Option<String>,
+    pub detail: String,
+    pub unix_ts: u64,
 }
 
 /// 布局记录存取（layout 表 CRUD）。
@@ -215,6 +262,63 @@ impl<'a> LayoutStore<'a> {
             rusqlite::params![instance_id],
         )?;
         Ok(())
+    }
+}
+
+/// 脱敏审计记录存取（audit_log 表追加写 + 顺序读）。
+pub struct AuditStore<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> AuditStore<'a> {
+    /// 追加一条已脱敏审计记录。
+    pub fn record(&self, record: &AuditRecord) -> Result<(), StoreError> {
+        if record.decision != "allow" && record.decision != "deny" {
+            return Err(StoreError::Corrupt(format!(
+                "audit decision 必须为 allow/deny，实际 {}",
+                record.decision
+            )));
+        }
+        let instance = sqlite_i64(record.instance, "instance")?;
+        let ts = sqlite_i64(record.unix_ts, "unix_ts")?;
+        self.conn.execute(
+            "INSERT INTO audit_log
+                (unix_ts, plugin, instance, capability, decision, reason, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                ts,
+                record.plugin,
+                instance,
+                record.capability,
+                record.decision,
+                record.reason,
+                record.detail,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 按插入顺序列出全部审计记录（id 升序）。
+    pub fn list(&self) -> Result<Vec<AuditRecord>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                unix_ts, plugin, instance, capability, decision, reason, detail
+             FROM audit_log ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            records.push(AuditRecord {
+                unix_ts: read_u64(row, 0, "unix_ts")?,
+                plugin: row.get(1)?,
+                instance: read_u64(row, 2, "instance")?,
+                capability: row.get(3)?,
+                decision: row.get(4)?,
+                reason: row.get(5)?,
+                detail: row.get(6)?,
+            });
+        }
+        Ok(records)
     }
 }
 
@@ -399,7 +503,32 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        // migrate() 继续跑到最新 schema(v3 追加 audit_log 表,不影响 layout)。
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    fn v2_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store.migration_v2().unwrap();
+        store
+    }
+
+    fn sample_audit(plugin: &str, instance: u64, capability: &str, decision: &str) -> AuditRecord {
+        AuditRecord {
+            plugin: plugin.into(),
+            instance,
+            capability: capability.into(),
+            decision: decision.into(),
+            reason: if decision == "deny" {
+                Some("deny-by-default".into())
+            } else {
+                None
+            },
+            detail: "message len=5".into(),
+            unix_ts: 1_700_000_000,
+        }
     }
 
     #[test]
@@ -528,6 +657,118 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(store.layout().get(1), Err(StoreError::Corrupt(_))));
+    }
+
+    #[test]
+    fn migration_v3_adds_audit_log_table() {
+        let store = open(":memory:").unwrap();
+        let mut stmt = store.conn.prepare("PRAGMA table_info(audit_log)").unwrap();
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for expected in [
+            "id",
+            "unix_ts",
+            "plugin",
+            "instance",
+            "capability",
+            "decision",
+            "reason",
+            "detail",
+        ] {
+            assert!(
+                columns.iter().any(|c| c == expected),
+                "缺列 {expected}: {columns:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_v3_forward_from_v2_is_append_only() {
+        let mut store = v2_store();
+        // 先写入一条 v2 布局,证明 v3 不破坏 layout。
+        store
+            .conn
+            .execute(
+                "INSERT INTO layout (
+                    instance_id, plugin_id, monitor_key, x, y, w, h,
+                    physical_w, physical_h, scale_factor, lost_monitor,
+                    z, mode, version, updated_at
+                 ) VALUES (7, 'dev.floatile.clock', 'edid', 1, 2, 260, 120,
+                    260, 120, 1.0, 0, 1, 'edit', 1, 1700000000)",
+                [],
+            )
+            .unwrap();
+        store.migrate().unwrap();
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(store.layout().get(7).unwrap().is_some());
+        // audit_log 表可写。
+        store
+            .audit()
+            .record(&sample_audit("dev.floatile.clock", 7, "log:write", "allow"))
+            .unwrap();
+        assert_eq!(store.audit().list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn audit_record_and_list_preserve_order_and_fields() {
+        let store = open(":memory:").unwrap();
+        store
+            .audit()
+            .record(&sample_audit("dev.floatile.clock", 1, "log:write", "allow"))
+            .unwrap();
+        store
+            .audit()
+            .record(&sample_audit(
+                "dev.floatile.clock",
+                1,
+                "metrics:memory",
+                "deny",
+            ))
+            .unwrap();
+        let list = store.audit().list().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].capability, "log:write");
+        assert_eq!(list[0].decision, "allow");
+        assert_eq!(list[1].capability, "metrics:memory");
+        assert_eq!(list[1].decision, "deny");
+        assert_eq!(list[1].reason.as_deref(), Some("deny-by-default"));
+    }
+
+    #[test]
+    fn audit_rejects_invalid_decision() {
+        let store = open(":memory:").unwrap();
+        let mut bad = sample_audit("p", 1, "log:write", "maybe");
+        bad.decision = "maybe".into();
+        assert!(matches!(
+            store.audit().record(&bad),
+            Err(StoreError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn audit_persists_across_reopen() {
+        let path = TempDb::new();
+        {
+            let store = open(&path.0).unwrap();
+            store
+                .audit()
+                .record(&sample_audit("a", 1, "log:write", "allow"))
+                .unwrap();
+        }
+        {
+            let store = open(&path.0).unwrap();
+            let list = store.audit().list().unwrap();
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].plugin, "a");
+            assert_eq!(list[0].detail, "message len=5");
+        }
     }
 
     #[test]

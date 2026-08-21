@@ -445,6 +445,7 @@ fn spawn_clock_runtime(
     app: slint::Weak<Clock>,
     binding: PluginBinding,
     initial_state: serde_json::Value,
+    audit_listener: Option<floatile_services::AuditListener>,
 ) -> Option<RuntimeSession> {
     let wasm = clock_wasm_bytes()?;
     let plugin = PluginId("dev.floatile.clock".into());
@@ -469,7 +470,8 @@ fn spawn_clock_runtime(
                         tracing::warn!(%error, "failed to create widget manager; falling back to builtin timer");
                         return;
                     }
-                };
+                }
+                .with_audit_listener(audit_listener);
                 let grants = match clock_grants() {
                     Ok(grants) => grants,
                     Err(error) => {
@@ -979,8 +981,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         app.set_time_text(text.into());
     }
-    let runtime_clock = plugin_projection
-        .and_then(|clock| spawn_clock_runtime(app.as_weak(), clock.binding, clock.initial_state));
+    // 脱敏能力审计持久化:Broker 的每次 allow/deny 决策落到 SQLite audit_log。
+    // store 不可用(数据库打开失败)时降级为仅 tracing 输出。
+    let persisted_for_audit = Arc::clone(&persisted);
+    let audit_listener: Option<floatile_services::AuditListener> =
+        Some(Arc::new(move |event: &floatile_services::AuditEvent| {
+            let guard = persisted_for_audit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(store) = &guard.store else {
+                return;
+            };
+            if let Err(error) = store.audit().record(&floatile_store::AuditRecord {
+                plugin: event.plugin.clone(),
+                instance: event.instance,
+                capability: event.capability.clone(),
+                decision: event.decision.clone(),
+                reason: event.reason.clone(),
+                detail: event.detail.clone(),
+                unix_ts: unix_now(),
+            }) {
+                tracing::warn!(%error, "audit persist failed");
+            }
+        }));
+    let runtime_clock = plugin_projection.and_then(|clock| {
+        spawn_clock_runtime(
+            app.as_weak(),
+            clock.binding,
+            clock.initial_state,
+            audit_listener,
+        )
+    });
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }

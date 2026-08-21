@@ -59,8 +59,8 @@
 - 当前进度：核心层 monitor-local 布局恢复、主屏降级/原屏回归和边界钳制已实现；SQLite v1
   `layout` 可前向迁移到 v2 的 DPI/物理尺寸/`lost_monitor` 字段。shell 已接入启动保存/恢复
   （位置/尺寸/模式）、拖动/缩放/模式切换/热键/退出保存、显示器变化（Focused/Occluded）重恢复，
-  Xvfb+Openbox 下拖拽→重启恢复与删除清库已实测；`kv/audit_log` 仍未实现，真实多屏/DPI/热插拔
-  实机验证待做。
+  Xvfb+Openbox 下拖拽→重启恢复与删除清库已实测；`kv` 仍未实现（`audit_log` 表已在 migration
+  v3 落地，见 S7），真实多屏/DPI/热插拔实机验证待做。
 
 ### S4 — 硬编码时钟（Reference Widget）
 - 做：内建时钟组件 + 每秒更新 + 编辑模式控件。
@@ -124,6 +124,12 @@
 
 ### S7 — 恶意插件安全测试 + 审计
 - 做：tests/fixtures/evil-plugin + 非法 UI/State/event/package corpus + 自动化断言；audit_log 落库。
+- 已实现：`plugins/evil-wasm` 对抗性 fixture（初始 State `mode` 选择攻击：未声明能力调用 /
+  超限/类型错误/未知字段 State Patch / 无限 CPU 循环 / 超限内存申请 / 伪造事件洪泛）；
+  `floatile-runtime` 安全集成测试断言「拒绝 + 审计落 SQLite + 宿主存活」（deny、bad-patch、
+  fuel trap、StoreLimits trap、forged flood）；`floatile-store` 增加 audit_log 表（migration v3）
+  与 AuditStore；shell 运行时把 Broker 脱敏审计落到 layout.db（`with_audit_listener`）。剩余：
+  非法 package corpus 的安装期拒绝（并入 S6）与真实容量数据。
 - 验收：安全验收 §3 全部通过、宿主存活、审计留痕。
 
 ### S8 — P0 复盘

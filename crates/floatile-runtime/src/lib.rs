@@ -15,7 +15,7 @@ use floatile_plugin_api::FloatileWidget;
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{
     WidgetEvent, WidgetInit, WidgetMode,
 };
-use floatile_services::{AuditSink, Broker, TimerSink};
+use floatile_services::{AuditListener, AuditSink, Broker, TimerSink};
 use floatile_ui_schema::schema::JsonSchema;
 use floatile_ui_schema::validate_value;
 use serde_json::Value;
@@ -55,6 +55,8 @@ pub struct WidgetManager {
     engine: wasmtime::Engine,
     max_memory: usize,
     fuel_per_call: u64,
+    /// 可选脱敏审计持久化 sink:注入到每个实例 Broker 的 AuditSink。
+    audit_listener: Option<AuditListener>,
 }
 
 impl WidgetManager {
@@ -69,7 +71,18 @@ impl WidgetManager {
             engine,
             max_memory: DEFAULT_MAX_MEMORY,
             fuel_per_call: DEFAULT_FUEL_PER_CALL,
+            audit_listener: None,
         })
+    }
+
+    /// 注入一个共享脱敏审计接收器(shell 用它把 Broker 审计持久化到 SQLite)。
+    ///
+    /// 传给每个实例 Broker 的 `AuditSink.with_listener`:允许/拒绝都经此回调解脱敏
+    /// 记录。传 `None` 关闭持久化(仅保留 tracing 输出)。同一 listener 会被多个
+    /// 实例共享,必须线程安全(默认 `Arc<dyn Fn(...)>` 满足)。
+    pub fn with_audit_listener(mut self, listener: Option<AuditListener>) -> Self {
+        self.audit_listener = listener;
+        self
     }
 
     /// 设置每实例线性内存上限（字节）。
@@ -93,11 +106,13 @@ impl WidgetManager {
         let engine = self.engine.clone();
         let max_memory = self.max_memory;
         let fuel_per_call = self.fuel_per_call;
+        let audit_listener = self.audit_listener.clone();
         let join = tokio::spawn(run_actor(
             engine,
             config,
             max_memory,
             fuel_per_call,
+            audit_listener,
             ui_tx,
             cmd_rx,
             actor_tx,
@@ -176,11 +191,13 @@ impl WidgetHandle {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_actor(
     engine: wasmtime::Engine,
     config: WidgetConfig,
     max_memory: usize,
     fuel_per_call: u64,
+    audit_listener: Option<AuditListener>,
     ui_tx: mpsc::Sender<UiUpdate>,
     mut cmd_rx: mpsc::Receiver<InstanceCommand>,
     actor_tx: mpsc::Sender<InstanceCommand>,
@@ -203,12 +220,12 @@ async fn run_actor(
             );
         }
     });
-    let broker = Broker::new(
-        config.plugin.clone(),
-        config.grants,
-        AuditSink::new(plugin_id.clone(), instance_id),
-        sink,
-    );
+    // Broker：所有宿主能力入口；审计可选落到注入的持久化 sink。
+    let mut audit = AuditSink::new(plugin_id.clone(), instance_id);
+    if let Some(listener) = &audit_listener {
+        audit = audit.with_listener(Arc::clone(listener));
+    }
+    let broker = Broker::new(config.plugin.clone(), config.grants, audit, sink);
 
     let initial_state_json = serde_json::to_string(&config.initial_state)
         .map_err(|e| RuntimeError::InstanceFailed(format!("initial state 序列化失败: {e}")))?;
