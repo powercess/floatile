@@ -1593,6 +1593,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
 ]
 
@@ -1702,6 +1703,7 @@ dependencies = [
  "floatile-services",
  "floatile-store",
  "floatile-ui-schema",
+ "semver",
  "serde",
  "serde_json",
  "slint",

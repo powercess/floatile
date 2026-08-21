@@ -5,11 +5,13 @@
 
 pub mod build;
 pub mod dev;
+pub mod install;
 pub mod package;
 pub mod project;
 
 pub use build::{BuildError, build_project, package};
 pub use dev::{BuildStatus, build_once, dev_loop, ensure_project};
+pub use install::{InstallError, InstalledPackage, install_dir, install_package};
 pub use package::{PackageError, PackageLimits, ValidatedPackage, validate_package};
 pub use project::{
     ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,

@@ -22,6 +22,7 @@ floatile-ui-schema = { workspace = true }
 floatile-runtime = { workspace = true }
 floatile-plugin-api = { workspace = true }
 floatile-services = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slint = { workspace = true }

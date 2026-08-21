@@ -6,8 +6,11 @@
 
 `floatile-core` 已实现 manifest 纯模型与校验（字段/版本轴/semver/sizes/entrypoints/permissions）、
 capability 参数解析（未知字段拒绝）与包路径规范化规则；`floatile-cli` 已实现 `.floatile` zip 包校验
-（预算、路径穿越/碰撞/symlink/zip-bomb、manifest/UI IR/WASM world 校验与正反例 corpus）。build 打包、
-digest 与原子安装待后续切片。
+（预算、路径穿越/碰撞/symlink/zip-bomb、manifest/UI IR/WASM world 校验与正反例 corpus）与
+build 打包+自校验。原子安装已实现（`floatile-cli install`：staging/逐文件 fsync/digest/原子
+rename 到 `<插件存储>/<id>/<version>/`，写 `install.json`，同版本重复安装拒绝、失败零残留）；
+`floatile-core::install` 为 InstallMeta 与内容 digest 的单一事实源，`floatile-shell::plugin_manager`
+按 digest 复核后加载已安装包。schema 文件（config.schema / 独立 schema 产物）与签名仍待后续切片。
 
 manifest 是安装与运行时的显式事实，不是开发者主要编辑界面。Rust/TypeScript 项目使用最小
 `floatile.toml`，CLI 结合代码生成的 UI/State/Event schema 和 capability 候选产生 manifest；作者

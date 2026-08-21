@@ -385,6 +385,23 @@ fn load_clock_projection() -> Option<ProjectedClock> {
 }
 
 fn clock_wasm_bytes() -> Option<Vec<u8>> {
+    // S6：优先加载已安装的 dev 参考时钟包（安装期校验 + 加载期 digest 复核）。
+    // 不存在则回退构建期 target 下的 dev 产物。
+    if let Some(store) = floatile_shell::plugin_manager::plugin_store() {
+        match floatile_shell::plugin_manager::load_installed(&store, "dev.floatile.clock") {
+            Ok(Some(plugin)) => {
+                tracing::info!(
+                    version = %plugin.meta.version,
+                    "using installed clock plugin package"
+                );
+                return Some(plugin.wasm);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "installed clock package load failed; falling back to builtin");
+            }
+        }
+    }
     let wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")

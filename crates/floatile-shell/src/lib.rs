@@ -11,6 +11,8 @@ use floatile_core::{
 use floatile_ui_schema::path::PathSegments;
 use serde_json::Value;
 
+pub mod plugin_manager;
+
 /// 单窗口宿主内建参考时钟的实例 ID。
 pub const CLOCK_INSTANCE_ID: InstanceId = InstanceId(1);
 /// 内建参考时钟的插件命名空间（保留前缀，不面向第三方插件）。

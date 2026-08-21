@@ -1,5 +1,6 @@
 pub mod capability;
 pub mod constants;
+pub mod install;
 pub mod layout;
 pub mod manifest;
 pub mod types;
