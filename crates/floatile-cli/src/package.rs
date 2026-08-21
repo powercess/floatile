@@ -93,6 +93,8 @@ pub enum PackageError {
     MissingWorldExport,
     #[error("JSON 解析失败: {0}")]
     InvalidJson(String),
+    #[error("config.schema 非法: {0}")]
+    InvalidConfigSchema(String),
 }
 
 impl PackageError {
@@ -116,6 +118,7 @@ impl PackageError {
             Self::DisallowedImport(_) => "FPAK_DISALLOWED_IMPORT",
             Self::MissingWorldExport => "FPAK_MISSING_WORLD_EXPORT",
             Self::InvalidJson(_) => "FPAK_INVALID_JSON",
+            Self::InvalidConfigSchema(_) => "FPAK_INVALID_CONFIG_SCHEMA",
         }
     }
 }
@@ -219,9 +222,10 @@ pub fn validate_package(
     let ui_bytes = read_entry(&mut archive, ui_path)?;
     let wasm_bytes = read_entry(&mut archive, logic_path)?;
 
-    // config.schema 若声明则必须存在。
+    // config.schema 若声明则必须存在，且是合法、有界的 JSON Schema。
     if let Some(config) = &manifest.config {
-        read_entry(&mut archive, config.schema.as_str())?;
+        let config_schema = read_entry(&mut archive, config.schema.as_str())?;
+        validate_config_schema(&config_schema)?;
     }
 
     // UI IR 校验。
@@ -299,6 +303,58 @@ fn validate_wasm(bytes: &[u8]) -> Result<Vec<u8>, PackageError> {
         return Err(PackageError::MissingWorldExport);
     }
     Ok(bytes.to_vec())
+}
+
+/// config.schema 文件字节上限（独立于通用解压预算；schema 是小而静态的文档）。
+pub const MAX_CONFIG_SCHEMA_BYTES: usize = 64 * 1024;
+/// config.schema 结构最大嵌套深度（防深嵌套 DoS）。
+pub const MAX_CONFIG_SCHEMA_DEPTH: usize = 32;
+
+/// 校验 `config.schema` 引用的 JSON Schema 文档结构（纯结构/边界校验，不执行求值）。
+///
+/// 语义（manifest-v1 §5/§6）：config.schema.json 是作者定义的纯 JSON Schema 文档。
+/// 这里做安装期结构校验——必须是可解析的 JSON、根必须是 `object`、大小与深度受
+/// 上限约束。通用 JSON Schema 求值器不在 P0 依赖范围内，运行期对具体用户配置的
+/// 校验由宿主在插件系统架构定义的位置另行接入。
+fn validate_config_schema(bytes: &[u8]) -> Result<(), PackageError> {
+    if bytes.len() > MAX_CONFIG_SCHEMA_BYTES {
+        return Err(PackageError::InvalidConfigSchema(format!(
+            "大小 {} 超过上限 {MAX_CONFIG_SCHEMA_BYTES}",
+            bytes.len()
+        )));
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|e| PackageError::InvalidConfigSchema(format!("JSON 解析失败: {e}")))?;
+    if !value.is_object() {
+        return Err(PackageError::InvalidConfigSchema(
+            "根必须是 JSON object".to_owned(),
+        ));
+    }
+    check_schema_depth(&value, 0)?;
+    Ok(())
+}
+
+/// 递归检查 JSON Schema 文档嵌套深度；超限返回错误。
+fn check_schema_depth(value: &serde_json::Value, depth: usize) -> Result<(), PackageError> {
+    if depth > MAX_CONFIG_SCHEMA_DEPTH {
+        return Err(PackageError::InvalidConfigSchema(format!(
+            "超过最大深度 {MAX_CONFIG_SCHEMA_DEPTH}"
+        )));
+    }
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                check_schema_depth(item, depth + 1)?;
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                check_schema_depth(item, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -490,6 +546,97 @@ mod tests {
         ]);
         // wasm 用 real；这里缺 wasm 入口 → MissingEntrypoint。
         let _ = wasm;
+        assert!(matches!(
+            validate_package(&bytes, &PackageLimits::default()),
+            Err(PackageError::MissingEntrypoint(_))
+        ));
+    }
+
+    /// 在合法 manifest 上声明 config.schema 指向 `config.schema.json`。
+    fn manifest_with_config() -> String {
+        let mut manifest =
+            serde_json::from_str::<serde_json::Value>(&valid_manifest_json()).unwrap();
+        manifest["config"] = serde_json::json!({ "schema": "config.schema.json" });
+        manifest.to_string()
+    }
+
+    #[test]
+    fn accepts_valid_config_schema() {
+        let wasm = real_wasm();
+        let bytes = build_zip(&[
+            ("manifest.json", manifest_with_config().as_bytes()),
+            (
+                "config.schema.json",
+                br#"{"type":"object","properties":{"zone":{"type":"string"}}}"#,
+            ),
+            ("ui/widget.ftui", valid_ui_ir().as_bytes()),
+            ("logic/plugin.wasm", wasm.as_slice()),
+        ]);
+        let pkg = validate_package(&bytes, &PackageLimits::default()).unwrap();
+        assert_eq!(
+            pkg.manifest.config.unwrap().schema.as_str(),
+            "config.schema.json"
+        );
+    }
+
+    #[test]
+    fn rejects_config_schema_non_object_root() {
+        let wasm = real_wasm();
+        let bytes = build_zip(&[
+            ("manifest.json", manifest_with_config().as_bytes()),
+            ("config.schema.json", br#""just-a-string""#),
+            ("ui/widget.ftui", valid_ui_ir().as_bytes()),
+            ("logic/plugin.wasm", wasm.as_slice()),
+        ]);
+        assert!(matches!(
+            validate_package(&bytes, &PackageLimits::default()),
+            Err(PackageError::InvalidConfigSchema(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_config_schema_unparseable_json() {
+        let wasm = real_wasm();
+        let bytes = build_zip(&[
+            ("manifest.json", manifest_with_config().as_bytes()),
+            ("config.schema.json", b"{ not json"),
+            ("ui/widget.ftui", valid_ui_ir().as_bytes()),
+            ("logic/plugin.wasm", wasm.as_slice()),
+        ]);
+        assert!(matches!(
+            validate_package(&bytes, &PackageLimits::default()),
+            Err(PackageError::InvalidConfigSchema(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_config_schema_too_deep() {
+        let wasm = real_wasm();
+        // 构造深度超过 MAX_CONFIG_SCHEMA_DEPTH 的嵌套 object。
+        let mut value = serde_json::json!({});
+        for _ in 0..(MAX_CONFIG_SCHEMA_DEPTH + 2) {
+            value = serde_json::json!({ "nested": value });
+        }
+        let bytes = build_zip(&[
+            ("manifest.json", manifest_with_config().as_bytes()),
+            ("config.schema.json", value.to_string().as_bytes()),
+            ("ui/widget.ftui", valid_ui_ir().as_bytes()),
+            ("logic/plugin.wasm", wasm.as_slice()),
+        ]);
+        assert!(matches!(
+            validate_package(&bytes, &PackageLimits::default()),
+            Err(PackageError::InvalidConfigSchema(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_config_schema_entry() {
+        let wasm = real_wasm();
+        let bytes = build_zip(&[
+            ("manifest.json", manifest_with_config().as_bytes()),
+            ("ui/widget.ftui", valid_ui_ir().as_bytes()),
+            ("logic/plugin.wasm", wasm.as_slice()),
+        ]);
         assert!(matches!(
             validate_package(&bytes, &PackageLimits::default()),
             Err(PackageError::MissingEntrypoint(_))

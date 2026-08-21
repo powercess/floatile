@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 /// 强类型插件 ID（反向域名命名空间）。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
+#[schemars(transparent)]
 pub struct PluginId(pub String);
 
 /// 显示器稳定标识（优先使用 EDID/product 指纹，平台不可用时使用明确的降级键）。
@@ -121,7 +122,7 @@ pub struct LogicalPosition {
 }
 
 /// 逻辑像素尺寸。
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LogicalSize {
     pub width: f32,
     pub height: f32,

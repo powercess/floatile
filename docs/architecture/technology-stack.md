@@ -16,7 +16,7 @@
 | TypeScript adapter | 未决，需 ADR 与实测 | 必须保持普通 TypeScript 语义、同一 WIT/Broker，并通过单/10 实例资源与三平台门禁。 |
 | 异步 | Tokio（runtime/services 已引入，S5b） | 后台 I/O/runtime；Slint 主线程只跑事件循环。 |
 | 存储 | SQLite + rusqlite bundled | 单文件、事务、跨平台；migration 前向追加（v1 layout 表已落地） |
-| 序列化/错误 | serde、serde_json、thiserror | 契约类型、结构化校验错误；应用入口可统一报告。 |
+| 序列化/错误 | serde、serde_json、thiserror；manifest JSON Schema 单源使用 schemars + jsonschema | 契约类型、结构化校验错误；类型→schema 同源生成独立 manifest.schema.json 产物 |
 | 可观测性 | tracing、tracing-subscriber | 结构化 span；审计使用独立 target 并脱敏。 |
 | 包与接口工具 | `wasm-tools`、`wit-bindgen`、zip、semver（按阶段引入） | 组件校验、绑定生成、包校验和版本兼容。 |
 | 质量门禁 | rustfmt、Clippy、Cargo test、cargo-deny、GitHub Actions | 本地与 CI 使用相同 Cargo 命令。 |

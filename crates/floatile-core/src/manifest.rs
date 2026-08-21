@@ -15,7 +15,7 @@ use crate::constants::{ENGINE_API_VERSION, MANIFEST_VERSION};
 use crate::types::{LogicalSize, PluginId};
 
 /// 插件类型：P0/MVP 仅 `widget`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginKind {
     Widget,
@@ -25,8 +25,9 @@ pub enum PluginKind {
 ///
 /// 构造时校验形式：必须是规范化相对路径，拒绝绝对路径、`..`/`.` 段、
 /// 反斜杠变体、NUL 与空段。重复路径/大小写碰撞/symlink 是包级校验（CLI）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
 pub struct PackagePath(String);
 
 impl PackagePath {
@@ -62,21 +63,21 @@ impl From<PackagePath> for String {
 }
 
 /// 发布者元数据。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Publisher {
     pub id: String,
     pub name: String,
 }
 
 /// 包入口。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Entrypoints {
     pub ui: PackagePath,
     pub logic: PackagePath,
 }
 
 /// 窗口尺寸（逻辑像素；default 必须在 min..max 内）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Sizes {
     pub default: LogicalSize,
     pub min: LogicalSize,
@@ -85,7 +86,7 @@ pub struct Sizes {
 }
 
 /// 声明能力（manifest 是安装授权上限）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PermissionDecl {
     pub capability: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,26 +94,26 @@ pub struct PermissionDecl {
 }
 
 /// 用户配置 schema 引用（包内路径）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ConfigRef {
     pub schema: PackagePath,
 }
 
 /// 插件私有 KV 迁移版本。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StorageDecl {
     pub migration_version: u64,
 }
 
 /// 构建诊断元数据（不参与信任/授权）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BuildMeta {
     pub sdk: String,
     pub sdk_version: String,
 }
 
 /// manifest.json v1。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Manifest {
     #[serde(rename = "manifestVersion")]
     pub manifest_version: u32,
@@ -383,6 +384,58 @@ fn validate_package_path(path: &str) -> Result<(), ManifestError> {
     Ok(())
 }
 
+/// 由单一源 serde 模型生成 manifest.json 的独立 JSON Schema（manifest-v1 单源产物）。
+///
+/// 供外部工具/编辑器校验 `manifest.json`，避免手写第二份平行 schema 造成 drift。
+/// 字段名与 serde 序列化一致（`manifestVersion` 等 camelCase rename），并附加
+/// `additionalProperties: false` + required 列表，落实「未知字段拒绝」策略。
+pub fn manifest_json_schema() -> serde_json::Value {
+    let mut root = schemars::schema_for!(Manifest).to_value();
+    if let Some(obj) = root.as_object_mut() {
+        obj.insert(
+            "$schema".into(),
+            serde_json::json!("http://json-schema.org/draft-07/schema#"),
+        );
+        obj.insert("additionalProperties".into(), serde_json::json!(false));
+        // 顶层必填字段即 Manifest 的全部序列化字段。
+        obj.insert(
+            "required".into(),
+            serde_json::json!([
+                "manifestVersion",
+                "id",
+                "name",
+                "version",
+                "publisher",
+                "engineApiVersion",
+                "uiApiVersion",
+                "type",
+                "entrypoints",
+                "sizes",
+                "permissions"
+            ]),
+        );
+        obj.insert("title".into(), serde_json::json!("Floatile manifest v1"));
+    }
+    root
+}
+
+/// 用生成的独立 JSON Schema 校验一个 manifest JSON（结构无 drift 的落地校验）。
+///
+/// P0 是结构校验（字段名/类型/必填/额外字段），不做 #ref 全连通求值；用于
+/// `manifest_json_schema` 与 `Manifest` 序列化保持一致性的自检与外部工具校验。
+pub fn validate_manifest_json_with_schema(manifest: &serde_json::Value) -> Result<(), String> {
+    let schema = manifest_json_schema();
+    let validator =
+        jsonschema::validator_for(&schema).map_err(|e| format!("manifest schema 自身非法: {e}"))?;
+    validator.validate(manifest).map_err(|errors| {
+        let mut list: Vec<String> = errors.map(|e| e.to_string()).collect();
+        if list.is_empty() {
+            list.push("未知校验错误".into());
+        }
+        list.join("; ")
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -433,6 +486,40 @@ mod tests {
     #[test]
     fn accepts_valid_manifest() {
         assert!(validate_manifest(&valid_manifest()).is_ok());
+    }
+
+    #[test]
+    fn manifest_json_schema_validates_own_serialization() {
+        // 单源一致性：生成的 manifest.schema.json 必须能通过自身校验合法 manifest 的
+        // 序列化，证明 schema 产物与 serde 模型无 drift。
+        let value = serde_json::to_value(valid_manifest()).unwrap();
+        assert!(
+            validate_manifest_json_with_schema(&value).is_ok(),
+            "manifest schema 应接受自身序列化"
+        );
+    }
+
+    #[test]
+    fn manifest_json_schema_rejects_unknown_field() {
+        let value = serde_json::to_value(valid_manifest()).unwrap();
+        let mut map = value.as_object().unwrap().clone();
+        map.insert("evil".into(), json!(true));
+        let value = serde_json::Value::Object(map);
+        assert!(
+            validate_manifest_json_with_schema(&value).is_err(),
+            "manifest schema 应拒绝未知字段"
+        );
+    }
+
+    #[test]
+    fn manifest_json_schema_is_draft07_object() {
+        let schema = manifest_json_schema();
+        assert_eq!(
+            schema["$schema"],
+            json!("http://json-schema.org/draft-07/schema#")
+        );
+        assert!(schema["type"] == json!("object"));
+        assert_eq!(schema["additionalProperties"], json!(false));
     }
 
     #[test]

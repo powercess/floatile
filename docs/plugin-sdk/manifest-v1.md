@@ -10,7 +10,10 @@ capability 参数解析（未知字段拒绝）与包路径规范化规则；`fl
 build 打包+自校验。原子安装已实现（`floatile-cli install`：staging/逐文件 fsync/digest/原子
 rename 到 `<插件存储>/<id>/<version>/`，写 `install.json`，同版本重复安装拒绝、失败零残留）；
 `floatile-core::install` 为 InstallMeta 与内容 digest 的单一事实源，`floatile-shell::plugin_manager`
-按 digest 复核后加载已安装包。schema 文件（config.schema / 独立 schema 产物）与签名仍待后续切片。
+按 digest 复核后加载已安装包。config.schema 结构/边界校验已落地（声明时引用文件必须是合法、有界、
+根为 object 的 JSON Schema，否则安装拒绝）。独立 manifest JSON Schema 产物已由单一源 serde 模型生成
+（`floatile-core::manifest_json_schema` + `floatile schema <out>` 输出 JSON Schema；用 `jsonschema`
+自检与 serde 序列化无 drift）。签名与通用 JSON Schema 求值器仍待后续切片。
 
 manifest 是安装与运行时的显式事实，不是开发者主要编辑界面。Rust/TypeScript 项目使用最小
 `floatile.toml`，CLI 结合代码生成的 UI/State/Event schema 和 capability 候选产生 manifest；作者
