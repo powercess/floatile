@@ -70,14 +70,28 @@ ADR-0001 已决策：插件 UI 是版本化 `widget.ftui`（统一 Floatile UI I
 
 1. `floatile-runtime`/`floatile-shell` 在**运行时**读取已安装插件的 `widget.ftui`，先经
    `floatile-ui-schema::validate_document` 复验，再经 `floatile-renderer::render_component`
-   生成源码文本，最后用 `slint_interpreter::ComponentCompiler` 编译并实例化。
-2. 编译的**唯一输入**仍是宿主 renderer 生成的受限源码（属性/回调名由 renderer 生成，
+   生成源码文本，最后用 `slint_interpreter::Compiler` 编译并以 `create()` 实例化为
+   **独立原生窗口**（`ComponentHandle::window()` + `WinitWindowAccessor`），复用
+   `floatile-platform` 窗口能力（无边框/透明/置顶/穿透）。
+2. **接入形态（spike-2 修订）**：评估了 Slint `ComponentContainer` + `component-factory`
+   嵌入式路径，但它是 **Slint 1.17 实验性 API**——生产 `builtin()`（`i-slint-compiler/
+   typeregister.rs` 672 行）显式移除 `ComponentContainer`/`component-factory`，仅在
+   `SLINT_ENABLE_EXPERIMENTAL_FEATURES` 编译环境变量下可用，官方注释「Do not use in
+   production code!」。依赖它会污染 floatile-shell 的编译面并违反本仓库稳定 API 纪律，
+  故**拒绝**。
+  formal 接入改为 **interpreter 自窗口（稳定 API）**：`slint_interpreter` 编译的
+   `ComponentDefinition::create()` 生成的 `ComponentInstance` 自带独立 window adapter
+   （`ComponentHandle::window()`），经 `slint::winit_030::WinitWindowAccessor::
+   with_winit_window` 取原生 `winit::window::Window` 并复用 `floatile-platform` 的
+   无边框/透明/置顶/点击穿透能力，无需迁移 S1–S4 平台层。代价是插件 UI 与宿主框架为
+   分离窗口，需在 shell 侧协调其外观/输入（架构变更，另见 shell 切片计划）。
+3. 编译的**唯一输入**仍是宿主 renderer 生成的受限源码（属性/回调名由 renderer 生成，
    字符串走结构化转义）；插件永不提供 `.slint`，interpreter 不被当作不受信任源码编译器。
-3. binding/event 槽位契约不变：`RenderedComponent.bindings/events` 仍是权威 State 投影与
+4. binding/event 槽位契约不变：`RenderedComponent.bindings/events` 仍是权威 State 投影与
    输入事件回投的唯一事实源（shell 运行时不再依赖 build.rs 的 `plugin_meta.json` 静态槽位）。
-4. 参考时钟保留为 `slint!` 静态嵌入路径作为内建基线（S1–S4 平台窗口证据依赖它）；第三方
+5. 参考时钟保留为 `slint!` 静态嵌入路径作为内建基线（S1–S4 平台窗口证据依赖它）；第三方
    已安装插件走运行时 interpreter 路径。两条路径共享 renderer 生成契约。
-5. interpreter 依赖为 `slint-interpreter = "1.17"`（与 `slint` 同版本），不新增 `slint-build`/
+6. interpreter 依赖为 `slint-interpreter = "1.17"`（与 `slint` 同版本），不新增 `slint-build`/
    图像/AVIF 链。Cargo.lock 新增条目需过 cargo-deny advisories/bans 门禁。
 
 ### 明确不做
@@ -98,8 +112,9 @@ ADR-0001 已决策：插件 UI 是版本化 `widget.ftui`（统一 Floatile UI I
   形态不变；`slint!` 静态路径保留，无迁移成本。
 - **安全**：interpreter 编译的是 renderer 输出的受限源码而非任意输入；IR 预算/结构校验前置不变；
   恶意 UI（超大/过深/越界绑定）仍在 validate_document + renderer 预算层被拒，不达 interpreter。
-- **验证**：参考时钟经 interpreter 与 `slint!` 两条路径渲染结果一致（契约向量）；恶意 UI fixture
-  在运行时路径仍被拒且宿主存活；Xvfb 实测实例化 + State 投影（见证据）。
+- **验证**：renderer 契约向量保证任意合法 IR 的生成文本一致；interpreter 自窗口路径对同一
+  renderer 输出的编译+投影在 Xvfb 实测通过（见证据）；恶意 UI fixture 在运行时路径仍被拒且宿主
+  存活（裁单实例隔离由 runtime 已实现的 actor/预算层保证）。
 
 ## 证据
 
@@ -111,6 +126,18 @@ ADR-0001 已决策：插件 UI 是版本化 `widget.ftui`（统一 Floatile UI I
     `set/get_property` 往返成功；无头环境明确 SKIP 并留痕。
   - 环境：Linux x64（video: VMware SVGA II），`xvfb-run -a cargo test -p floatile-shell
     --test runtime_render_spike` → 2 passed。
+- spike-2 `crates/floatile-shell/tests/runtime_embed_spike.rs`（接入形态判据，dev 依赖验证）：
+  - `host_window_can_embed_interpreter_factory`：interpreter 编译的 `ComponentDefinition` 可
+    桥接为 `slint::ComponentFactory`（编译通过）——证明 Slint 公共导出与 interpreter 类型互操作，
+    但该路径依赖实验性 `ComponentContainer`，正式接入不采用（见决策 2）。
+  - `interpreter_instance_has_own_window`：interpreter 内容组件（Rectangle, 非 Window）由
+    `create()` 获得自己的 window adapter——证实「自窗口」接入形态成立。
+- spike-3 `crates/floatile-shell/tests/own_window_spike.rs`（最终接入判据，Xvfb 全绿）：
+  `interpreter_window_exposes_native_window`：interpreter 自窗口经 `WinitWindowAccessor::
+  with_winit_window` 取原生 winit 窗口（复用 floatile-platform 运行时能力的前置）+ 沿 renderer
+  binding 槽位 `set/get_property` 投影往返成功——「自窗口 + 原生句柄 + State 投影」三断言成立。
+  - 环境：Linux x64（video: VMware SVGA II），`xvfb-run -a cargo test -p floatile-shell
+    --test own_window_spike` → 1 passed。
 - 依赖重叠：`slint-interpreter` 1.17.1 与现有 `slint!` 宏共用 `i-slint-compiler`/`i-slint-core`/
   `i-slint-common`；Cargo.lock 增量仅 interpreter 自身及其薄封装，无新增 crate 类风险。
 - renderer 契约：`floatile-renderer/tests/compile_evidence.rs`（5 用例全绿）继续约束生成文本的
