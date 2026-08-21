@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use floatile_cli::package::PackageLimits;
 use floatile_cli::{BuildError, build_project, validate_package};
+use floatile_core::{manifest_json_schema, validate_manifest_json_with_schema};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -43,4 +44,35 @@ fn build_fails_cleanly_on_missing_project() {
         &PathBuf::from("/tmp/x.floatile"),
     );
     assert!(matches!(result, Err(BuildError::CargoMetadata(_))));
+}
+
+#[test]
+fn manifest_json_schema_artifact_validates_same_as_serde() {
+    // 独立 schema 产物（CLI schema 命令输出面）必须与 Manifest serde 序列化一致：
+    // 对 clock-wasm 构建出的 manifest 做 self-consistency 校验，证明单源无 drift。
+    let project_dir = workspace_root().join("plugins/clock-wasm");
+    let out = std::env::temp_dir().join(format!(
+        "floatile-schema-e2e-{}.floatile",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&out);
+
+    let manifest = build_project(&project_dir, &out).expect("build_project 应成功");
+    let manifest_json = serde_json::to_value(&manifest).unwrap();
+
+    // 生成的独立 JSON Schema 可序列化且为 draft-07 object。
+    let schema = manifest_json_schema();
+    assert_eq!(
+        schema["$schema"],
+        serde_json::json!("http://json-schema.org/draft-07/schema#")
+    );
+    assert!(schema["type"] == serde_json::json!("object"));
+
+    // schema 能通过自身校验构建出的 manifest（结构一致性，无 drift）。
+    assert!(
+        validate_manifest_json_with_schema(&manifest_json).is_ok(),
+        "独立 manifest schema 应接受由 serde 序列化的 manifest"
+    );
+
+    let _ = std::fs::remove_file(&out);
 }
