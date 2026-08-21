@@ -1756,6 +1756,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slint",
+ "slint-interpreter",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -2039,6 +2040,12 @@ checksum = "c13a5f2acc785d8fb6bf6b7ab6bfb0ef5dad4f4d97e8e70bb8e470722312f76f"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "generativity"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2c81fb5260e37854d09d5c87183309fd8c555b75289427884b25660bc87a85e"
 
 [[package]]
 name = "generic-array"
@@ -2417,6 +2424,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "i-slint-backend-qt"
+version = "1.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "610c7cfcd0c7412f88281e5b3e2f7b81e6451d38047da265d1eead6bf2359937"
+dependencies = [
+ "const-field-offset",
+ "i-slint-common",
+ "i-slint-core",
+ "i-slint-core-macros",
+ "vtable",
+]
+
+[[package]]
 name = "i-slint-backend-selector"
 version = "1.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2425,6 +2445,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "i-slint-backend-linuxkms",
+ "i-slint-backend-qt",
  "i-slint-backend-testing",
  "i-slint-backend-winit",
  "i-slint-common",
@@ -5194,6 +5215,29 @@ dependencies = [
  "slint-macros",
  "unicode-segmentation",
  "vtable",
+]
+
+[[package]]
+name = "slint-interpreter"
+version = "1.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8257365c3bd2cdfd5cc80a3b8b0afc8b5c35e22cebb7a447d80ea805374f5e4c"
+dependencies = [
+ "derive_more",
+ "generativity",
+ "i-slint-backend-selector",
+ "i-slint-backend-winit",
+ "i-slint-common",
+ "i-slint-compiler",
+ "i-slint-core",
+ "i-slint-core-macros",
+ "itertools 0.14.0",
+ "lyon_path",
+ "once_cell",
+ "smol_str 0.3.6",
+ "unicode-segmentation",
+ "vtable",
+ "web-sys",
 ]
 
 [[package]]

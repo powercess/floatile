@@ -23,8 +23,9 @@
   host+wasm 可编译）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。S5b 的 runtime actor +
   Broker + clock 集成测试已落地。`floatile-renderer`（host-only）已实现 S5a renderer spike 路径二变体：
   从已验证 IR 结构化生成宿主控制 Slint 源码 + binding/event 槽位，参考时钟生成物经 `slint-build` 编译
-  通过。仍待实现/未完成证据：CLI 包校验联动、运行时第三方插件 UI 渲染（依赖 interpreter/运行时编译
-  ADR）、恶意插件 fixture；不能作为 F11 完成证据。
+  通过。仍待实现/未完成证据：CLI 包校验联动、运行时第三方插件 UI 渲染的实现切片（ADR-0002 已
+  决策采用 `slint-interpreter` 运行时编译 renderer 生成的源码，spike 已验证编译+实例化+State
+  投影）、恶意插件 fixture；不能作为 F11 完成证据。
 
 ## 1. 已完成脚手架
 
@@ -82,7 +83,8 @@
   已落地（S5a 切片）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。`floatile-renderer`
   已落地 S5a renderer spike 路径二变体（参考时钟生成物经 `slint-build` 编译通过）；`uiApiVersion`
   版本轴/正反例 contract vectors 已补。S5a 剩余：CLI 包校验（zip/路径/资源预算）联动、运行时第三方
-  插件 UI 渲染 ADR；runtime adapter 落地前不得标记为统一插件契约已实现。
+  插件 UI 渲染实现（ADR-0002 已决策：`slint-interpreter` 运行时编译 renderer 输出，spike 已验证；
+  落地前不得标记为统一插件契约已实现）。
 
 #### S5b — Runtime actor + Broker
 
