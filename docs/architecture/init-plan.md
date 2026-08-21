@@ -106,7 +106,10 @@
 - 已实现：`#[derive(State)]`（schema 单源）、`Widget`/`View`/`Context`/`impl_export_widget!`，
   clock-wasm 改用作者 SDK 并通过 runtime 集成测试；`build_ftui`（宿主侧生成 widget.ftui）；
   `floatile new/validate/build` 命令（模板、`.floatile` 校验、manifest 生成 + zip 打包 + 自校验）。
-  作者级 `Event` 类型化（`FromWidgetEvent`）已落地；剩余 `dev`/`preview`、test harness 与 CLI 全命令 JSON 输出。
+  作者级 `Event` 类型化（`FromWidgetEvent`）已落地；`floatile-runtime::harness`（作者级
+  `WidgetHarness`：grant/start/emit/wait_for_state/advance_time/audit，含 clock 集成测试）与
+  `floatile test` 无头冒烟命令（build → 提取 → 生命周期/State/宿主存活 + 稳定 JSON）已落地；
+  剩余 `dev` 预览接入物理窗口、`preview` 截图与 CLI 全命令 JSON 诊断统一。
 
 #### S5d — TypeScript SDK
 

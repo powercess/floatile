@@ -209,6 +209,9 @@ Detected capabilities:
 
 退出码与诊断 code 稳定；日志文本不是自动化接口。
 
+当前已落地：`new/validate/dev/build/install/test`；`test` 用 `floatile-runtime::harness` 对已构建包跑
+无头生命周期冒烟并输出稳定 JSON（见 §9）。`check/preview/inspect/migrate` 与全命令 `--json` 契约统一待续。
+
 ## 8. 诊断格式
 
 ```json
@@ -246,6 +249,12 @@ WidgetHarness::new/plugin()
 TypeScript 提供同名语义。测试默认不启动窗口、不访问真实 SQLite/网络/文件/系统指标。UI golden
 测试由 `floatile preview` 在固定 renderer、字体、DPI 和 theme 下输出 screenshot + 可访问 UI tree；
 平台窗口行为仍需真实平台验收，不能用快照替代。
+
+实现状态（P0）：Rust 侧 `WidgetHarness` 已在 `floatile-runtime::harness` 落地——
+`grant/start/emit_ui/wait_for_state(谓词断言)/advance_time/audit/assert_audit`，所有宿主能力仍走生产
+deny-by-default Broker；`floatile test` 用它对已构建 `.floatile` 跑无头生命周期冒烟（build→提取→
+load/start/State 更新/shutdown + 宿主存活）并输出稳定 JSON。`advance_time` 当前按真实短时延驱动
+（guest 计时器经 Broker 落到 tokio 定时器）；P0 用有界真实时间，确定性虚拟时钟留作后续。
 
 ## 10. AI Agent 一等支持
 

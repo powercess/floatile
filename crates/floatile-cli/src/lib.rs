@@ -8,6 +8,7 @@ pub mod dev;
 pub mod install;
 pub mod package;
 pub mod project;
+pub mod test;
 
 pub use build::{BuildError, build_project, package};
 pub use dev::{BuildStatus, build_once, dev_loop, ensure_project};
@@ -16,3 +17,4 @@ pub use package::{PackageError, PackageLimits, ValidatedPackage, validate_packag
 pub use project::{
     ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,
 };
+pub use test::{TestError, TestPhases, TestStatus, test_project};

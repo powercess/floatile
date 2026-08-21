@@ -1,14 +1,15 @@
-//! Floatile CLI 二进制入口：`new` / `validate` / `build` 子命令。
+//! Floatile CLI 二进制入口：`new` / `validate` / `build` / `test` 子命令。
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
-use floatile_cli::{build, dev, install, package, project};
+use floatile_cli::{build, dev, install, package, project, test};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("用法: floatile <new|validate|build|install|schema> [参数]");
+        eprintln!("用法: floatile <new|validate|build|install|dev|test|schema> [参数]");
         return ExitCode::from(2);
     }
     match args[1].as_str() {
@@ -17,6 +18,7 @@ fn main() -> ExitCode {
         "build" => cmd_build(&args[2..]),
         "install" => cmd_install(&args[2..]),
         "dev" => cmd_dev(&args[2..]),
+        "test" => cmd_test(&args[2..]),
         "schema" => cmd_schema(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
@@ -138,6 +140,60 @@ fn cmd_build(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("build 失败: code={} detail={e}", e.code());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_test(args: &[String]) -> ExitCode {
+    let dir = args
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let json = args.iter().any(|a| a == "--json");
+    let timeout_ms: u64 = args
+        .windows(2)
+        .find(|w| w[0] == "--timeout")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(4000);
+    let out = dir.join("out").join("plugin.floatile");
+    match test::test_project(&dir, &out, Duration::from_millis(timeout_ms)) {
+        Ok(status) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&status).unwrap_or_else(|_| r#"{"ok":false}"#.to_owned())
+                );
+            } else if status.ok {
+                println!("test: PASS");
+                println!(
+                    "  build={} load={} start={} state_updates={} shutdown={}",
+                    status.phases.build,
+                    status.phases.load,
+                    status.phases.start,
+                    status.phases.state_updates,
+                    status.phases.shutdown
+                );
+            } else {
+                println!("test: FAIL (code={})", status.code);
+                println!(
+                    "  build={} load={} start={} state_updates={} shutdown={}",
+                    status.phases.build,
+                    status.phases.load,
+                    status.phases.start,
+                    status.phases.state_updates,
+                    status.phases.shutdown
+                );
+                eprintln!("detail: {}", status.detail);
+            }
+            if status.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            eprintln!("test 失败: code={} detail={e}", e.code());
             ExitCode::FAILURE
         }
     }

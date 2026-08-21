@@ -1,0 +1,46 @@
+//! 集成测试：`floatile test` 无头冒烟对真实 clock-wasm 全链路。
+//! 覆盖 build → 提取 wasm/widget.ftui/manifest → 生命周期冒烟（load/start/state/shutdown）
+//! 与稳定 JSON 结构。无需窗口，headless 可跑。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+#[test]
+fn test_project_runs_clock_smoke() {
+    let project_dir = workspace_root().join("plugins/clock-wasm");
+    let out =
+        std::env::temp_dir().join(format!("floatile-test-e2e-{}.floatile", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+
+    let status = floatile_cli::test_project(&project_dir, &out, Duration::from_secs(4))
+        .expect("test_project 应成功");
+
+    assert!(status.ok, "clock-wasm 冒烟应通过: {status:?}");
+    assert!(status.phases.start, "start 阶段应成功");
+    assert!(status.phases.shutdown, "shutdown 阶段应成功");
+    assert!(
+        status.phases.state_updates >= 1,
+        "clock 应产生至少 1 次 State 更新: {:?}",
+        status.phases
+    );
+
+    // 稳定 JSON 契约：可解析且字段稳定。
+    let parsed: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
+    assert_eq!(parsed["ok"], serde_json::json!(true));
+    assert_eq!(parsed["code"], "ok");
+    assert_eq!(parsed["phases"]["build"], serde_json::json!(true));
+    assert_eq!(
+        parsed["phases"]["state_updates"],
+        status.phases.state_updates
+    );
+
+    let _ = std::fs::remove_file(&out);
+}
