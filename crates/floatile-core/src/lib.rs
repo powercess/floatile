@@ -16,7 +16,8 @@ pub use layout::{
 };
 pub use manifest::{
     BuildMeta, ConfigRef, Entrypoints, Manifest, ManifestError, PackagePath, PermissionDecl,
-    PluginKind, Publisher, Sizes, StorageDecl, validate_manifest,
+    PluginKind, Publisher, Sizes, StorageDecl, manifest_json_schema, validate_manifest,
+    validate_manifest_json_with_schema,
 };
 pub use types::{
     InstanceId, LogicalPosition, LogicalRect, LogicalSize, MonitorKey, PhysicalPosition,

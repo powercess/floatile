@@ -125,8 +125,10 @@
   corpus）；`floatile build` 打包+自校验；原子安装引擎（`install` 子命令：staging/逐文件 fsync/
   digest/原子 rename / install.json / 同版本拒绝 / 失败零残留，含非法包安装期拒绝）；
   `floatile-core::install`（InstallMeta + content_digest 单源）；`floatile-shell::plugin_manager`
-  按 digest 复核加载已安装 dev 包并接入参考时钟。剩余：schema 文件（config.schema / 独立 schema
-  产物）与多插件并存加载策略。
+  按 digest 复核加载已安装 dev 包并接入参考时钟。config.schema 结构/边界校验与独立 manifest
+  JSON Schema 单源产物已落地。多插件并存加载策略已落地：`plugin_manager::list_installed` 枚举
+  存储中全部已安装插件、每 id 取最高版本并逐一 digest 复核，篡改整体拒绝、按 id 稳定排序。
+  剩余：schema 产物在 `floatile schema` CLI 的发布面接入与签名。
 - 验收：合法 Rust/TS clock 包可安装运行；恶意 corpus 全拒绝且不留下半安装状态。
 
 ### S7 — 恶意插件安全测试 + 审计
