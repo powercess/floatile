@@ -1703,6 +1703,7 @@ dependencies = [
  "floatile-services",
  "floatile-store",
  "floatile-ui-schema",
+ "semver",
  "serde",
  "serde_json",
  "slint",
