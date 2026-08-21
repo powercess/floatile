@@ -1569,10 +1569,12 @@ version = "0.1.0"
 dependencies = [
  "floatile-core",
  "floatile-plugin-api",
+ "floatile-runtime",
  "floatile-ui-schema",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
  "toml 0.8.23",
  "wasmtime",
  "zip",

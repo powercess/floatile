@@ -5,6 +5,7 @@
 //! 只终止当前实例，宿主与其他实例存活。所有宿主能力经 `PermissionBroker`。
 
 mod error;
+pub mod harness;
 mod state;
 
 use std::sync::Arc;

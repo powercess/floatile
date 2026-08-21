@@ -145,6 +145,8 @@ UI 渲染（依赖 interpreter/运行时编译 ADR）仍待后续切片。
 - manifest/UI/WASM/assets/archive 的正反例校验与可复现打包。
 - `--json --no-interactive` 是 CI/Agent 稳定接口。
 - dev/test 使用 mock capability 或受控 runtime，不绕过生产 Broker 语义。
+- `test` 依赖 `floatile-runtime`，用其 `WidgetHarness` 对已构建 `.floatile` 跑无头生命周期冒烟：
+  仍走同一 deny-by-default Broker（权限按 manifest 声明经 `parse_capability_params` 单源授权）。
 
 ### 3.12 `floatile-renderer`
 
