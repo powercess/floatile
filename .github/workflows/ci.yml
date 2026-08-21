@@ -1,8 +1,18 @@
 name: CI
 
 on:
+  # push 只在真正需要集成门禁的分支上触发;feature 分支通过 PR 门禁
+  # (pull_request) 校验,避免 push 与 pull_request 双重触发导致同一份
+  # 3-OS 矩阵 + 依赖门禁被重复编译一遍。
   push:
+    branches: [dev, main]
   pull_request:
+
+concurrency:
+  # 同一 PR / 同一分支只保留最新一次运行;连续 push 或改 PR 时取消已 superseded
+  # 的旧 run,省 runner 时间与缓存写冲突。不同 PR、不同分支之间互不影响。
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
