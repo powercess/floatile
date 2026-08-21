@@ -1,0 +1,688 @@
+//! 运行时第三方插件 UI 渲染（ADR-0002 实现切片）。
+//!
+//! 把已安装插件的 `widget.ftui` 在**运行时**（非构建期）经 `slint-interpreter`
+//! 编译成独立原生窗口，复用 `floatile-platform` 的窗口能力（无边框/透明/置顶），
+//! 并沿 renderer 的 binding 槽位把 runtime 的权威 State 投影到窗口属性、把声明
+//! 的输入事件经 callback 回投给 runtime。这是 FR-PLUGIN-01/F11/F12 的「运行时插件
+//! UI 渲染链」闭合点；参考时钟仍保留为 `slint!` 构建期基线（S1–S4 平台窗口证据
+//! 依赖它），两条路径共享 renderer 生成契约。
+//!
+//! 安全边界（NFR-SEC-01/02）：
+//! - interpreter 编译的**唯一输入**是宿主 renderer 生成的受限源码，插件永不提供
+//!   `.slint`；interpreter 不被当作不受信任源码编译器。
+//! - `widget.ftui` 先经 `MAX_IR_BYTES` 字节预算，再 `validate_document` 结构/预算
+//!   复验，再由 renderer 独立复验——恶意/超大/超深/未知绑定在到达 interpreter
+//!   之前被拒，宿主存活（F12 前置）。
+//! - 投影失败只记录，绝不 panic、不部分改写权威 State。
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use floatile_platform::{PlatformCapabilities, set_always_on_top};
+use floatile_renderer::{BindingSlot, EventSlot, RenderedComponent, render_component};
+use floatile_ui_schema::{MAX_IR_BYTES, UiDocument, validate_document};
+use serde_json::Value;
+use slint::winit_030::WinitWindowAccessor;
+use slint_interpreter::{Compiler, ComponentDefinition, ComponentInstance, Value as UiValue};
+
+use crate::{PluginBinding, resolve_binding_string};
+
+/// renderer 声明的宿主组件名（单一事实源，随 renderer 命名演进）。
+pub const PLUGIN_COMPONENT_NAME: &str = "ClockPluginUI";
+
+/// 运行时 UI 渲染错误。`code()` 返回稳定诊断 code（`RUI_*`），自由文本不作判断依据。
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeUiError {
+    #[error("widget.ftui 超过字节预算 {0} (max {MAX_IR_BYTES})")]
+    IrTooLarge(usize),
+    #[error("widget.ftui 不是合法 JSON: {0}")]
+    Parse(String),
+    #[error("widget.ftui 未通过结构/预算校验: {0}")]
+    InvalidIr(#[from] floatile_ui_schema::error::UiSchemaError),
+    #[error("renderer 无法安全渲染: {0}")]
+    Render(#[from] floatile_renderer::RendererError),
+    #[error("interpreter 编译失败: {0}")]
+    Compile(String),
+    #[error("编译产物缺少插件组件 `{PLUGIN_COMPONENT_NAME}`")]
+    MissingComponent,
+    #[error("组件实例化失败: {0}")]
+    Instantiate(String),
+    #[error("state 投影失败: {0}")]
+    Projection(String),
+    #[error("输入事件回调注册失败: {0}")]
+    Callback(String),
+    #[error("manifest 授权构造失败: {0}")]
+    Grant(String),
+    #[error("runtime 实例启动失败: {0}")]
+    Runtime(String),
+}
+
+impl RuntimeUiError {
+    /// 稳定诊断 code（`RUI_*`）。
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::IrTooLarge(_) => "RUI_IR_TOO_LARGE",
+            Self::Parse(_) => "RUI_PARSE",
+            Self::InvalidIr(_) => "RUI_INVALID_IR",
+            Self::Render(_) => "RUI_RENDER",
+            Self::Compile(_) => "RUI_COMPILE",
+            Self::MissingComponent => "RUI_MISSING_COMPONENT",
+            Self::Instantiate(_) => "RUI_INSTANTIATE",
+            Self::Projection(_) => "RUI_PROJECTION",
+            Self::Callback(_) => "RUI_CALLBACK",
+            Self::Grant(_) => "RUI_GRANT",
+            Self::Runtime(_) => "RUI_RUNTIME",
+        }
+    }
+}
+
+/// 解析 + 复验 + 渲染安装包里的 `widget.ftui`（运行时路径，双层预算）。
+///
+/// 通过即得到可供 interpreter 编译的宿主受限源码与 binding/event 槽位；失败返回
+/// 稳定 `RUI_*` code，不达 interpreter（F12 前置拒绝）。
+/// 解析 + 复验安装包里的 `widget.ftui`（运行时路径，双层预算）。
+///
+/// 通过即得到已通过 `validate_document` 的 IR 文档（供 renderer 渲染、供 orchestrator
+/// 取 canonical initial State 与 State schema）；失败返回稳定 `RUI_*` code，不达
+/// interpreter（F12 前置拒绝）。
+pub fn parse_document(ui_bytes: &[u8]) -> Result<UiDocument, RuntimeUiError> {
+    if ui_bytes.len() > MAX_IR_BYTES {
+        return Err(RuntimeUiError::IrTooLarge(ui_bytes.len()));
+    }
+    let doc: UiDocument =
+        serde_json::from_slice(ui_bytes).map_err(|e| RuntimeUiError::Parse(e.to_string()))?;
+    validate_document(&doc)?;
+    Ok(doc)
+}
+
+/// 解析 + 复验 + 渲染安装包里的 `widget.ftui`（`parse_document` → `render_component`）。
+pub fn render_ftui(ui_bytes: &[u8]) -> Result<RenderedComponent, RuntimeUiError> {
+    let doc = parse_document(ui_bytes)?;
+    render_component(&doc).map_err(Into::into)
+}
+
+/// 运行时用 `slint-interpreter` 编译 renderer 生成的源码（ADR-0002 决策 A）。
+///
+/// `build_from_source` 是异步编译（纯解析，不依赖事件循环）；这里用独立 tokio
+/// runtime `block_on` 一次完成，避免在升级调用处扩散 async。编译是每插件一次性的
+/// 启动成本（ADR-0002 列为待实测项），不阻塞热路径。
+pub fn compile_component(
+    rendered: &RenderedComponent,
+) -> Result<ComponentDefinition, RuntimeUiError> {
+    let compiler = Compiler::default();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| RuntimeUiError::Compile(format!("tokio runtime: {e}")))?;
+    let compiled = runtime.block_on(
+        compiler.build_from_source(rendered.source.clone(), PathBuf::from("runtime-plugin-ui")),
+    );
+    if compiled.has_errors() {
+        let messages: Vec<String> = compiled.diagnostics().map(|d| format!("{d:?}")).collect();
+        return Err(RuntimeUiError::Compile(messages.join("; ")));
+    }
+    compiled
+        .component(PLUGIN_COMPONENT_NAME)
+        .ok_or(RuntimeUiError::MissingComponent)
+}
+
+/// 输入事件回投 sink：`(事件名, payload_json)`，UI 线程调用、运行时 worker 投递。
+type EventSink = Arc<dyn Fn(&str, String) + Send + Sync + 'static>;
+
+/// 一个已实例化的运行时插件窗口。只能由 UI（事件循环）线程创建与操作。
+///
+/// 创建后沿 renderer binding 槽位把权威 State 投影为窗口属性；`weak()` 交出跨线程
+/// 弱引用，供 runtime worker 经 `upgrade_in_event_loop` 在 UI 线程投影（匹配现有
+/// 参考时钟的投递模型，Slint 主线程不阻塞、不接受不受信任同步工作）。
+pub struct RuntimePluginWindow {
+    instance: ComponentInstance,
+    bindings: Vec<BindingSlot>,
+}
+
+impl RuntimePluginWindow {
+    /// 在 UI 线程实例化编译产物，并应用宿主窗口能力。
+    ///
+    /// 无边框/透明/初始置顶由 `apply_window_options` 在 winit attrs hook 统一承担
+    /// （同一事件循环创建的所有窗口均生效，含 interpreter 窗口）；这里按 ADR-0001
+    /// S1 经验再显式应用一次置顶——Slint 会在组件属性同步时重写创建前的窗口级别，
+    /// 需在原生窗口可用后再次调用。
+    pub fn create_on_ui_thread(
+        definition: &ComponentDefinition,
+        bindings: Vec<BindingSlot>,
+        caps: &PlatformCapabilities,
+    ) -> Result<Self, RuntimeUiError> {
+        use slint_interpreter::ComponentHandle;
+        let instance = definition
+            .create()
+            .map_err(|e| RuntimeUiError::Instantiate(e.to_string()))?;
+        let window = instance.window();
+        let caps = *caps;
+        let _ = window.with_winit_window(move |w: &slint::winit_030::winit::window::Window| {
+            if let Err(error) = set_always_on_top(w, caps.always_on_top.is_available()) {
+                tracing::warn!(%error, "runtime plugin window always-on-top apply failed");
+            }
+        });
+        Ok(Self { instance, bindings })
+    }
+
+    /// 沿 renderer binding 槽位把权威 State 投影进本窗口（UI 线程）。
+    ///
+    /// 末位是尽力而为的展示投影：返回值供调用方记录，不回滚、不 panic、不部分改写
+    /// runtime 的权威 State（NFR-SEC-01）。
+    pub fn project_state(&self, state: &Value) -> Result<(), RuntimeUiError> {
+        for slot in &self.bindings {
+            let binding = PluginBinding {
+                path: slot.path.clone(),
+                prop: slot.prop.clone(),
+            };
+            let text = resolve_binding_string(&binding, state)
+                .map_err(|e| RuntimeUiError::Projection(format!("{}: {e}", slot.prop)))?;
+            self.instance
+                .set_property(&slot.prop, UiValue::String(text.into()))
+                .map_err(|e| RuntimeUiError::Projection(format!("{}: {e}", slot.prop)))?;
+        }
+        Ok(())
+    }
+
+    /// 注册输入事件回投：声明事件 → interpreter callback → sink。
+    ///
+    /// `sink(name, payload_json)` 在 UI 线程被调用；调用方（runtime worker）负责把
+    /// 事件投递到插件实例（`WidgetHandle::handle_event`）。事件槽位由 renderer 生成，
+    /// 事件名由 renderer 决定，不把插件自由文本拼进回调注册。
+    pub fn register_events(
+        &self,
+        events: &[EventSlot],
+        sink: EventSink,
+    ) -> Result<(), RuntimeUiError> {
+        for slot in events {
+            let event_name = slot.event.clone();
+            let callback_name = slot.callback.clone();
+            let sink = Arc::clone(&sink);
+            self.instance
+                .set_callback(&callback_name, move |args: &[UiValue]| {
+                    let payload_json = serde_json::to_string(&serialize_callback_args(args))
+                        .unwrap_or_else(|_| "[]".to_owned());
+                    sink(&event_name, payload_json);
+                    UiValue::Void
+                })
+                .map_err(|e| RuntimeUiError::Callback(format!("{}: {e:?}", slot.callback)))?;
+        }
+        Ok(())
+    }
+
+    /// 跨线程弱引用：`slint::Weak<ComponentInstance>` 是 Send，可交给 worker 投影。
+    pub fn weak(&self) -> slint::Weak<ComponentInstance> {
+        use slint_interpreter::ComponentHandle;
+        self.instance.as_weak()
+    }
+
+    /// 底层 interpreter 实例句柄（宿主内部；用于投影校验与事件触发，不暴露给插件）。
+    pub fn instance(&self) -> &ComponentInstance {
+        &self.instance
+    }
+}
+
+/// 把 interpreter 回调参数序列化为 JSON（供 `ui-event.payload-json`）。
+///
+/// Slint `Value` 大多可直接 JSON 序列化；不能序列化的标量走显式降级，绝不 panic。
+fn serialize_callback_args(args: &[UiValue]) -> Vec<Value> {
+    args.iter()
+        .map(|value| match value {
+            UiValue::String(s) => Value::String(s.to_string()),
+            UiValue::Number(n) => serde_json::Number::from_f64(*n)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            UiValue::Bool(b) => Value::Bool(*b),
+            UiValue::Void => Value::Null,
+            other => Value::String(format!("{other:?}")),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use floatile_ui_schema::ir::{Component, PropValue};
+    use floatile_ui_schema::schema::JsonSchema;
+    use std::collections::BTreeMap;
+
+    fn clock_ftui() -> UiDocument {
+        UiDocument {
+            ui_api_version: floatile_ui_schema::UI_API_VERSION.into(),
+            state: floatile_ui_schema::ir::StateSchema {
+                initial: serde_json::json!({"time": "00:00:00", "running": false}),
+                schema: JsonSchema::Object {
+                    required: vec![],
+                    properties: BTreeMap::from([
+                        (
+                            "time".into(),
+                            JsonSchema::String {
+                                max_length: Some(32),
+                            },
+                        ),
+                        ("running".into(), JsonSchema::Boolean),
+                    ]),
+                    additional_properties: false,
+                },
+            },
+            events: BTreeMap::new(),
+            root: Component {
+                kind: "Column".into(),
+                children: vec![Component {
+                    kind: "Text".into(),
+                    props: BTreeMap::from([(
+                        "text".into(),
+                        PropValue::Binding(floatile_ui_schema::ir::Binding::State {
+                            bind: "$.time".into(),
+                        }),
+                    )]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        }
+    }
+
+    fn ftui_bytes(doc: &UiDocument) -> Vec<u8> {
+        serde_json::to_vec(doc).unwrap()
+    }
+
+    #[test]
+    fn render_ftui_rejects_oversized_ir() {
+        // F12 前置：超过 MAX_IR_BYTES 的 ftui 在解析前即被拒，到达不了 interpreter。
+        let huge = vec![b' '; MAX_IR_BYTES + 1];
+        let err = render_ftui(&huge).unwrap_err();
+        assert_eq!(err.code(), "RUI_IR_TOO_LARGE");
+    }
+
+    #[test]
+    fn render_ftui_rejects_invalid_json() {
+        let err = render_ftui(b"not-json").unwrap_err();
+        assert_eq!(err.code(), "RUI_PARSE");
+    }
+
+    #[test]
+    fn render_ftui_rejects_unknown_binding() {
+        // 绑定指向未声明的 State 路径：schema 校验拒绝，宿主存活。
+        let mut doc = clock_ftui();
+        doc.root = Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([(
+                "text".into(),
+                PropValue::Binding(floatile_ui_schema::ir::Binding::State {
+                    bind: "$.nonexistent".into(),
+                }),
+            )]),
+            ..Default::default()
+        };
+        let err = render_ftui(&ftui_bytes(&doc)).unwrap_err();
+        assert_eq!(err.code(), "RUI_INVALID_IR");
+    }
+
+    #[test]
+    fn render_ftui_rejects_excessive_depth() {
+        // 超过 MAX_TREE_DEPTH 的嵌套树：预算拒绝。
+        let mut node = Component {
+            kind: "Column".into(),
+            children: vec![],
+            ..Default::default()
+        };
+        for _ in 0..(floatile_ui_schema::MAX_TREE_DEPTH + 2) {
+            node = Component {
+                kind: "Column".into(),
+                children: vec![node],
+                ..Default::default()
+            };
+        }
+        let mut doc = clock_ftui();
+        doc.root = node;
+        let err = render_ftui(&ftui_bytes(&doc)).unwrap_err();
+        assert_eq!(err.code(), "RUI_INVALID_IR");
+    }
+
+    #[test]
+    fn render_ftui_produces_expected_component() {
+        let rendered = render_ftui(&ftui_bytes(&clock_ftui())).unwrap();
+        assert_eq!(rendered.bindings.len(), 1);
+        assert_eq!(rendered.bindings[0].path, "$.time");
+        assert!(rendered.source.contains(PLUGIN_COMPONENT_NAME));
+    }
+
+    #[test]
+    fn compile_component_succeeds_without_display() {
+        // ADR-0002 核心断言：纯编译不需要窗口 backend，无头 CI 可直接跑。
+        let rendered = render_ftui(&ftui_bytes(&clock_ftui())).unwrap();
+        let definition = compile_component(&rendered).unwrap();
+        assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
+    }
+}
+// ---- 运行时插件窗口编排（ADR-0002 接线层；main() 与集成测试共用）----
+
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use floatile_core::capability::{
+    CapabilityId, EffectiveGrant, Grant, Grants, InstanceGrant, TrustLevel, narrow_instance,
+    parse_capability_params,
+};
+use floatile_core::manifest::Manifest;
+use floatile_core::types::{InstanceId, PluginId};
+use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
+use floatile_runtime::{WidgetConfig, WidgetManager};
+use floatile_services::AuditListener;
+
+use crate::plugin_manager::InstalledPlugin;
+
+/// 一个已启动的运行时插件窗口会话：持有窗口（drop 即关闭）与投影/事件 worker。
+///
+/// 必须在 UI（事件循环）线程构造（`create_on_ui_thread`）；构造后 worker 线程负责
+/// runtime（Wasmtime actor）与沿 binding 槽位的 State 投影、输入事件回投。
+/// 会话须保持存活至程序结束，否则窗口关闭。
+pub struct RuntimeUiSession {
+    /// 保持窗口存活。
+    _window: RuntimePluginWindow,
+    stop: mpsc::SyncSender<()>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for RuntimeUiSession {
+    fn drop(&mut self) {
+        // 会话结束：通知 worker 停止并回收线程；窗口随 `_window` 关闭。
+        let _ = self.stop.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// 从 manifest 声明能力构造实例授权（单一来源：`parse_capability_params` 校验）。
+/// 未知能力跳过并告警（deny-by-default，该能力在运行时被 Broker 拒绝）。P0 安装包
+/// 在 CLI 层已校验能力，`from_name` 对合法包恒为 `Some`。
+fn manifest_grants(
+    id: &PluginId,
+    manifest: &Manifest,
+    instance: InstanceId,
+) -> Result<InstanceGrant, RuntimeUiError> {
+    let mut caps = Vec::new();
+    for decl in &manifest.permissions {
+        let Some(capability) = CapabilityId::from_name(&decl.capability) else {
+            tracing::warn!(
+                plugin_id = %id.0,
+                capability = %decl.capability,
+                "manifest 声明未知能力，跳过授权（运行时默认拒绝）"
+            );
+            continue;
+        };
+        let params = parse_capability_params(capability, decl.params.as_ref())
+            .map_err(|e| RuntimeUiError::Grant(format!("{}: {e}", capability.name())))?;
+        caps.push(Grant {
+            capability,
+            params,
+            effective: EffectiveGrant::DerivedFromInstall,
+        });
+    }
+    let plugin = Grants {
+        plugin: id.clone(),
+        caps: caps.clone(),
+        trust: TrustLevel::Dev,
+    };
+    narrow_instance(&plugin, instance, caps).map_err(|e| RuntimeUiError::Grant(e.to_string()))
+}
+
+/// 启动一个已安装插件的运行时窗口（FR-PLUGIN-01/F11 运行时 UI 渲染链闭合）。
+///
+/// - 在**调用线程**（UI 线程）解析/复验/渲染 `widget.ftui`、interpreter 编译、实例化
+///   独立原生窗口、注册输入事件回投；
+/// - 派 worker 线程运行 Wasmtime 实例，沿 renderer binding 槽位把权威 State 投影到
+///   窗口（经 `Weak::upgrade_in_event_loop`，Slint 主线程不阻塞）、把声明事件回投给
+///   实例。
+///
+/// 任一失败：本插件不启动，宿主与其插件存活（F12 隔离）；返回稳定 `RUI_*` code。
+pub fn spawn_runtime_ui(
+    plugin: InstalledPlugin,
+    caps: PlatformCapabilities,
+    audit_listener: Option<AuditListener>,
+) -> Result<RuntimeUiSession, RuntimeUiError> {
+    let id = plugin.manifest.id.clone();
+    // 1. 解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
+    let doc = parse_document(&plugin.ui_bytes)?;
+    let rendered = render_component(&doc).map_err(RuntimeUiError::Render)?;
+    let bindings = rendered.bindings.clone();
+    let events = rendered.events.clone();
+    let initial_state = doc.state.initial.clone();
+    let state_schema = doc.state.schema.clone();
+
+    // 2. interpreter 运行时编译 + 实例化为宿主窗口（调用线程 = UI 线程）。
+    let definition = compile_component(&rendered)?;
+    let window = RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings, &caps)?;
+
+    // 3. 输入事件回投通道：UI 线程 sink → worker 转发给实例。
+    let (event_tx, event_rx) = mpsc::channel::<(String, String)>();
+    let sink: EventSink = Arc::new(move |name: &str, payload: String| {
+        let _ = event_tx.send((name.to_owned(), payload));
+    });
+    window.register_events(&events, sink)?;
+
+    // 4. 实例授权（manifest 是上限，实例只可收窄）。
+    let grants = manifest_grants(&id, &plugin.manifest, INSTANCE_ID)?;
+
+    // 5. 派 worker 运行 runtime + 投影 + 事件回投。
+    let (stop, stop_rx) = mpsc::sync_channel::<()>(1);
+    let weak = window.weak();
+    let wasm = plugin.wasm;
+    let config_json = "{}".into();
+    let worker = thread::Builder::new()
+        .name(format!("floatile-runtime-{}", id.0))
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to build tokio runtime");
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let manager = match WidgetManager::new() {
+                    Ok(m) => m,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to create widget manager");
+                        return;
+                    }
+                }
+                .with_audit_listener(audit_listener);
+                let config = WidgetConfig {
+                    plugin: id.clone(),
+                    instance: INSTANCE_ID,
+                    wasm,
+                    initial_state,
+                    state_schema,
+                    config_json,
+                    grants,
+                };
+                let mut handle = match manager.spawn(config) {
+                    Ok(h) => h,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to spawn runtime widget");
+                        return;
+                    }
+                };
+                if let Err(error) = handle.start().await {
+                    tracing::warn!(%error, "runtime widget start failed");
+                    let _ = handle.shutdown().await;
+                    return;
+                }
+                tracing::info!(plugin_id = %id.0, "runtime plugin window started");
+
+                loop {
+                    if matches!(
+                        stop_rx.try_recv(),
+                        Ok(()) | Err(mpsc::TryRecvError::Disconnected)
+                    ) {
+                        break;
+                    }
+                    // 事件回投：UI 线程 sink → 本实例 handle_event。
+                    for (name, payload_json) in event_rx.try_iter() {
+                        let event = WidgetEvent::Ui(UiEvent {
+                            name: name.clone(),
+                            payload_json,
+                        });
+                        if let Err(error) = handle.handle_event(event).await {
+                            tracing::warn!(%error, event = %name, "event forwarding rejected");
+                        }
+                    }
+                    let next = tokio::time::timeout(
+                        Duration::from_millis(200),
+                        handle.ui_updates().recv(),
+                    )
+                    .await;
+                    let Some(update) = (match next {
+                        Ok(update) => update,
+                        Err(_) => continue,
+                    }) else {
+                        break;
+                    };
+                    // 沿 renderer binding 槽位解析为 (prop, text)，在 UI 线程投影。
+                    let mut projections = Vec::new();
+                    for slot in &bindings {
+                        let binding = PluginBinding {
+                            path: slot.path.clone(),
+                            prop: slot.prop.clone(),
+                        };
+                        match resolve_binding_string(&binding, &update.state) {
+                            Ok(text) => projections.push((slot.prop.clone(), text)),
+                            Err(error) => tracing::warn!(
+                                seq = update.seq,
+                                %error,
+                                "runtime state rejected by shell projection"
+                            ),
+                        }
+                    }
+                    if projections.is_empty() {
+                        continue;
+                    }
+                    let weak = weak.clone();
+                    if let Err(error) = weak.upgrade_in_event_loop(move |instance| {
+                        for (prop, text) in projections {
+                            let _ = instance.set_property(&prop, UiValue::String(text.into()));
+                        }
+                    }) {
+                        tracing::debug!(%error, "event loop delivery failed; stopping bridge");
+                        break;
+                    }
+                }
+
+                if let Err(error) = handle.shutdown().await {
+                    tracing::warn!(%error, "runtime widget shutdown failed");
+                }
+            });
+        })
+        .map_err(|e| RuntimeUiError::Runtime(e.to_string()))?;
+
+    Ok(RuntimeUiSession {
+        _window: window,
+        stop,
+        worker: Some(worker),
+    })
+}
+
+/// 插件实例 ID：P0 单实例宿主的第三方插件默认实例（与内建时钟平级）。
+const INSTANCE_ID: InstanceId = InstanceId(1);
+
+#[cfg(test)]
+mod grants_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    #[test]
+    fn manifest_grants_derives_timer_capability() {
+        let manifest: Manifest = serde_json::from_str(
+                &serde_json::json!({
+                    "manifestVersion": 1,
+                    "id": "dev.floatile.clock",
+                    "name": "World Clock",
+                    "version": "0.2.0",
+                    "engineApiVersion": "1.0.0",
+                    "uiApiVersion": "1.0.0",
+                    "type": "widget",
+                    "entrypoints": { "ui": "ui/widget.ftui", "logic": "logic/plugin.wasm" },
+                    "publisher": { "id": "dev.floatile", "name": "Floatile Labs" },
+                    "sizes": { "default": { "width": 240, "height": 120 }, "min": { "width": 160, "height": 80 }, "max": { "width": 800, "height": 600 }, "resizable": true },
+                    "permissions": [{ "capability": "timer:schedule", "params": { "maxPerMinute": 30, "maxActive": 2 } }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let grants = manifest_grants(
+            &PluginId("dev.floatile.clock".into()),
+            &manifest,
+            INSTANCE_ID,
+        )
+        .unwrap();
+        assert_eq!(grants.instance, INSTANCE_ID);
+        assert_eq!(grants.caps.len(), 1);
+        assert_eq!(
+            grants.caps[0].capability,
+            CapabilityId::TimerSchedule,
+            "manifest 声明应派生为 timer 授权"
+        );
+    }
+
+    #[test]
+    fn manifest_grants_skips_unknown_capability_deny_by_default() {
+        let manifest: Manifest = serde_json::from_str(
+                &serde_json::json!({
+                    "manifestVersion": 1,
+                    "id": "dev.floatile.clock",
+                    "name": "World Clock",
+                    "version": "0.2.0",
+                    "engineApiVersion": "1.0.0",
+                    "uiApiVersion": "1.0.0",
+                    "type": "widget",
+                    "entrypoints": { "ui": "ui/widget.ftui", "logic": "logic/plugin.wasm" },
+                    "publisher": { "id": "dev.floatile", "name": "Floatile Labs" },
+                    "sizes": { "default": { "width": 240, "height": 120 }, "min": { "width": 160, "height": 80 }, "max": { "width": 800, "height": 600 }, "resizable": true },
+                    "permissions": [{ "capability": "network:fetch", "params": null }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        // 未知能力：跳过授权（运行时 Broker 拒绝），不阻止宿主加载。
+        let grants = manifest_grants(
+            &PluginId("dev.floatile.clock".into()),
+            &manifest,
+            INSTANCE_ID,
+        )
+        .unwrap();
+        assert!(grants.caps.is_empty());
+    }
+
+    #[test]
+    fn manifest_grants_rejects_invalid_params() {
+        let manifest: Manifest = serde_json::from_str(
+                &serde_json::json!({
+                    "manifestVersion": 1,
+                    "id": "dev.floatile.clock",
+                    "name": "World Clock",
+                    "version": "0.2.0",
+                    "engineApiVersion": "1.0.0",
+                    "uiApiVersion": "1.0.0",
+                    "type": "widget",
+                    "entrypoints": { "ui": "ui/widget.ftui", "logic": "logic/plugin.wasm" },
+                    "publisher": { "id": "dev.floatile", "name": "Floatile Labs" },
+                    "sizes": { "default": { "width": 240, "height": 120 }, "min": { "width": 160, "height": 80 }, "max": { "width": 800, "height": 600 }, "resizable": true },
+                    "permissions": [{ "capability": "timer:schedule", "params": { "bogus": 1 } }]
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let err = manifest_grants(
+            &PluginId("dev.floatile.clock".into()),
+            &manifest,
+            INSTANCE_ID,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "RUI_GRANT");
+    }
+}

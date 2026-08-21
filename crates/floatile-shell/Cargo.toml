@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 floatile-core = { workspace = true }
 floatile-platform = { workspace = true }
+floatile-renderer = { workspace = true }
 floatile-store = { workspace = true }
 floatile-ui-schema = { workspace = true }
 floatile-runtime = { workspace = true }
@@ -26,6 +27,10 @@ semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slint = { workspace = true }
+# ADR-0002：运行时第三方插件 UI 渲染依赖 slint-interpreter 编译 renderer 生成的源码。
+# 与 `slint!` 宏共用同一 compiler/core（1.17 同版本），不引入 slint-build 图像/AVIF 链
+# （规避 RUSTSEC-2024-0436）。运行时编译入口按不受信任输入预算（RUI_* 前置拒绝）。
+slint-interpreter = "1.17"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -41,6 +46,3 @@ serde_json = { workspace = true }
 [dev-dependencies]
 floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }
 floatile-renderer = { workspace = true }
-# ADR-0002 spike 验证：运行时编译 renderer 生成的插件 UI（vs 编译期 slint! 嵌入）。
-# 仅 dev 使用，不进入宿主生产依赖；ADR 通过后按决策决定是否升为正式依赖。
-slint-interpreter = "1.17"

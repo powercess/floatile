@@ -561,6 +561,46 @@ fn spawn_clock_runtime(
     Some(RuntimeSession { stop, worker })
 }
 
+fn launch_installed_plugins(
+    caps: floatile_platform::PlatformCapabilities,
+    audit_listener: Option<floatile_services::AuditListener>,
+) -> Vec<floatile_shell::runtime_ui::RuntimeUiSession> {
+    let Some(store) = floatile_shell::plugin_manager::plugin_store() else {
+        return Vec::new();
+    };
+    let plugins = match floatile_shell::plugin_manager::list_installed(&store) {
+        Ok(plugins) => plugins,
+        Err(error) => {
+            tracing::warn!(%error, "installed plugin enumeration failed; no plugin windows");
+            return Vec::new();
+        }
+    };
+    let mut sessions = Vec::new();
+    for plugin in plugins {
+        // 内建参考时钟保留为 slint! 构建期基线；安装的同 id 包不重复起 interpreter 窗口。
+        if plugin.manifest.id.0 == "dev.floatile.clock" {
+            tracing::info!(
+                "builtin clock package kept as slint! baseline; not re-rendered at runtime"
+            );
+            continue;
+        }
+        match floatile_shell::runtime_ui::spawn_runtime_ui(plugin, caps, audit_listener.clone()) {
+            Ok(session) => {
+                tracing::info!("third-party plugin runtime window started");
+                sessions.push(session);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    code = %error.code(),
+                    %error,
+                    "third-party plugin window failed to start (isolated; host continues)"
+                );
+            }
+        }
+    }
+    sessions
+}
+
 fn now_hhmmss() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1026,9 +1066,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.as_weak(),
             clock.binding,
             clock.initial_state,
-            audit_listener,
+            audit_listener.clone(),
         )
     });
+    // 第三方已安装插件（非内建时钟）走运行时 interpreter 窗口路径（FR-PLUGIN-01/F11）。
+    // 会话须存活至 run() 结束，故绑定到 `_runtime_plugin_sessions`。
+    let _runtime_plugin_sessions = launch_installed_plugins(caps, audit_listener);
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }
