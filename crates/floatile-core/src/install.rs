@@ -68,7 +68,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 
 /// 从 hex 解码；非法输入返回 `None`。
 pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -82,6 +82,7 @@ pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

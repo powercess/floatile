@@ -5,7 +5,7 @@
 //! UI IR（ui-schema）与 WASM Component（world/import 白名单）。任何失败都返回稳定
 //! code 并拒绝安装，不泄漏宿主内部结构。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 
 use floatile_core::ManifestError;
@@ -49,6 +49,9 @@ pub struct ValidatedPackage {
     pub ui_document: UiDocument,
     pub wasm: Vec<u8>,
     pub entry_names: Vec<String>,
+    /// 全部校验通过的普通文件条目（相对规范路径 → 字节），供原子安装精确落盘。
+    /// 内存有界：受 `max_uncompressed_total` 约束。
+    pub files: BTreeMap<String, Vec<u8>>,
 }
 
 /// 包校验错误（稳定 code `FPAK_*`）。
@@ -230,11 +233,24 @@ pub fn validate_package(
     let wasm = validate_wasm(&wasm_bytes)?;
 
     let entry_names = entries.iter().map(|(n, _, _)| n.clone()).collect();
+
+    // 收集全部校验通过的普通文件字节，供原子安装精确落盘（安装写入即校验通过的集合，
+    // 避免校验与落盘之间出现 TOCTOU 偏差）。目录条目不落盘。
+    let mut files = BTreeMap::new();
+    for (name, _, is_dir) in &entries {
+        if *is_dir {
+            continue;
+        }
+        let bytes = read_entry(&mut archive, name)?;
+        files.insert(name.clone(), bytes);
+    }
+
     Ok(ValidatedPackage {
         manifest,
         ui_document,
         wasm,
         entry_names,
+        files,
     })
 }
 
