@@ -70,7 +70,8 @@ struct Ctx {
 fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot]) -> String {
     let mut out = String::new();
     out.push_str("// 由 floatile-renderer 生成;宿主控制,勿手编。\n");
-    out.push_str("component ClockPluginUI inherits Rectangle {\n");
+    // `export` 让宿主的 `slint!` 能 `import` 本组件并把权威 State 投影到其绑定槽位。
+    out.push_str("export component ClockPluginUI inherits Rectangle {\n");
     for slot in bindings {
         out.push_str(&format!("    in property <string> {}: \"\";\n", slot.prop));
     }

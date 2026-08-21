@@ -93,9 +93,10 @@
 - 已实现：`floatile-runtime`（Wasmtime 47 + 空 WASI 上下文、fuel/内存限制、串行 actor、State Patch
   原子应用、WIT adapter 经 Broker）；`floatile-services` Broker 与 clock/log/timer/storage/metrics/theme
   能力；`clock-wasm` 集成测试（start/1Hz tick/update-state/deny 存活/fuel trap 存活）。renderer 侧：
-  `floatile-renderer` 已生成可编译的宿主控制 Slint 组件与 binding/event 槽位（shell 按槽位把权威
-  State 投影到宿主属性）。剩余：把生成组件实例化进窗口（shell renderer 接入）、队列洪泛与内存超限的
-  恶意 fixture 级测试。
+  `floatile-renderer` 生成的 `ClockPluginUI` 组件已实例化进 shell 窗口：`build.rs` 把生成组件写到
+  gitignore 的源路径，宿主 `slint!` 经 `import` 嵌入 `Clock` 窗口，运行时沿 renderer binding 槽位把
+  权威 State 投影到宿主属性（Xvfb 下参考时钟已实测首帧与 1 Hz 更新），输入事件经 runtime
+  `handle_event(WidgetEvent::Ui)` 回投（集成测试覆盖）。剩余：队列洪泛与内存超限的恶意 fixture 级测试。
 
 #### S5c — Rust SDK 与作者闭环
 
