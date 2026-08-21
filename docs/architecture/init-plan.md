@@ -119,7 +119,11 @@
 - 做：有界流式 validate/build，manifest/UI/WASM/assets、路径穿越/碰撞/symlink/zip-bomb、digest 与
   原子安装；PluginManager 加载 dev 包。
 - 已实现：`floatile-cli` 包校验核心（zip 预算、路径安全、manifest/UI IR/WASM world 校验、正反例
-  corpus）。剩余：build 打包、digest、原子安装与 PluginManager 集成。
+  corpus）；`floatile build` 打包+自校验；原子安装引擎（`install` 子命令：staging/逐文件 fsync/
+  digest/原子 rename / install.json / 同版本拒绝 / 失败零残留，含非法包安装期拒绝）；
+  `floatile-core::install`（InstallMeta + content_digest 单源）；`floatile-shell::plugin_manager`
+  按 digest 复核加载已安装 dev 包并接入参考时钟。剩余：schema 文件（config.schema / 独立 schema
+  产物）与多插件并存加载策略。
 - 验收：合法 Rust/TS clock 包可安装运行；恶意 corpus 全拒绝且不留下半安装状态。
 
 ### S7 — 恶意插件安全测试 + 审计
