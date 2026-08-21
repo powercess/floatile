@@ -1,6 +1,9 @@
 /target
 **/*.rs.bk
 *.log
+
+# renderer 构建期生成的插件内容组件(slint! import 使用,勿纳入版本控制)
+crates/floatile-shell/src/generated/
 *.floatile
 .DS_Store
 .idea/
