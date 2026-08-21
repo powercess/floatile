@@ -33,6 +33,10 @@ jobs:
             . -> target
           cache-on-failure: true
           add-job-id-key: false
+          # add-rust-environment-hash-key: false 让 key 仅由 Cargo.lock + 平台决定;
+          # 否则 rustc 环境哈希(RUSTFLAGS/CARGO_* 环境)跨 run 可能漂移,导致同
+          # lock 却不同 key 而 miss(实测出现 b53314a3 与 b8c686b4 两套 env hash)。
+          add-rust-environment-hash-key: false
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -94,6 +98,7 @@ jobs:
           workspaces: |
             . -> target
           add-job-id-key: false
+          add-rust-environment-hash-key: false
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           rust-version: "1.97.1"
