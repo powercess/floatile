@@ -1,0 +1,6 @@
+packages:
+  - .
+  - tools/weval-disabled
+
+overrides:
+  '@bytecodealliance/weval': link:tools/weval-disabled

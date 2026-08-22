@@ -1,4 +1,6 @@
 /target
+node_modules/
+spikes/typescript-runtime/generated/
 **/*.rs.bk
 *.log
 

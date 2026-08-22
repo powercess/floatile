@@ -1,0 +1,13 @@
+[plugin]
+id = "dev.floatile.clock-typescript-spike"
+name = "TypeScript Runtime Clock Spike"
+version = "0.1.0"
+
+[widget]
+default_size = [240, 120]
+min_size = [160, 80]
+max_size = [800, 600]
+
+[permissions.timer]
+max_per_minute = 60
+max_active = 4

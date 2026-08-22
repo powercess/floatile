@@ -50,7 +50,7 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 平台能力探测与降级 | 🧪 | Windows 原生探测、X11 compositor/SHAPE/EWMH/RandR 实探测与 macOS 探测（点击穿透/置顶/显示器/指标/热键）已落地；Wayland 仅有显式协议降级 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
 | SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
-| 统一 UI + WASM Widget | 🧪 | ADR-0001 已确定 `widget.ftui + plugin.wasm`、State Patch 和串行实例 actor；WIT/bindings/`clock.wasm` 已迁移到统一生命周期与 UI State 契约并通过 `wasm-tools validate`；`floatile-ui-schema`、`floatile-runtime`（Wasmtime actor + State Patch）、`floatile-services`（Broker）与 Rust 作者 SDK（`Widget`/`View`/`Context`/`#[derive(State)]`）已实现，`clock-wasm` 集成测试通过；TypeScript SDK、renderer spike 与契约测试待实现 |
+| 统一 UI + WASM Widget | 🧪 | ADR-0001/0002 的 UI IR、renderer、运行时窗口、Wasmtime actor、Broker 与 Rust SDK 已落地并通过 Clock/恶意输入测试；ADR-0003 的 TypeScript runtime spike 为 no-go（StarlingMonkey 资源门失败、QuickJS 契约门失败），TypeScript SDK 与 F11 仍未完成 |
 | Permission Broker 与审计 | 🧪 | deny-by-default 决策、scope/配额、脱敏审计（target `floatile::audit`）与 clock/log/timer/storage/metrics/theme 能力已实现并有测试；恶意插件 fixture 与 SQLite 审计持久化待做 |
 | 插件 SDK 与打包 CLI | 🧪 | Rust 作者 SDK（Widget/View/Context/derive State）+ `floatile new/validate/build` 命令（模板、`.floatile` 校验、manifest 生成 + 打包）已实现；dev 预览（依赖 renderer spike）待做 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
@@ -204,7 +204,7 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 - **S2 · 桌面交互（进行中）**：Edit/Show、点击穿透和缩放已在 Windows/Linux X11 子路径落地；真实多屏与 DPI 仍待验证
 - **S3 · 布局持久化（进行中）**：monitor-local 恢复算法、SQLite v2、shell 启动恢复/保存与显示器变化重恢复已落地；真实多屏/热插拔实机验证与多实例编排待做
 - **S4 · 插件契约（架构完成、契约已迁移）**：ADR-0001、统一 UI、WIT、manifest 与双 SDK 架构；WIT/bindings/clock 已迁移到统一 lifecycle 并 validate 通过
-- **S5 · 沙箱运行时（进行中）**：UI schema、runtime actor、State Patch、Wasmtime 与 Broker 已实现并通过 clock 集成测试；CLI 包校验、Rust SDK 作者闭环与恶意插件测试待做
+- **S5 · 沙箱运行时（进行中）**：UI schema/renderer、runtime actor、State Patch、Wasmtime、Broker、CLI 包校验、Rust SDK 与恶意插件测试已落地；TypeScript runtime 在 ADR-0003 资源/契约门 no-go，等待后继候选
 - **P0 验收（规划中）**：Windows/macOS/X11/Wayland 证据、性能数据、风险复盘与许可 ADR
 
 路线图会随验证证据调整。某项技术不可行但被准确记录和降级，同样是 P0 的有效产出。

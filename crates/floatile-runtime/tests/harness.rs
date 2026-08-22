@@ -2,7 +2,6 @@
 //! 覆盖 start→计时器→State 更新、UI 事件回投、审计捕获、拒绝存活与 fuel trap。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -10,8 +9,10 @@ use std::time::Duration;
 use floatile_core::capability::{CapabilityId, CapabilityParams};
 use floatile_core::types::PluginId;
 use floatile_runtime::harness::WidgetHarness;
-use floatile_ui_schema::schema::JsonSchema;
 use serde_json::json;
+
+#[path = "support/clock_behavior.rs"]
+mod clock_behavior;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -39,27 +40,11 @@ fn clock_wasm_bytes() -> Vec<u8> {
     std::fs::read(&wasm_path).expect("读取 clock-wasm 失败")
 }
 
-fn clock_schema() -> JsonSchema {
-    JsonSchema::Object {
-        required: vec![],
-        properties: BTreeMap::from([
-            (
-                "time".into(),
-                JsonSchema::String {
-                    max_length: Some(32),
-                },
-            ),
-            ("running".into(), JsonSchema::Boolean),
-        ]),
-        additional_properties: false,
-    }
-}
-
 /// 授权 timer:schedule 的 clock harness（行为契约同 runtime 集成测试）。
 fn clock_harness() -> WidgetHarness {
     WidgetHarness::new(PluginId("dev.floatile.clock".into()), clock_wasm_bytes())
         .initial_state(json!({"time": "", "running": false}))
-        .state_schema(clock_schema())
+        .state_schema(clock_behavior::state_schema())
         .grant(
             CapabilityId::TimerSchedule,
             Some(CapabilityParams::Timer {
@@ -70,41 +55,8 @@ fn clock_harness() -> WidgetHarness {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn start_then_receives_timer_state_update() {
-    let mut h = clock_harness().build().unwrap();
-    h.start().await.expect("start 应成功");
-
-    // clock 在 start 时 schedule 1000ms 计时器；到期后 on_tick → update-state 带 time。
-    let state = h
-        .wait_for_state(Duration::from_secs(5), |s| s.get("time").is_some())
-        .await
-        .expect("5 秒内应收到达 time 的 State 更新");
-    let time = state["time"].as_str().unwrap();
-    assert_eq!(time.len(), 8, "HH:MM:SS 格式，实际 {time}");
-
-    h.shutdown().await.expect("shutdown 应正常");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ui_event_updates_state() {
-    let mut h = clock_harness().build().unwrap();
-    h.start().await.expect("start 应成功");
-
-    // 先让首个计时器更新到达，再投 UI 事件，串行处理。
-    h.wait_for_state(Duration::from_secs(5), |s| s.get("time").is_some())
-        .await
-        .expect("先收到时间更新");
-    h.emit_ui("start", "{}").await.expect("UI 事件应被实例接受");
-
-    let state = h
-        .wait_for_state(Duration::from_secs(3), |s| {
-            s.get("running") == Some(&json!(true))
-        })
-        .await
-        .expect("Ui(start) → ClockEvent::Start → running=true");
-    assert_eq!(state["running"], json!(true));
-
-    h.shutdown().await.expect("shutdown 应正常");
+async fn rust_clock_matches_shared_behavior_vector() {
+    clock_behavior::assert_reference_behavior(clock_harness().build().unwrap()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -141,24 +93,10 @@ async fn denied_capability_survives_harness_and_audits_deny() {
     // 不授予 timer:schedule：clock 调用被 Broker 拒绝（guest 记录并继续）。
     let h = WidgetHarness::new(PluginId("dev.floatile.clock".into()), clock_wasm_bytes())
         .initial_state(json!({"time": "", "running": false}))
-        .state_schema(clock_schema())
+        .state_schema(clock_behavior::state_schema())
         .build()
         .unwrap();
-    // 拒绝被吞掉，实例仍存活。
-    h.start()
-        .await
-        .expect("start 应成功（timer 拒绝不中断实例）");
-
-    h.advance_time(Duration::from_millis(1200)).await;
-    assert!(
-        h.assert_audit(|events| events
-            .iter()
-            .any(|e| e.capability == "timer:schedule" && e.decision == "deny")),
-        "应存在 timer:schedule deny 审计，实际: {:?}",
-        h.audit()
-    );
-
-    h.shutdown().await.expect("实例仍可正常关闭");
+    clock_behavior::assert_timer_denied(h).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,0 +1,21 @@
+{
+  "name": "@floatile/typescript-runtime-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/prepare.mjs && jco guest-types ../../wit --world-name floatile-widget --out-dir generated --strict --quiet && tsc --noEmit && jco componentize src/clock.ts --wit ../../wit --world-name floatile-widget --disable all --out ../../target/typescript-runtime-spike/clock-typescript.wasm && node scripts/build-ui.mjs && node scripts/verify-component.mjs",
+    "test:runtime": "cargo test -p floatile-runtime --test typescript_clock_spike typescript_clock -- --ignored --nocapture --test-threads=1",
+    "test:package": "cargo test -p floatile-cli --test typescript_clock_spike -- --ignored --nocapture",
+    "test": "pnpm run build && pnpm run test:runtime && pnpm run test:package",
+    "measure": "cargo test --release -p floatile-runtime --test typescript_clock_spike resource_evidence -- --ignored --nocapture --test-threads=1"
+  },
+  "devDependencies": {
+    "@bytecodealliance/jco": "1.31.0",
+    "typescript": "7.0.2"
+  }
+}
