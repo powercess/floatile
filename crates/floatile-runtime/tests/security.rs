@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -165,11 +166,8 @@ async fn bad_state_patch_rejected_and_host_survives() {
 
     // 被拒的 patch 不应产生任何 UI 状态投递(原子应用 + 失败无部分改写)。
     // 给一个小的收口窗口:若收到更新则说明有状态被应用(不应发生)。
-    let drained = tokio::time::timeout(
-        std::time::Duration::from_millis(300),
-        handle.ui_updates().recv(),
-    )
-    .await;
+    let drained =
+        tokio::time::timeout(Duration::from_millis(300), handle.ui_updates().recv()).await;
     assert!(
         drained.is_err(),
         "恶意 patch 全部被拒,不应产生 UiUpdate(实际收到 {drained:?})"
@@ -213,6 +211,47 @@ async fn infinite_loop_is_fuel_trapped_and_host_survives() {
     let handle2 = spawn_evil(&manager2, 7, evil_grants_none(7), json!({"mode": "deny"}));
     handle2.start().await.expect("宿主存活:新实例 start 应成功");
     handle2.shutdown().await.expect("新实例 shutdown 正常");
+}
+
+/// 超大 fuel 不能绕过墙钟预算；epoch deadline 必须及时终止本实例。
+#[tokio::test(flavor = "multi_thread")]
+async fn infinite_loop_is_wall_clock_timed_out_and_peer_survives() {
+    let manager = WidgetManager::new()
+        .unwrap()
+        .with_fuel_per_call(u64::MAX)
+        .with_call_timeout(Duration::from_millis(25));
+    let handle = spawn_evil(&manager, 11, evil_grants_none(11), json!({"mode": "loop"}));
+    handle.start().await.expect("loop 模式 start 应成功");
+    let peer = spawn_evil(&manager, 12, evil_grants_none(12), json!({"mode": "deny"}));
+    peer.start().await.expect("同一引擎的其他实例应启动");
+
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.handle_event(WidgetEvent::Ui(UiEvent {
+            name: "trigger".into(),
+            payload_json: "{}".into(),
+        })),
+    )
+    .await
+    .expect("墙钟预算必须在宿主侧 1 秒兜底前终止 guest");
+    let error = result.expect_err("无限循环应因墙钟预算返回 Failed");
+    assert!(
+        error.to_string().contains("墙钟预算"),
+        "错误应明确标识墙钟超时，实际 {error}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "墙钟超时应及时生效"
+    );
+
+    peer.handle_event(WidgetEvent::Ui(UiEvent {
+        name: "still-alive".into(),
+        payload_json: "{}".into(),
+    }))
+    .await
+    .expect("同一引擎的其他实例应存活");
+    peer.shutdown().await.expect("其他实例应正常关闭");
 }
 
 /// 超限线性内存申请 → StoreLimits 终止实例；宿主存活。
