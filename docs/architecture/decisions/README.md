@@ -10,7 +10,7 @@ Wayland 产品承诺、许可与分发方式。普通实现细节不需要 ADR�
 | ADR | 状态 | 结论 |
 |---|---|---|
 | [ADR-0001](0001-unified-plugin-ui.md) | Accepted | 插件使用统一 Floatile UI IR；Slint 仅为宿主实现，P0/MVP 不接受第三方 `.slint` |
-| [ADR-0002](0002-runtime-plugin-ui-rendering.md) | Proposed | 运行时第三方插件 UI 用 `slint-interpreter` 编译 renderer 生成的源码 |
+| [ADR-0002](0002-runtime-plugin-ui-rendering.md) | Implemented | 运行时第三方插件 UI 用 `slint-interpreter` 编译 renderer 生成的源码 |
 
 文件名使用 `NNNN-short-title.md`，编号递增。Accepted ADR 不改写结论；需要改变时新增 ADR，并在
 旧文件标记 `Superseded by ADR-NNNN`。

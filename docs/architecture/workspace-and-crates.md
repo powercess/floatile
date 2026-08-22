@@ -154,9 +154,9 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - 把已验证 `widget.ftui` 结构化生成为宿主控制的 Slint 源码文本（ADR-0001 路径二变体），
   输出 `component <PluginUI>` 内容组件 + binding/event 槽位。
 - 生成前独立复验预算/结构；所有字符串值经结构化转义，组件/属性/回调名由本 crate 生成。
-- 参考时钟由 `floatile-shell/build.rs` 调本 crate 生成并通过 `slint-build` 编译（可编译证据）；
-  运行时第三方插件 UI 渲染按 ADR-0002 用 `slint-interpreter` 编译本 crate 输出（输出契约不变；
-  spike 已验证编译+实例化+State 投影）。
+- 参考时钟由 `floatile-shell/build.rs` 调本 crate 生成并通过 `slint!` 宿主壳编译（可编译证据）；
+  运行时第三方插件 UI 渲染按 ADR-0002 用 `slint-interpreter` 编译本 crate 输出（输出契约不变），
+  由 `floatile-shell::runtime_ui` 实现（编译+实例化+State 投影+事件回投），Xvfb 全绿。
 
 ## 4. 事实源
 

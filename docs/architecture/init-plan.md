@@ -23,9 +23,9 @@
   host+wasm 可编译）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。S5b 的 runtime actor +
   Broker + clock 集成测试已落地。`floatile-renderer`（host-only）已实现 S5a renderer spike 路径二变体：
   从已验证 IR 结构化生成宿主控制 Slint 源码 + binding/event 槽位，参考时钟生成物经 `slint-build` 编译
-  通过。仍待实现/未完成证据：CLI 包校验联动、运行时第三方插件 UI 渲染的实现切片（ADR-0002 已
-  决策采用 `slint-interpreter` 运行时编译 renderer 生成的源码，spike 已验证编译+实例化+State
-  投影）、恶意插件 fixture；不能作为 F11 完成证据。
+  通过。CLI 包校验联动（S6）、恶意插件 fixture（S7）已落地；运行时第三方插件 UI 渲染实现切片已按
+  ADR-0002 用 `slint-interpreter` 落地（`floatile-shell::runtime_ui`：解析/复验/渲染/interpreter
+  编译/自窗口/State 投影/事件回投，Xvfb 全绿，F12 恶意 IR 前置拒绝），可作 F11 统一插件契约完成证据。
 
 ## 1. 已完成脚手架
 
@@ -82,9 +82,10 @@
   `wasm-tools validate`。`floatile-ui-schema` 的 IR/registry/schema 校验/绑定解析/预算校验与契约测试
   已落地（S5a 切片）。manifest 模型与 capability 注册表已在 `floatile-core` 实现。`floatile-renderer`
   已落地 S5a renderer spike 路径二变体（参考时钟生成物经 `slint-build` 编译通过）；`uiApiVersion`
-  版本轴/正反例 contract vectors 已补。S5a 剩余：CLI 包校验（zip/路径/资源预算）联动、运行时第三方
-  插件 UI 渲染实现（ADR-0002 已决策：`slint-interpreter` 运行时编译 renderer 输出，spike 已验证；
-  落地前不得标记为统一插件契约已实现）。
+  版本轴/正反例 contract vectors 已补。S5a 剩余：CLI 包校验（zip/路径/资源预算）联动与运行时第三方
+  插件 UI 渲染实现（ADR-0002：`slint-interpreter` 运行时编译 renderer 输出）已在后续切片落地——
+  前者见 S6，后者由 `floatile-shell::runtime_ui` 实现（Xvfb 编译+实例化+State 投影+事件回投全绿，
+  F12 恶意 IR 前置拒绝），统一插件契约可标记为已实现。
 
 #### S5b — Runtime actor + Broker
 

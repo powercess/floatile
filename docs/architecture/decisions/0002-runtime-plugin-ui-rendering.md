@@ -1,6 +1,6 @@
 # ADR-0002：运行时第三方插件 UI 渲染路径
 
-> 状态：Proposed
+> 状态：Implemented
 > 日期：2026-08-21
 > 决策者：Floatile 项目
 
@@ -142,3 +142,10 @@ ADR-0001 已决策：插件 UI 是版本化 `widget.ftui`（统一 Floatile UI I
   `i-slint-common`；Cargo.lock 增量仅 interpreter 自身及其薄封装，无新增 crate 类风险。
 - renderer 契约：`floatile-renderer/tests/compile_evidence.rs`（5 用例全绿）继续约束生成文本的
   结构/转义/预算；interpreter 路径不改变这些断言。
+- **实现落点（2026-08-21）**：`floatile-shell::runtime_ui` 落地 ADR 决策 A——`parse_document`
+  （字节/结构/预算复验，恶意 IR 前置拒绝）、`compile_component`（interpreter 运行时编译）、
+  `RuntimePluginWindow::create_on_ui_thread`（自窗口 + `floatile-platform` 置顶）、沿 renderer
+  binding/event 槽位的 State 投影与输入事件回投；`spawn_runtime_ui` 编排 runtime worker 投影。
+  `slint-interpreter` 升为 shell 正式依赖（1.17 同版本，无 slint-build 图像链）。证据：
+  `runtime_ui` 单测（headless，F12 拒绝 + 编译）与 `tests/runtime_ui_window.rs`（Xvfb：编译+
+  实例化+State 投影往返+事件回投）全绿；instance 化与首帧性能仍待回填性能验收表。

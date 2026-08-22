@@ -225,10 +225,9 @@ CLI 与 runtime 使用同一验证库和 contract vectors；CLI 通过不能让 
 > 状态：路径已选定（2026-08）。本仓库以 host-only `floatile-renderer` crate 实现
 > 路径二变体：从已验证 IR 结构化生成为宿主控制的 Slint 源码文本，构建期由
 > `slint-build` 编译。参考时钟的生成物可经 `slint-build` 编译为合法 Slint 组件
-> （`floatile-shell/build.rs` 承担该可编译证据）。运行时任意 IR 树的即时渲染
-> 依赖 `slint-interpreter`（1.17 中 `create_with_existing_window` 为 internal
-> feature），尚未通过独立 ADR，故当前仅支持构建期已知 IR（如参考时钟），
-> 运行时加载第三方插件 UI 待 interpreter/运行时编译 ADR 后再落地。
+> （`floatile-shell/build.rs` 承担该可编译证据）。运行时任意 IR 树的即时渲染已按
+> ADR-0002 采用 `slint-interpreter` 运行时编译 renderer 生成的源码（`floatile-shell::runtime_ui`：
+> 自窗口实例化 + binding 槽位 State 投影 + 事件回投），已落地并测试。
 
 P0 比较：
 
