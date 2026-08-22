@@ -65,11 +65,13 @@ plugin package
                  → host-ui State Patch → validate/commit → UI queue
 ```
 
-- Slint 回调只排队 event，不同步等待 WASM、Tokio、SQLite 或任何不可信输入。
+- Slint 回调只用 `try_send` 排队 event，不同步等待 WASM、Tokio、SQLite、审计持久化或任何不可信输入；
+  UI→runtime 队列容量 64，满载事件立即丢弃，worker 聚合记录 `ui:event-queue` 脱敏审计。
 - runtime 每实例 bounded queue 严格串行；timeout/cancel 后才能处理下一事件。
 - State Patch 在 worker 上解析、原子应用和 schema 校验，runtime State 为权威；SDK mirror 只在 host
   确认后提交，主线程只应用已验证 snapshot/diff。
-- queue full、UI 拥塞、shutdown 和 cancellation 都有明确错误/合并策略与 tracing。
+- worker 每轮最多转发 8 个 UI event，再让出 State 投影机会；queue full、UI 拥塞、shutdown 和
+  cancellation 都有明确错误/丢弃策略与 tracing。
 
 ## 4. UI、渲染与 DPI
 
@@ -117,7 +119,9 @@ plugin package
 
 ## 9. Runtime 与安全
 
-- Wasmtime 启用 component model、async、fuel/epoch interruption、memory/table/resource limits。
+- Wasmtime 启用 component model、async、fuel/epoch interruption、memory/table/resource limits；fuel 在
+  constructor/lifecycle/event/timer/cleanup 每次调用前独立补充，默认墙钟预算 2 s，由共享 Engine 的
+  10 ms epoch ticker 驱动相对 deadline。
 - 对 manifest/archive/UI/WASM/config/State/event/assets 先限字节/数量/深度，再解析和语义校验。
 - 插件 trap、超时、超内存、恶意 patch/事件洪泛只终止/暂停当前实例，宿主和其他实例存活。
 - Slint 只消费宿主生成/验证的 UI，不编译第三方 `.slint`；第三方字体/SVG 在 R12 退出前禁用。

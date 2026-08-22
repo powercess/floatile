@@ -93,13 +93,16 @@
 - State Patch 原子验证与有界 UI 投递；shell renderer 从已验证 IR 构建 Slint host UI。
 - Broker 固有能力（UI/log/clock）与 timer 最小声明能力；allow/deny/quota/audit。
 - 验收：Rust clock 1 Hz 更新；deny、超 patch、队列洪泛、fuel/内存 trap 后宿主存活。
-- 已实现：`floatile-runtime`（Wasmtime 47 + 空 WASI 上下文、fuel/内存限制、串行 actor、State Patch
+- 已实现：`floatile-runtime`（Wasmtime 47 + 空 WASI 上下文、逐 guest 调用 fuel 补充、16 MiB
+  默认内存限制、2 s 默认墙钟预算 + 10 ms epoch interruption、串行 actor、State Patch
   原子应用、WIT adapter 经 Broker）；`floatile-services` Broker 与 clock/log/timer/storage/metrics/theme
   能力；`clock-wasm` 集成测试（start/1Hz tick/update-state/deny 存活/fuel trap 存活）。renderer 侧：
   `floatile-renderer` 生成的 `ClockPluginUI` 组件已实例化进 shell 窗口：`build.rs` 把生成组件写到
   gitignore 的源路径，宿主 `slint!` 经 `import` 嵌入 `Clock` 窗口，运行时沿 renderer binding 槽位把
   权威 State 投影到宿主属性（Xvfb 下参考时钟已实测首帧与 1 Hz 更新），输入事件经 runtime
-  `handle_event(WidgetEvent::Ui)` 回投（集成测试覆盖）。剩余：队列洪泛与内存超限的恶意 fixture 级测试。
+  `handle_event(WidgetEvent::Ui)` 回投（集成测试覆盖）。UI→runtime 桥使用容量 64 的 `try_send`
+  队列，满载立即丢弃、worker 聚合脱敏审计，并以每轮 8 个事件的批次避免 State 投影饥饿；并发洪泛、
+  fuel/墙钟超时、内存超限与同 Engine peer 存活均有回归测试。剩余：三平台交互洪泛与生产负载精度实测。
 
 #### S5c — Rust SDK 与作者闭环
 

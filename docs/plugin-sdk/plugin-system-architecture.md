@@ -148,7 +148,9 @@ manifest 的显式权限声明与最终用户 grant 仍是权威来源。
 
 - Slint 主线程：渲染、输入、宿主窗口状态与应用经过验证的 State。
 - Tokio/runtime worker：WASM async 调用、Timer、Storage 与其他宿主服务。
-- 每实例 bounded queue 串行投递事件；队列默认容量、合并与丢弃策略必须写成测试。
+- 每实例 actor bounded queue 串行投递事件；shell 的 UI→runtime 桥容量 64，UI 回调只做
+  `try_send`，满载立即丢弃，worker 聚合脱敏审计且每轮最多转发 8 个事件。并发洪泛测试必须约束
+  保留数量和丢弃计数。
 - host import 不得持有 Slint 句柄；`host-ui` 只写 runtime 的 State 模型，再异步投递 UI。
 - shutdown 先停止接收新事件，再取消 Timer/能力调用，执行有预算的 `stop`，最后 drop Store。
 

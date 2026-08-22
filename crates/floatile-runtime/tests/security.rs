@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -165,11 +166,8 @@ async fn bad_state_patch_rejected_and_host_survives() {
 
     // 被拒的 patch 不应产生任何 UI 状态投递(原子应用 + 失败无部分改写)。
     // 给一个小的收口窗口:若收到更新则说明有状态被应用(不应发生)。
-    let drained = tokio::time::timeout(
-        std::time::Duration::from_millis(300),
-        handle.ui_updates().recv(),
-    )
-    .await;
+    let drained =
+        tokio::time::timeout(Duration::from_millis(300), handle.ui_updates().recv()).await;
     assert!(
         drained.is_err(),
         "恶意 patch 全部被拒,不应产生 UiUpdate(实际收到 {drained:?})"
@@ -215,6 +213,47 @@ async fn infinite_loop_is_fuel_trapped_and_host_survives() {
     handle2.shutdown().await.expect("新实例 shutdown 正常");
 }
 
+/// 超大 fuel 不能绕过墙钟预算；epoch deadline 必须及时终止本实例。
+#[tokio::test(flavor = "multi_thread")]
+async fn infinite_loop_is_wall_clock_timed_out_and_peer_survives() {
+    let manager = WidgetManager::new()
+        .unwrap()
+        .with_fuel_per_call(u64::MAX)
+        .with_call_timeout(Duration::from_millis(25));
+    let handle = spawn_evil(&manager, 11, evil_grants_none(11), json!({"mode": "loop"}));
+    handle.start().await.expect("loop 模式 start 应成功");
+    let peer = spawn_evil(&manager, 12, evil_grants_none(12), json!({"mode": "deny"}));
+    peer.start().await.expect("同一引擎的其他实例应启动");
+
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.handle_event(WidgetEvent::Ui(UiEvent {
+            name: "trigger".into(),
+            payload_json: "{}".into(),
+        })),
+    )
+    .await
+    .expect("墙钟预算必须在宿主侧 1 秒兜底前终止 guest");
+    let error = result.expect_err("无限循环应因墙钟预算返回 Failed");
+    assert!(
+        error.to_string().contains("墙钟预算"),
+        "错误应明确标识墙钟超时，实际 {error}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "墙钟超时应及时生效"
+    );
+
+    peer.handle_event(WidgetEvent::Ui(UiEvent {
+        name: "still-alive".into(),
+        payload_json: "{}".into(),
+    }))
+    .await
+    .expect("同一引擎的其他实例应存活");
+    peer.shutdown().await.expect("其他实例应正常关闭");
+}
+
 /// 超限线性内存申请 → StoreLimits 终止实例；宿主存活。
 #[tokio::test(flavor = "multi_thread")]
 async fn memory_alloc_over_limit_traps_instance_but_host_survives() {
@@ -237,16 +276,16 @@ async fn memory_alloc_over_limit_traps_instance_but_host_survives() {
     handle2.shutdown().await.expect("新实例 shutdown 正常");
 }
 
-/// 伪造事件名/关闭后调用 → 干净失败,宿主不崩。
+/// 低单次 fuel 下反复调用/关闭 → 每次预算独立，宿主不崩。
 #[tokio::test(flavor = "multi_thread")]
-async fn forged_event_names_are_ignored_and_shutdown_is_clean() {
-    let manager = WidgetManager::new().unwrap();
+async fn repeated_events_refill_fuel_and_shutdown_is_clean() {
+    let manager = WidgetManager::new().unwrap().with_fuel_per_call(1_000_000);
     let handle = spawn_evil(&manager, 5, evil_grants_none(5), json!({"mode": "deny"}));
     handle.start().await.expect("start 应成功");
 
-    // 伪造的 UI 事件名(guest 的 FromWidgetEvent 映射为 Unknown 或被忽略),
-    // 洪泛发送也不能拖垮宿主或造成拒绝之外的副作用。
-    for i in 0..QUEUE_CAPACITY_BUFFER {
+    // 伪造的 UI 事件名(guest 的 FromWidgetEvent 映射为 Unknown 或被忽略)。调用次数
+    // 足以耗尽旧实现的实例生命周期总预算；按调用重置后应全部成功。
+    for i in 0..REPEATED_EVENT_COUNT {
         let forged = handle
             .handle_event(WidgetEvent::Ui(UiEvent {
                 name: format!("forged-{i}"),
@@ -268,5 +307,6 @@ async fn forged_event_names_are_ignored_and_shutdown_is_clean() {
     handle2.shutdown().await.expect("新实例 shutdown 正常");
 }
 
-/// 命令队列上限常量的测试镜像(runtime::QUEUE_CAPACITY 私有,这里只做合理洪泛界)。
-const QUEUE_CAPACITY_BUFFER: usize = 70;
+/// 重复调用数量显著高于实例队列容量。每次都等待上一次调用完成，因此这里验证的是
+/// fuel 按调用重置，而不是并发洪泛（并发背压由单独测试覆盖）。
+const REPEATED_EVENT_COUNT: usize = 4_096;

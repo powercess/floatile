@@ -9,6 +9,9 @@ pub mod harness;
 mod state;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use floatile_core::capability::InstanceGrant;
 use floatile_core::types::{InstanceId, PluginId};
@@ -32,6 +35,10 @@ const QUEUE_CAPACITY: usize = 64;
 /// 默认单次调用 fuel 预算（wasm32-wasip2 std 初始化会消耗一定量；恶意循环用
 /// 更小预算单独测试）。
 const DEFAULT_FUEL_PER_CALL: u64 = 1_000_000_000;
+/// 默认单次 guest 调用墙钟预算。
+const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+/// Wasmtime epoch 的宿主节拍；deadline 向上取整到该粒度。
+const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(10);
 /// 默认每实例线性内存上限。
 const DEFAULT_MAX_MEMORY: usize = 16 * 1024 * 1024;
 
@@ -56,6 +63,8 @@ pub struct WidgetManager {
     engine: wasmtime::Engine,
     max_memory: usize,
     fuel_per_call: u64,
+    call_timeout: Duration,
+    epoch_ticker: Arc<EpochTicker>,
     /// 可选脱敏审计持久化 sink:注入到每个实例 Broker 的 AuditSink。
     audit_listener: Option<AuditListener>,
 }
@@ -66,12 +75,16 @@ impl WidgetManager {
         config
             .wasm_component_model(true)
             .consume_fuel(true)
+            .epoch_interruption(true)
             .wasm_backtrace_max_frames(std::num::NonZero::new(32));
         let engine = wasmtime::Engine::new(&config)?;
+        let epoch_ticker = Arc::new(EpochTicker::spawn(engine.clone())?);
         Ok(Self {
             engine,
             max_memory: DEFAULT_MAX_MEMORY,
             fuel_per_call: DEFAULT_FUEL_PER_CALL,
+            call_timeout: DEFAULT_CALL_TIMEOUT,
+            epoch_ticker,
             audit_listener: None,
         })
     }
@@ -98,6 +111,12 @@ impl WidgetManager {
         self
     }
 
+    /// 设置 constructor/lifecycle/event/timer 单次 guest 调用的墙钟预算。
+    pub fn with_call_timeout(mut self, timeout: Duration) -> Self {
+        self.call_timeout = timeout;
+        self
+    }
+
     /// 派生一个插件实例（加载组件 + 启动串行 actor）。
     pub fn spawn(&self, config: WidgetConfig) -> Result<WidgetHandle, RuntimeError> {
         let (cmd_tx, cmd_rx) = mpsc::channel(QUEUE_CAPACITY);
@@ -107,12 +126,16 @@ impl WidgetManager {
         let engine = self.engine.clone();
         let max_memory = self.max_memory;
         let fuel_per_call = self.fuel_per_call;
+        let call_timeout = self.call_timeout;
+        let epoch_ticker = Arc::clone(&self.epoch_ticker);
         let audit_listener = self.audit_listener.clone();
         let join = tokio::spawn(run_actor(
             engine,
             config,
             max_memory,
             fuel_per_call,
+            call_timeout,
+            epoch_ticker,
             audit_listener,
             ui_tx,
             cmd_rx,
@@ -124,6 +147,47 @@ impl WidgetManager {
             ui: ui_rx,
             join,
         })
+    }
+}
+
+/// 为共享 Wasmtime Engine 推进固定 epoch；Store 用相对 tick deadline 独立计时。
+struct EpochTicker {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl EpochTicker {
+    fn spawn(engine: wasmtime::Engine) -> Result<Self, RuntimeError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("floatile-wasm-epoch".to_owned())
+            .spawn(move || {
+                while !thread_stop.load(Ordering::Acquire) {
+                    std::thread::park_timeout(EPOCH_TICK_INTERVAL);
+                    if thread_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    engine.increment_epoch();
+                }
+            })
+            .map_err(|error| {
+                RuntimeError::InstanceFailed(format!("启动 Wasmtime epoch ticker 失败: {error}"))
+            })?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for EpochTicker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
     }
 }
 
@@ -198,6 +262,8 @@ async fn run_actor(
     config: WidgetConfig,
     max_memory: usize,
     fuel_per_call: u64,
+    call_timeout: Duration,
+    _epoch_ticker: Arc<EpochTicker>,
     audit_listener: Option<AuditListener>,
     ui_tx: mpsc::Sender<UiUpdate>,
     mut cmd_rx: mpsc::Receiver<InstanceCommand>,
@@ -253,52 +319,74 @@ async fn run_actor(
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     FloatileWidget::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)?;
 
-    // instantiate 会运行组件的 `_initialize` start 段，先给足 fuel。
-    store.set_fuel(fuel_per_call)?;
+    // instantiate 会运行组件的 `_initialize` start 段，先给足 fuel。constructor 与
+    // 后续每次 guest 回调都重新装填同一预算，避免把“每次调用”误实现为实例生命周期
+    // 总预算。
+    reset_setup_budget(&mut store, fuel_per_call, call_timeout)?;
     let _ = store.fuel_async_yield_interval(Some(100_000));
 
-    let bindings = FloatileWidget::instantiate_async(&mut store, &component, &linker).await?;
+    let bindings = FloatileWidget::instantiate_async(&mut store, &component, &linker)
+        .await
+        .map_err(|error| setup_call_error("instantiate", call_timeout, error))?;
     let contract = bindings.floatile_widget_widget_contract();
     let widget = contract.widget_instance();
     let init = WidgetInit {
         config_json: config.config_json,
         initial_state_json,
     };
+    reset_setup_budget(&mut store, fuel_per_call, call_timeout)?;
     let resource = widget
         .call_constructor(&mut store, &init)
         .await
-        .map_err(|e| RuntimeError::InstanceFailed(format!("constructor trap: {e}")))?;
+        .map_err(|error| setup_call_error("constructor", call_timeout, error))?;
 
     let mut stopped = false;
     let mut failed = false;
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             InstanceCommand::Start(tx) => {
-                let result = match widget.call_start(&mut store, resource).await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(guest_err)) => Err(InstanceError::Rejected(format!("{guest_err:?}"))),
-                    Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                let result = match reset_call_budget(&mut store, fuel_per_call, call_timeout) {
+                    Ok(()) => match widget.call_start(&mut store, resource).await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(guest_err)) => {
+                            Err(InstanceError::Rejected(format!("{guest_err:?}")))
+                        }
+                        Err(wasm_err) => Err(instance_call_error("start", call_timeout, wasm_err)),
+                    },
+                    Err(error) => Err(error),
                 };
                 failed = result.is_err();
                 let _ = tx.send(result);
             }
             InstanceCommand::Event(event, tx) => {
-                let result = match widget.call_handle_event(&mut store, resource, &event).await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(guest_err)) => Err(InstanceError::Rejected(format!("{guest_err:?}"))),
-                    Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                let result = match reset_call_budget(&mut store, fuel_per_call, call_timeout) {
+                    Ok(()) => match widget.call_handle_event(&mut store, resource, &event).await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(guest_err)) => {
+                            Err(InstanceError::Rejected(format!("{guest_err:?}")))
+                        }
+                        Err(wasm_err) => {
+                            Err(instance_call_error("handle-event", call_timeout, wasm_err))
+                        }
+                    },
+                    Err(error) => Err(error),
                 };
                 failed = result.is_err();
                 let _ = tx.send(result);
             }
             InstanceCommand::Timer(id) => {
-                let result = match widget
-                    .call_handle_event(&mut store, resource, &WidgetEvent::Timer(id))
-                    .await
-                {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(guest_err)) => Err(InstanceError::Rejected(format!("{guest_err:?}"))),
-                    Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                let result = match reset_call_budget(&mut store, fuel_per_call, call_timeout) {
+                    Ok(()) => match widget
+                        .call_handle_event(&mut store, resource, &WidgetEvent::Timer(id))
+                        .await
+                    {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(guest_err)) => {
+                            Err(InstanceError::Rejected(format!("{guest_err:?}")))
+                        }
+                        Err(wasm_err) => Err(instance_call_error("timer", call_timeout, wasm_err)),
+                    },
+                    Err(error) => Err(error),
                 };
                 if result.is_err() {
                     failed = true;
@@ -318,7 +406,9 @@ async fn run_actor(
     }
 
     // 清理：有预算的 stop + resource drop（尽力而为）。
+    let _ = reset_setup_budget(&mut store, fuel_per_call, call_timeout);
     let _ = widget.call_stop(&mut store, resource).await;
+    let _ = reset_setup_budget(&mut store, fuel_per_call, call_timeout);
     let _ = resource.resource_drop_async(&mut store).await;
     if stopped && !failed {
         Ok(())
@@ -327,6 +417,62 @@ async fn run_actor(
             "actor 因 trap/超时/终止退出".to_owned(),
         ))
     }
+}
+
+fn reset_call_budget(
+    store: &mut Store<state::InstanceHostState>,
+    fuel_per_call: u64,
+    call_timeout: Duration,
+) -> Result<(), InstanceError> {
+    store
+        .set_fuel(fuel_per_call)
+        .map_err(|error| InstanceError::Failed(format!("重置调用 fuel 失败: {error}")))?;
+    store.set_epoch_deadline(timeout_epoch_ticks(call_timeout));
+    store.epoch_deadline_trap();
+    Ok(())
+}
+
+fn reset_setup_budget(
+    store: &mut Store<state::InstanceHostState>,
+    fuel_per_call: u64,
+    call_timeout: Duration,
+) -> Result<(), RuntimeError> {
+    store.set_fuel(fuel_per_call)?;
+    store.set_epoch_deadline(timeout_epoch_ticks(call_timeout));
+    store.epoch_deadline_trap();
+    Ok(())
+}
+
+fn timeout_epoch_ticks(timeout: Duration) -> u64 {
+    let ticks = timeout.as_nanos().div_ceil(EPOCH_TICK_INTERVAL.as_nanos());
+    u64::try_from(ticks).map_or(u64::MAX, |ticks| ticks.max(1))
+}
+
+fn setup_call_error(operation: &str, timeout: Duration, error: wasmtime::Error) -> RuntimeError {
+    if is_epoch_interrupt(&error) {
+        RuntimeError::InstanceFailed(format!("{operation} 超过墙钟预算 {timeout:?}: {error}"))
+    } else {
+        RuntimeError::InstanceFailed(format!("{operation} trap: {error}"))
+    }
+}
+
+fn instance_call_error(
+    operation: &str,
+    timeout: Duration,
+    error: wasmtime::Error,
+) -> InstanceError {
+    if is_epoch_interrupt(&error) {
+        InstanceError::Failed(format!("{operation} 超过墙钟预算 {timeout:?}: {error}"))
+    } else {
+        InstanceError::Failed(error.to_string())
+    }
+}
+
+fn is_epoch_interrupt(error: &wasmtime::Error) -> bool {
+    matches!(
+        error.downcast_ref::<wasmtime::Trap>(),
+        Some(wasmtime::Trap::Interrupt)
+    )
 }
 
 /// 实例失败后，把所有待处理命令的错误回给调用方，避免等待超时。

@@ -103,18 +103,27 @@ pub fn render_ftui(ui_bytes: &[u8]) -> Result<RenderedComponent, RuntimeUiError>
 
 /// 运行时用 `slint-interpreter` 编译 renderer 生成的源码（ADR-0002 决策 A）。
 ///
-/// `build_from_source` 是异步编译（纯解析，不依赖事件循环）；这里用独立 tokio
-/// runtime `block_on` 一次完成，避免在升级调用处扩散 async。编译是每插件一次性的
-/// 启动成本（ADR-0002 列为待实测项），不阻塞热路径。
+/// 这个同步包装仅供无头单测与独立工具使用；生产启动路径调用
+/// `compile_component_async`，由 Slint local executor 推进，不在事件循环中嵌套
+/// `block_on`。
 pub fn compile_component(
     rendered: &RenderedComponent,
 ) -> Result<ComponentDefinition, RuntimeUiError> {
-    let compiler = Compiler::default();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| RuntimeUiError::Compile(format!("tokio runtime: {e}")))?;
-    let compiled = runtime.block_on(
-        compiler.build_from_source(rendered.source.clone(), PathBuf::from("runtime-plugin-ui")),
-    );
+    runtime.block_on(compile_component_async(rendered))
+}
+
+/// 在当前 Slint local executor 编译宿主生成的有界源码，不嵌套阻塞 Tokio runtime。
+/// Slint 1.17 的编译产物是 `!Send`，且无自定义 file loader 时该 future 实际会同步
+/// 完成，因此这一步仍必须留在 UI executor；重型不受信任 IR 处理已在前一阶段移出。
+async fn compile_component_async(
+    rendered: &RenderedComponent,
+) -> Result<ComponentDefinition, RuntimeUiError> {
+    let compiler = Compiler::default();
+    let compiled = compiler
+        .build_from_source(rendered.source.clone(), PathBuf::from("runtime-plugin-ui"))
+        .await;
     if compiled.has_errors() {
         let messages: Vec<String> = compiled.diagnostics().map(|d| format!("{d:?}")).collect();
         return Err(RuntimeUiError::Compile(messages.join("; ")));
@@ -354,9 +363,18 @@ mod tests {
         let definition = compile_component(&rendered).unwrap();
         assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
     }
+
+    #[tokio::test]
+    async fn runtime_ui_preparation_runs_off_the_calling_thread() {
+        let caller = thread::current().id();
+        let prepared = prepare_runtime_ui(ftui_bytes(&clock_ftui())).await.unwrap();
+        assert_ne!(prepared.worker_thread, caller);
+        assert_eq!(prepared.rendered.bindings.len(), 1);
+    }
 }
 // ---- 运行时插件窗口编排（ADR-0002 接线层；main() 与集成测试共用）----
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -369,9 +387,111 @@ use floatile_core::manifest::Manifest;
 use floatile_core::types::{InstanceId, PluginId};
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
 use floatile_runtime::{WidgetConfig, WidgetManager};
-use floatile_services::AuditListener;
+use floatile_services::{AuditEvent, AuditListener};
 
 use crate::plugin_manager::InstalledPlugin;
+
+struct PreparedRuntimeUi {
+    rendered: RenderedComponent,
+    initial_state: Value,
+    state_schema: floatile_ui_schema::schema::JsonSchema,
+    #[cfg(test)]
+    worker_thread: thread::ThreadId,
+}
+
+/// 在专用后台线程解析、校验并渲染不受信任 FTUI。tokio oneshot 的 Receiver 可由
+/// Slint local executor 直接 await，不要求调用线程存在 Tokio runtime。
+async fn prepare_runtime_ui(ui_bytes: Vec<u8>) -> Result<PreparedRuntimeUi, RuntimeUiError> {
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    thread::Builder::new()
+        .name("floatile-ui-prepare".to_owned())
+        .spawn(move || {
+            let result = (|| {
+                let doc = parse_document(&ui_bytes)?;
+                let rendered = render_component(&doc).map_err(RuntimeUiError::Render)?;
+                Ok(PreparedRuntimeUi {
+                    rendered,
+                    initial_state: doc.state.initial,
+                    state_schema: doc.state.schema,
+                    #[cfg(test)]
+                    worker_thread: thread::current().id(),
+                })
+            })();
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| RuntimeUiError::Runtime(format!("启动 UI 准备线程失败: {error}")))?;
+    result_rx
+        .await
+        .map_err(|_| RuntimeUiError::Runtime("UI 准备线程未返回结果".to_owned()))?
+}
+
+/// UI 回调到 runtime worker 的事件队列上限。UI 线程只做一次 `try_send`。
+const EVENT_QUEUE_CAPACITY: usize = 64;
+/// 每轮最多转发的事件数，确保持续输入下 State 投影仍有调度机会。
+const EVENT_BATCH_SIZE: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventEnqueueOutcome {
+    Enqueued,
+    DroppedFull,
+    Closed,
+}
+
+struct EventBridgeSender {
+    sender: mpsc::SyncSender<(String, String)>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl EventBridgeSender {
+    fn new(sender: mpsc::SyncSender<(String, String)>, dropped: Arc<AtomicU64>) -> Self {
+        Self { sender, dropped }
+    }
+
+    fn try_send(&self, name: &str, payload: String) -> EventEnqueueOutcome {
+        match self.sender.try_send((name.to_owned(), payload)) {
+            Ok(()) => EventEnqueueOutcome::Enqueued,
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::AcqRel);
+                EventEnqueueOutcome::DroppedFull
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => EventEnqueueOutcome::Closed,
+        }
+    }
+}
+
+/// 在 worker 线程聚合记录过载，避免 UI 回调同步调用持久化 listener。
+fn flush_event_overload_audit(
+    plugin_id: &str,
+    instance: InstanceId,
+    dropped: &AtomicU64,
+    listener: Option<&AuditListener>,
+) {
+    let count = dropped.swap(0, Ordering::AcqRel);
+    if count == 0 {
+        return;
+    }
+    let event = AuditEvent {
+        plugin: plugin_id.to_owned(),
+        instance: instance.0,
+        capability: "ui:event-queue".to_owned(),
+        decision: "deny".to_owned(),
+        reason: Some("QueueFull".to_owned()),
+        detail: format!("dropped={count}"),
+    };
+    if let Some(listener) = listener {
+        listener(&event);
+    }
+    tracing::event!(
+        target: "floatile::audit",
+        tracing::Level::INFO,
+        plugin_id,
+        instance_id = instance.0,
+        capability = "ui:event-queue",
+        decision = "deny",
+        reason = "QueueFull",
+        detail = %event.detail,
+    );
+}
 
 /// 一个已启动的运行时插件窗口会话：持有窗口（drop 即关闭）与投影/事件 worker。
 ///
@@ -387,11 +507,23 @@ pub struct RuntimeUiSession {
 
 impl Drop for RuntimeUiSession {
     fn drop(&mut self) {
-        // 会话结束：通知 worker 停止并回收线程；窗口随 `_window` 关闭。
-        let _ = self.stop.send(());
+        // 会话结束：UI 线程只做非阻塞停止通知；join 转交 reaper。窗口随 `_window` 关闭。
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            reap_runtime_worker(&self.stop, worker);
         }
+    }
+}
+
+fn reap_runtime_worker(stop: &mpsc::SyncSender<()>, worker: thread::JoinHandle<()>) {
+    let _ = stop.try_send(());
+    if let Err(error) = thread::Builder::new()
+        .name("floatile-runtime-reaper".to_owned())
+        .spawn(move || {
+            let _ = worker.join();
+        })
+    {
+        // spawn 失败会 drop 闭包并分离原 worker；仍不得回到 UI 线程同步 join。
+        tracing::warn!(%error, "failed to spawn runtime worker reaper");
     }
 }
 
@@ -431,35 +563,38 @@ fn manifest_grants(
 
 /// 启动一个已安装插件的运行时窗口（FR-PLUGIN-01/F11 运行时 UI 渲染链闭合）。
 ///
-/// - 在**调用线程**（UI 线程）解析/复验/渲染 `widget.ftui`、interpreter 编译、实例化
-///   独立原生窗口、注册输入事件回投；
+/// - 专用准备线程解析/复验/渲染 `widget.ftui`；Slint local executor 异步编译宿主
+///   生成源码，然后只在 UI 线程实例化独立原生窗口、注册输入事件回投；
 /// - 派 worker 线程运行 Wasmtime 实例，沿 renderer binding 槽位把权威 State 投影到
 ///   窗口（经 `Weak::upgrade_in_event_loop`，Slint 主线程不阻塞）、把声明事件回投给
 ///   实例。
 ///
 /// 任一失败：本插件不启动，宿主与其插件存活（F12 隔离）；返回稳定 `RUI_*` code。
-pub fn spawn_runtime_ui(
+pub async fn spawn_runtime_ui(
     plugin: InstalledPlugin,
     caps: PlatformCapabilities,
     audit_listener: Option<AuditListener>,
 ) -> Result<RuntimeUiSession, RuntimeUiError> {
     let id = plugin.manifest.id.clone();
-    // 1. 解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
-    let doc = parse_document(&plugin.ui_bytes)?;
-    let rendered = render_component(&doc).map_err(RuntimeUiError::Render)?;
+    // 1. 后台解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
+    let prepared = prepare_runtime_ui(plugin.ui_bytes).await?;
+    let rendered = prepared.rendered;
     let bindings = rendered.bindings.clone();
     let events = rendered.events.clone();
-    let initial_state = doc.state.initial.clone();
-    let state_schema = doc.state.schema.clone();
+    let initial_state = prepared.initial_state;
+    let state_schema = prepared.state_schema;
 
-    // 2. interpreter 运行时编译 + 实例化为宿主窗口（调用线程 = UI 线程）。
-    let definition = compile_component(&rendered)?;
+    // 2. interpreter 产物含 Rc、不可跨线程；在 Slint local executor 异步编译，随后
+    // 在同一 UI 线程实例化窗口，不使用嵌套 block_on。
+    let definition = compile_component_async(&rendered).await?;
     let window = RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings, &caps)?;
 
     // 3. 输入事件回投通道：UI 线程 sink → worker 转发给实例。
-    let (event_tx, event_rx) = mpsc::channel::<(String, String)>();
+    let (event_tx, event_rx) = mpsc::sync_channel::<(String, String)>(EVENT_QUEUE_CAPACITY);
+    let dropped_events = Arc::new(AtomicU64::new(0));
+    let event_bridge = EventBridgeSender::new(event_tx, Arc::clone(&dropped_events));
     let sink: EventSink = Arc::new(move |name: &str, payload: String| {
-        let _ = event_tx.send((name.to_owned(), payload));
+        let _ = event_bridge.try_send(name, payload);
     });
     window.register_events(&events, sink)?;
 
@@ -485,6 +620,7 @@ pub fn spawn_runtime_ui(
                 }
             };
             runtime.block_on(async move {
+                let overload_audit_listener = audit_listener.clone();
                 let manager = match WidgetManager::new() {
                     Ok(m) => m,
                     Err(error) => {
@@ -517,6 +653,12 @@ pub fn spawn_runtime_ui(
                 tracing::info!(plugin_id = %id.0, "runtime plugin window started");
 
                 loop {
+                    flush_event_overload_audit(
+                        &id.0,
+                        INSTANCE_ID,
+                        &dropped_events,
+                        overload_audit_listener.as_ref(),
+                    );
                     if matches!(
                         stop_rx.try_recv(),
                         Ok(()) | Err(mpsc::TryRecvError::Disconnected)
@@ -524,7 +666,13 @@ pub fn spawn_runtime_ui(
                         break;
                     }
                     // 事件回投：UI 线程 sink → 本实例 handle_event。
-                    for (name, payload_json) in event_rx.try_iter() {
+                    for _ in 0..EVENT_BATCH_SIZE {
+                        let (name, payload_json) = match event_rx.try_recv() {
+                            Ok(event) => event,
+                            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
+                                break;
+                            }
+                        };
                         let event = WidgetEvent::Ui(UiEvent {
                             name: name.clone(),
                             payload_json,
@@ -574,6 +722,13 @@ pub fn spawn_runtime_ui(
                     }
                 }
 
+                flush_event_overload_audit(
+                    &id.0,
+                    INSTANCE_ID,
+                    &dropped_events,
+                    overload_audit_listener.as_ref(),
+                );
+
                 if let Err(error) = handle.shutdown().await {
                     tracing::warn!(%error, "runtime widget shutdown failed");
                 }
@@ -595,6 +750,8 @@ const INSTANCE_ID: InstanceId = InstanceId(1);
 mod grants_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
     #[test]
     fn manifest_grants_derives_timer_capability() {
         let manifest: Manifest = serde_json::from_str(
@@ -684,5 +841,91 @@ mod grants_tests {
         )
         .unwrap_err();
         assert_eq!(err.code(), "RUI_GRANT");
+    }
+
+    #[test]
+    fn event_bridge_drops_immediately_when_bounded_queue_is_full() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let bridge = EventBridgeSender::new(tx, Arc::clone(&dropped));
+
+        assert_eq!(
+            bridge.try_send("tick", "[]".into()),
+            EventEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            bridge.try_send("tick", "[]".into()),
+            EventEnqueueOutcome::DroppedFull
+        );
+        assert_eq!(dropped.load(Ordering::Acquire), 1);
+        assert_eq!(rx.try_recv().unwrap(), ("tick".into(), "[]".into()));
+    }
+
+    #[test]
+    fn concurrent_event_flood_stays_within_queue_capacity() {
+        const CAPACITY: usize = 4;
+        const PRODUCERS: usize = 8;
+        const EVENTS_PER_PRODUCER: usize = 32;
+        let (tx, rx) = mpsc::sync_channel(CAPACITY);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let bridge = Arc::new(EventBridgeSender::new(tx, Arc::clone(&dropped)));
+        let barrier = Arc::new(std::sync::Barrier::new(PRODUCERS));
+
+        let producers: Vec<_> = (0..PRODUCERS)
+            .map(|producer| {
+                let bridge = Arc::clone(&bridge);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for event in 0..EVENTS_PER_PRODUCER {
+                        let _ = bridge.try_send(&format!("p{producer}-{event}"), "[]".into());
+                    }
+                })
+            })
+            .collect();
+        for producer in producers {
+            producer.join().unwrap();
+        }
+
+        assert_eq!(rx.try_iter().count(), CAPACITY);
+        assert_eq!(
+            dropped.load(Ordering::Acquire),
+            u64::try_from(PRODUCERS * EVENTS_PER_PRODUCER - CAPACITY).unwrap()
+        );
+    }
+
+    #[test]
+    fn event_bridge_flushes_aggregated_overload_audit_without_payloads() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&records);
+        let listener: AuditListener = Arc::new(move |event| {
+            captured.lock().unwrap().push(event.clone());
+        });
+        let dropped = AtomicU64::new(3);
+
+        flush_event_overload_audit("dev.floatile.clock", INSTANCE_ID, &dropped, Some(&listener));
+
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].capability, "ui:event-queue");
+        assert_eq!(records[0].decision, "deny");
+        assert_eq!(records[0].detail, "dropped=3");
+        assert_eq!(dropped.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn runtime_worker_shutdown_does_not_join_on_calling_thread() {
+        let (stop, stop_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let _ = stop_rx.recv();
+            thread::sleep(Duration::from_millis(250));
+        });
+
+        let started = std::time::Instant::now();
+        reap_runtime_worker(&stop, worker);
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "UI-side shutdown must not wait for worker join"
+        );
     }
 }
