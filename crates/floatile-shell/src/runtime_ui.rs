@@ -357,6 +357,7 @@ mod tests {
 }
 // ---- 运行时插件窗口编排（ADR-0002 接线层；main() 与集成测试共用）----
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -369,9 +370,77 @@ use floatile_core::manifest::Manifest;
 use floatile_core::types::{InstanceId, PluginId};
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
 use floatile_runtime::{WidgetConfig, WidgetManager};
-use floatile_services::AuditListener;
+use floatile_services::{AuditEvent, AuditListener};
 
 use crate::plugin_manager::InstalledPlugin;
+
+/// UI 回调到 runtime worker 的事件队列上限。UI 线程只做一次 `try_send`。
+const EVENT_QUEUE_CAPACITY: usize = 64;
+/// 每轮最多转发的事件数，确保持续输入下 State 投影仍有调度机会。
+const EVENT_BATCH_SIZE: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventEnqueueOutcome {
+    Enqueued,
+    DroppedFull,
+    Closed,
+}
+
+struct EventBridgeSender {
+    sender: mpsc::SyncSender<(String, String)>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl EventBridgeSender {
+    fn new(sender: mpsc::SyncSender<(String, String)>, dropped: Arc<AtomicU64>) -> Self {
+        Self { sender, dropped }
+    }
+
+    fn try_send(&self, name: &str, payload: String) -> EventEnqueueOutcome {
+        match self.sender.try_send((name.to_owned(), payload)) {
+            Ok(()) => EventEnqueueOutcome::Enqueued,
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::AcqRel);
+                EventEnqueueOutcome::DroppedFull
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => EventEnqueueOutcome::Closed,
+        }
+    }
+}
+
+/// 在 worker 线程聚合记录过载，避免 UI 回调同步调用持久化 listener。
+fn flush_event_overload_audit(
+    plugin_id: &str,
+    instance: InstanceId,
+    dropped: &AtomicU64,
+    listener: Option<&AuditListener>,
+) {
+    let count = dropped.swap(0, Ordering::AcqRel);
+    if count == 0 {
+        return;
+    }
+    let event = AuditEvent {
+        plugin: plugin_id.to_owned(),
+        instance: instance.0,
+        capability: "ui:event-queue".to_owned(),
+        decision: "deny".to_owned(),
+        reason: Some("QueueFull".to_owned()),
+        detail: format!("dropped={count}"),
+    };
+    if let Some(listener) = listener {
+        listener(&event);
+    }
+    tracing::event!(
+        target: "floatile::audit",
+        tracing::Level::INFO,
+        plugin_id,
+        instance_id = instance.0,
+        capability = "ui:event-queue",
+        decision = "deny",
+        reason = "QueueFull",
+        detail = %event.detail,
+    );
+}
 
 /// 一个已启动的运行时插件窗口会话：持有窗口（drop 即关闭）与投影/事件 worker。
 ///
@@ -457,9 +526,11 @@ pub fn spawn_runtime_ui(
     let window = RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings, &caps)?;
 
     // 3. 输入事件回投通道：UI 线程 sink → worker 转发给实例。
-    let (event_tx, event_rx) = mpsc::channel::<(String, String)>();
+    let (event_tx, event_rx) = mpsc::sync_channel::<(String, String)>(EVENT_QUEUE_CAPACITY);
+    let dropped_events = Arc::new(AtomicU64::new(0));
+    let event_bridge = EventBridgeSender::new(event_tx, Arc::clone(&dropped_events));
     let sink: EventSink = Arc::new(move |name: &str, payload: String| {
-        let _ = event_tx.send((name.to_owned(), payload));
+        let _ = event_bridge.try_send(name, payload);
     });
     window.register_events(&events, sink)?;
 
@@ -485,6 +556,7 @@ pub fn spawn_runtime_ui(
                 }
             };
             runtime.block_on(async move {
+                let overload_audit_listener = audit_listener.clone();
                 let manager = match WidgetManager::new() {
                     Ok(m) => m,
                     Err(error) => {
@@ -517,6 +589,12 @@ pub fn spawn_runtime_ui(
                 tracing::info!(plugin_id = %id.0, "runtime plugin window started");
 
                 loop {
+                    flush_event_overload_audit(
+                        &id.0,
+                        INSTANCE_ID,
+                        &dropped_events,
+                        overload_audit_listener.as_ref(),
+                    );
                     if matches!(
                         stop_rx.try_recv(),
                         Ok(()) | Err(mpsc::TryRecvError::Disconnected)
@@ -524,7 +602,13 @@ pub fn spawn_runtime_ui(
                         break;
                     }
                     // 事件回投：UI 线程 sink → 本实例 handle_event。
-                    for (name, payload_json) in event_rx.try_iter() {
+                    for _ in 0..EVENT_BATCH_SIZE {
+                        let (name, payload_json) = match event_rx.try_recv() {
+                            Ok(event) => event,
+                            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
+                                break;
+                            }
+                        };
                         let event = WidgetEvent::Ui(UiEvent {
                             name: name.clone(),
                             payload_json,
@@ -574,6 +658,13 @@ pub fn spawn_runtime_ui(
                     }
                 }
 
+                flush_event_overload_audit(
+                    &id.0,
+                    INSTANCE_ID,
+                    &dropped_events,
+                    overload_audit_listener.as_ref(),
+                );
+
                 if let Err(error) = handle.shutdown().await {
                     tracing::warn!(%error, "runtime widget shutdown failed");
                 }
@@ -595,6 +686,8 @@ const INSTANCE_ID: InstanceId = InstanceId(1);
 mod grants_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
     #[test]
     fn manifest_grants_derives_timer_capability() {
         let manifest: Manifest = serde_json::from_str(
@@ -684,5 +777,75 @@ mod grants_tests {
         )
         .unwrap_err();
         assert_eq!(err.code(), "RUI_GRANT");
+    }
+
+    #[test]
+    fn event_bridge_drops_immediately_when_bounded_queue_is_full() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let bridge = EventBridgeSender::new(tx, Arc::clone(&dropped));
+
+        assert_eq!(
+            bridge.try_send("tick", "[]".into()),
+            EventEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            bridge.try_send("tick", "[]".into()),
+            EventEnqueueOutcome::DroppedFull
+        );
+        assert_eq!(dropped.load(Ordering::Acquire), 1);
+        assert_eq!(rx.try_recv().unwrap(), ("tick".into(), "[]".into()));
+    }
+
+    #[test]
+    fn concurrent_event_flood_stays_within_queue_capacity() {
+        const CAPACITY: usize = 4;
+        const PRODUCERS: usize = 8;
+        const EVENTS_PER_PRODUCER: usize = 32;
+        let (tx, rx) = mpsc::sync_channel(CAPACITY);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let bridge = Arc::new(EventBridgeSender::new(tx, Arc::clone(&dropped)));
+        let barrier = Arc::new(std::sync::Barrier::new(PRODUCERS));
+
+        let producers: Vec<_> = (0..PRODUCERS)
+            .map(|producer| {
+                let bridge = Arc::clone(&bridge);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for event in 0..EVENTS_PER_PRODUCER {
+                        let _ = bridge.try_send(&format!("p{producer}-{event}"), "[]".into());
+                    }
+                })
+            })
+            .collect();
+        for producer in producers {
+            producer.join().unwrap();
+        }
+
+        assert_eq!(rx.try_iter().count(), CAPACITY);
+        assert_eq!(
+            dropped.load(Ordering::Acquire),
+            u64::try_from(PRODUCERS * EVENTS_PER_PRODUCER - CAPACITY).unwrap()
+        );
+    }
+
+    #[test]
+    fn event_bridge_flushes_aggregated_overload_audit_without_payloads() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&records);
+        let listener: AuditListener = Arc::new(move |event| {
+            captured.lock().unwrap().push(event.clone());
+        });
+        let dropped = AtomicU64::new(3);
+
+        flush_event_overload_audit("dev.floatile.clock", INSTANCE_ID, &dropped, Some(&listener));
+
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].capability, "ui:event-queue");
+        assert_eq!(records[0].decision, "deny");
+        assert_eq!(records[0].detail, "dropped=3");
+        assert_eq!(dropped.load(Ordering::Acquire), 0);
     }
 }
