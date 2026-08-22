@@ -103,18 +103,27 @@ pub fn render_ftui(ui_bytes: &[u8]) -> Result<RenderedComponent, RuntimeUiError>
 
 /// 运行时用 `slint-interpreter` 编译 renderer 生成的源码（ADR-0002 决策 A）。
 ///
-/// `build_from_source` 是异步编译（纯解析，不依赖事件循环）；这里用独立 tokio
-/// runtime `block_on` 一次完成，避免在升级调用处扩散 async。编译是每插件一次性的
-/// 启动成本（ADR-0002 列为待实测项），不阻塞热路径。
+/// 这个同步包装仅供无头单测与独立工具使用；生产启动路径调用
+/// `compile_component_async`，由 Slint local executor 推进，不在事件循环中嵌套
+/// `block_on`。
 pub fn compile_component(
     rendered: &RenderedComponent,
 ) -> Result<ComponentDefinition, RuntimeUiError> {
-    let compiler = Compiler::default();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| RuntimeUiError::Compile(format!("tokio runtime: {e}")))?;
-    let compiled = runtime.block_on(
-        compiler.build_from_source(rendered.source.clone(), PathBuf::from("runtime-plugin-ui")),
-    );
+    runtime.block_on(compile_component_async(rendered))
+}
+
+/// 在当前 Slint local executor 编译宿主生成的有界源码，不嵌套阻塞 Tokio runtime。
+/// Slint 1.17 的编译产物是 `!Send`，且无自定义 file loader 时该 future 实际会同步
+/// 完成，因此这一步仍必须留在 UI executor；重型不受信任 IR 处理已在前一阶段移出。
+async fn compile_component_async(
+    rendered: &RenderedComponent,
+) -> Result<ComponentDefinition, RuntimeUiError> {
+    let compiler = Compiler::default();
+    let compiled = compiler
+        .build_from_source(rendered.source.clone(), PathBuf::from("runtime-plugin-ui"))
+        .await;
     if compiled.has_errors() {
         let messages: Vec<String> = compiled.diagnostics().map(|d| format!("{d:?}")).collect();
         return Err(RuntimeUiError::Compile(messages.join("; ")));
@@ -354,6 +363,14 @@ mod tests {
         let definition = compile_component(&rendered).unwrap();
         assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
     }
+
+    #[tokio::test]
+    async fn runtime_ui_preparation_runs_off_the_calling_thread() {
+        let caller = thread::current().id();
+        let prepared = prepare_runtime_ui(ftui_bytes(&clock_ftui())).await.unwrap();
+        assert_ne!(prepared.worker_thread, caller);
+        assert_eq!(prepared.rendered.bindings.len(), 1);
+    }
 }
 // ---- 运行时插件窗口编排（ADR-0002 接线层；main() 与集成测试共用）----
 
@@ -373,6 +390,40 @@ use floatile_runtime::{WidgetConfig, WidgetManager};
 use floatile_services::{AuditEvent, AuditListener};
 
 use crate::plugin_manager::InstalledPlugin;
+
+struct PreparedRuntimeUi {
+    rendered: RenderedComponent,
+    initial_state: Value,
+    state_schema: floatile_ui_schema::schema::JsonSchema,
+    #[cfg(test)]
+    worker_thread: thread::ThreadId,
+}
+
+/// 在专用后台线程解析、校验并渲染不受信任 FTUI。tokio oneshot 的 Receiver 可由
+/// Slint local executor 直接 await，不要求调用线程存在 Tokio runtime。
+async fn prepare_runtime_ui(ui_bytes: Vec<u8>) -> Result<PreparedRuntimeUi, RuntimeUiError> {
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    thread::Builder::new()
+        .name("floatile-ui-prepare".to_owned())
+        .spawn(move || {
+            let result = (|| {
+                let doc = parse_document(&ui_bytes)?;
+                let rendered = render_component(&doc).map_err(RuntimeUiError::Render)?;
+                Ok(PreparedRuntimeUi {
+                    rendered,
+                    initial_state: doc.state.initial,
+                    state_schema: doc.state.schema,
+                    #[cfg(test)]
+                    worker_thread: thread::current().id(),
+                })
+            })();
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| RuntimeUiError::Runtime(format!("启动 UI 准备线程失败: {error}")))?;
+    result_rx
+        .await
+        .map_err(|_| RuntimeUiError::Runtime("UI 准备线程未返回结果".to_owned()))?
+}
 
 /// UI 回调到 runtime worker 的事件队列上限。UI 线程只做一次 `try_send`。
 const EVENT_QUEUE_CAPACITY: usize = 64;
@@ -500,29 +551,30 @@ fn manifest_grants(
 
 /// 启动一个已安装插件的运行时窗口（FR-PLUGIN-01/F11 运行时 UI 渲染链闭合）。
 ///
-/// - 在**调用线程**（UI 线程）解析/复验/渲染 `widget.ftui`、interpreter 编译、实例化
-///   独立原生窗口、注册输入事件回投；
+/// - 专用准备线程解析/复验/渲染 `widget.ftui`；Slint local executor 异步编译宿主
+///   生成源码，然后只在 UI 线程实例化独立原生窗口、注册输入事件回投；
 /// - 派 worker 线程运行 Wasmtime 实例，沿 renderer binding 槽位把权威 State 投影到
 ///   窗口（经 `Weak::upgrade_in_event_loop`，Slint 主线程不阻塞）、把声明事件回投给
 ///   实例。
 ///
 /// 任一失败：本插件不启动，宿主与其插件存活（F12 隔离）；返回稳定 `RUI_*` code。
-pub fn spawn_runtime_ui(
+pub async fn spawn_runtime_ui(
     plugin: InstalledPlugin,
     caps: PlatformCapabilities,
     audit_listener: Option<AuditListener>,
 ) -> Result<RuntimeUiSession, RuntimeUiError> {
     let id = plugin.manifest.id.clone();
-    // 1. 解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
-    let doc = parse_document(&plugin.ui_bytes)?;
-    let rendered = render_component(&doc).map_err(RuntimeUiError::Render)?;
+    // 1. 后台解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
+    let prepared = prepare_runtime_ui(plugin.ui_bytes).await?;
+    let rendered = prepared.rendered;
     let bindings = rendered.bindings.clone();
     let events = rendered.events.clone();
-    let initial_state = doc.state.initial.clone();
-    let state_schema = doc.state.schema.clone();
+    let initial_state = prepared.initial_state;
+    let state_schema = prepared.state_schema;
 
-    // 2. interpreter 运行时编译 + 实例化为宿主窗口（调用线程 = UI 线程）。
-    let definition = compile_component(&rendered)?;
+    // 2. interpreter 产物含 Rc、不可跨线程；在 Slint local executor 异步编译，随后
+    // 在同一 UI 线程实例化窗口，不使用嵌套 block_on。
+    let definition = compile_component_async(&rendered).await?;
     let window = RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings, &caps)?;
 
     // 3. 输入事件回投通道：UI 线程 sink → worker 转发给实例。

@@ -564,18 +564,22 @@ fn spawn_clock_runtime(
 fn launch_installed_plugins(
     caps: floatile_platform::PlatformCapabilities,
     audit_listener: Option<floatile_services::AuditListener>,
-) -> Vec<floatile_shell::runtime_ui::RuntimeUiSession> {
+) -> (
+    Rc<RefCell<Vec<floatile_shell::runtime_ui::RuntimeUiSession>>>,
+    Vec<slint::JoinHandle<()>>,
+) {
+    let sessions = Rc::new(RefCell::new(Vec::new()));
+    let mut tasks = Vec::new();
     let Some(store) = floatile_shell::plugin_manager::plugin_store() else {
-        return Vec::new();
+        return (sessions, tasks);
     };
     let plugins = match floatile_shell::plugin_manager::list_installed(&store) {
         Ok(plugins) => plugins,
         Err(error) => {
             tracing::warn!(%error, "installed plugin enumeration failed; no plugin windows");
-            return Vec::new();
+            return (sessions, tasks);
         }
     };
-    let mut sessions = Vec::new();
     for plugin in plugins {
         // 内建参考时钟保留为 slint! 构建期基线；安装的同 id 包不重复起 interpreter 窗口。
         if plugin.manifest.id.0 == "dev.floatile.clock" {
@@ -584,21 +588,30 @@ fn launch_installed_plugins(
             );
             continue;
         }
-        match floatile_shell::runtime_ui::spawn_runtime_ui(plugin, caps, audit_listener.clone()) {
-            Ok(session) => {
-                tracing::info!("third-party plugin runtime window started");
-                sessions.push(session);
+        let task_sessions = Rc::clone(&sessions);
+        let task_audit_listener = audit_listener.clone();
+        match slint::spawn_local(async move {
+            match floatile_shell::runtime_ui::spawn_runtime_ui(plugin, caps, task_audit_listener)
+                .await
+            {
+                Ok(session) => {
+                    tracing::info!("third-party plugin runtime window started");
+                    task_sessions.borrow_mut().push(session);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        code = %error.code(),
+                        %error,
+                        "third-party plugin window failed to start (isolated; host continues)"
+                    );
+                }
             }
-            Err(error) => {
-                tracing::warn!(
-                    code = %error.code(),
-                    %error,
-                    "third-party plugin window failed to start (isolated; host continues)"
-                );
-            }
+        }) {
+            Ok(task) => tasks.push(task),
+            Err(error) => tracing::warn!(%error, "failed to schedule runtime plugin UI launch"),
         }
     }
-    sessions
+    (sessions, tasks)
 }
 
 fn now_hhmmss() -> String {
@@ -1070,8 +1083,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     });
     // 第三方已安装插件（非内建时钟）走运行时 interpreter 窗口路径（FR-PLUGIN-01/F11）。
-    // 会话须存活至 run() 结束，故绑定到 `_runtime_plugin_sessions`。
-    let _runtime_plugin_sessions = launch_installed_plugins(caps, audit_listener);
+    // 准备/编译任务由 Slint local executor 在事件循环启动后推进；会话与任务句柄均须
+    // 存活至 run() 结束。
+    let _runtime_plugin_launches = launch_installed_plugins(caps, audit_listener);
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }
