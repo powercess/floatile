@@ -1,0 +1,7 @@
+{
+  "name": "@bytecodealliance/weval",
+  "version": "0.4.1-floatile-disabled",
+  "private": true,
+  "type": "module",
+  "main": "index.js"
+}
