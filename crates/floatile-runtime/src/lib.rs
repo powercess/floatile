@@ -253,7 +253,9 @@ async fn run_actor(
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     FloatileWidget::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)?;
 
-    // instantiate 会运行组件的 `_initialize` start 段，先给足 fuel。
+    // instantiate 会运行组件的 `_initialize` start 段，先给足 fuel。constructor 与
+    // 后续每次 guest 回调都重新装填同一预算，避免把“每次调用”误实现为实例生命周期
+    // 总预算。
     store.set_fuel(fuel_per_call)?;
     let _ = store.fuel_async_yield_interval(Some(100_000));
 
@@ -264,6 +266,7 @@ async fn run_actor(
         config_json: config.config_json,
         initial_state_json,
     };
+    store.set_fuel(fuel_per_call)?;
     let resource = widget
         .call_constructor(&mut store, &init)
         .await
@@ -274,31 +277,46 @@ async fn run_actor(
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             InstanceCommand::Start(tx) => {
-                let result = match widget.call_start(&mut store, resource).await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(guest_err)) => Err(InstanceError::Rejected(format!("{guest_err:?}"))),
-                    Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                let result = match reset_call_fuel(&mut store, fuel_per_call) {
+                    Ok(()) => match widget.call_start(&mut store, resource).await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(guest_err)) => {
+                            Err(InstanceError::Rejected(format!("{guest_err:?}")))
+                        }
+                        Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                    },
+                    Err(error) => Err(error),
                 };
                 failed = result.is_err();
                 let _ = tx.send(result);
             }
             InstanceCommand::Event(event, tx) => {
-                let result = match widget.call_handle_event(&mut store, resource, &event).await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(guest_err)) => Err(InstanceError::Rejected(format!("{guest_err:?}"))),
-                    Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                let result = match reset_call_fuel(&mut store, fuel_per_call) {
+                    Ok(()) => match widget.call_handle_event(&mut store, resource, &event).await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(guest_err)) => {
+                            Err(InstanceError::Rejected(format!("{guest_err:?}")))
+                        }
+                        Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                    },
+                    Err(error) => Err(error),
                 };
                 failed = result.is_err();
                 let _ = tx.send(result);
             }
             InstanceCommand::Timer(id) => {
-                let result = match widget
-                    .call_handle_event(&mut store, resource, &WidgetEvent::Timer(id))
-                    .await
-                {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(guest_err)) => Err(InstanceError::Rejected(format!("{guest_err:?}"))),
-                    Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                let result = match reset_call_fuel(&mut store, fuel_per_call) {
+                    Ok(()) => match widget
+                        .call_handle_event(&mut store, resource, &WidgetEvent::Timer(id))
+                        .await
+                    {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(guest_err)) => {
+                            Err(InstanceError::Rejected(format!("{guest_err:?}")))
+                        }
+                        Err(wasm_err) => Err(InstanceError::Failed(wasm_err.to_string())),
+                    },
+                    Err(error) => Err(error),
                 };
                 if result.is_err() {
                     failed = true;
@@ -318,7 +336,9 @@ async fn run_actor(
     }
 
     // 清理：有预算的 stop + resource drop（尽力而为）。
+    let _ = store.set_fuel(fuel_per_call);
     let _ = widget.call_stop(&mut store, resource).await;
+    let _ = store.set_fuel(fuel_per_call);
     let _ = resource.resource_drop_async(&mut store).await;
     if stopped && !failed {
         Ok(())
@@ -327,6 +347,15 @@ async fn run_actor(
             "actor 因 trap/超时/终止退出".to_owned(),
         ))
     }
+}
+
+fn reset_call_fuel(
+    store: &mut Store<state::InstanceHostState>,
+    fuel_per_call: u64,
+) -> Result<(), InstanceError> {
+    store
+        .set_fuel(fuel_per_call)
+        .map_err(|error| InstanceError::Failed(format!("重置调用 fuel 失败: {error}")))
 }
 
 /// 实例失败后，把所有待处理命令的错误回给调用方，避免等待超时。
