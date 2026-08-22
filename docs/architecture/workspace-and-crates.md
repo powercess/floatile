@@ -102,8 +102,10 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - WIT host adapter 只持 `InstanceContext + PermissionBroker` 门面；不得持 service/OS raw handle。
 - 把 UI snapshot/patch 通过有界通道发送 shell；不直接操作 Slint。
 - trap/restart/isolation 与宿主存活保证。
-- S5b 已实现：Wasmtime 47 + 空 WASI 上下文（零 ambient）、fuel/内存限制、串行 actor、State Patch
-  原子应用、WIT adapter 经 Broker，`clock-wasm` 集成测试（start/1Hz/deny/fuel trap 存活）通过。
+- S5b 已实现：Wasmtime 47 + 空 WASI 上下文（零 ambient）、逐调用 fuel、默认 2 s 墙钟预算（10 ms
+  epoch ticker）、内存限制、串行 actor、State Patch 原子应用、WIT adapter 经 Broker；`clock-wasm`
+  集成测试及 fuel/timeout/memory/peer 存活安全测试通过。shell 的 UI event 桥容量 64、`try_send`
+  过载丢弃并聚合审计，每轮批量 8 个事件以保留 State 投影调度机会。
 
 ### 3.7 `floatile-services`
 

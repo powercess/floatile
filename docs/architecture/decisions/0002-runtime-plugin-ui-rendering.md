@@ -149,3 +149,8 @@ ADR-0001 已决策：插件 UI 是版本化 `widget.ftui`（统一 Floatile UI I
   `slint-interpreter` 升为 shell 正式依赖（1.17 同版本，无 slint-build 图像链）。证据：
   `runtime_ui` 单测（headless，F12 拒绝 + 编译）与 `tests/runtime_ui_window.rs`（Xvfb：编译+
   实例化+State 投影往返+事件回投）全绿；instance 化与首帧性能仍待回填性能验收表。
+- **运行边界加固（2026-08-22）**：`spawn_runtime_ui` 在专用线程完成 FTUI 解析、复验和 renderer
+  生成，再由 Slint local task 启动；生产路径不再嵌套 Tokio `block_on`。输入事件桥改为容量 64 的
+  非阻塞 `try_send`，过载立即丢弃、worker 聚合脱敏审计，每轮最多转发 8 个事件。Slint 1.17 的
+  `ComponentDefinition` 为 `!Send`，因此 interpreter 编译与实例化仍在同一 UI executor；这是待性能
+  实测的已知限制，不得通过跨线程 `unsafe` 绕过。
