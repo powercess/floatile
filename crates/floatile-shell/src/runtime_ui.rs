@@ -507,11 +507,23 @@ pub struct RuntimeUiSession {
 
 impl Drop for RuntimeUiSession {
     fn drop(&mut self) {
-        // 会话结束：通知 worker 停止并回收线程；窗口随 `_window` 关闭。
-        let _ = self.stop.send(());
+        // 会话结束：UI 线程只做非阻塞停止通知；join 转交 reaper。窗口随 `_window` 关闭。
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            reap_runtime_worker(&self.stop, worker);
         }
+    }
+}
+
+fn reap_runtime_worker(stop: &mpsc::SyncSender<()>, worker: thread::JoinHandle<()>) {
+    let _ = stop.try_send(());
+    if let Err(error) = thread::Builder::new()
+        .name("floatile-runtime-reaper".to_owned())
+        .spawn(move || {
+            let _ = worker.join();
+        })
+    {
+        // spawn 失败会 drop 闭包并分离原 worker；仍不得回到 UI 线程同步 join。
+        tracing::warn!(%error, "failed to spawn runtime worker reaper");
     }
 }
 
@@ -899,5 +911,21 @@ mod grants_tests {
         assert_eq!(records[0].decision, "deny");
         assert_eq!(records[0].detail, "dropped=3");
         assert_eq!(dropped.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn runtime_worker_shutdown_does_not_join_on_calling_thread() {
+        let (stop, stop_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let _ = stop_rx.recv();
+            thread::sleep(Duration::from_millis(250));
+        });
+
+        let started = std::time::Instant::now();
+        reap_runtime_worker(&stop, worker);
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "UI-side shutdown must not wait for worker join"
+        );
     }
 }
