@@ -29,7 +29,10 @@ fn component_fits_current_default_package_budget() {
     build.sdk_version = "0.1.0".into();
 
     let ftui = std::fs::read_to_string(target.join("widget.ftui")).expect("读取 widget.ftui");
-    let wasm = std::fs::read(target.join("clock-typescript.wasm")).expect("读取 component");
+    let component = std::env::var_os("FLOATILE_TYPESCRIPT_CLOCK_WASM")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| target.join("clock-typescript-starlingmonkey.wasm"));
+    let wasm = std::fs::read(component).expect("读取 component");
     let out = std::env::temp_dir().join(format!(
         "floatile-typescript-runtime-spike-{}.floatile",
         std::process::id()

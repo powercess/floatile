@@ -8,14 +8,20 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "node scripts/prepare.mjs && jco guest-types ../../wit --world-name floatile-widget --out-dir generated --strict --quiet && tsc --noEmit && jco componentize src/clock.ts --wit ../../wit --world-name floatile-widget --disable all --out ../../target/typescript-runtime-spike/clock-typescript.wasm && node scripts/build-ui.mjs && node scripts/verify-component.mjs",
+    "build": "pnpm run build:starlingmonkey",
+    "build:starlingmonkey": "node scripts/build-backend.mjs starlingmonkey",
+    "build:quickjs": "node scripts/build-backend.mjs quickjs",
     "test:runtime": "cargo test -p floatile-runtime --test typescript_clock_spike typescript_clock -- --ignored --nocapture --test-threads=1",
     "test:package": "cargo test -p floatile-cli --test typescript_clock_spike -- --ignored --nocapture",
-    "test": "pnpm run build && pnpm run test:runtime && pnpm run test:package",
-    "measure": "cargo test --release -p floatile-runtime --test typescript_clock_spike resource_evidence -- --ignored --nocapture --test-threads=1"
+    "test:starlingmonkey": "node scripts/test-backend.mjs starlingmonkey",
+    "test:quickjs": "node scripts/test-backend.mjs quickjs",
+    "test": "pnpm run build:starlingmonkey && pnpm run test:starlingmonkey",
+    "measure": "cargo test --release -p floatile-runtime --test typescript_clock_spike resource_evidence -- --ignored --nocapture --test-threads=1",
+    "repro:quickjs": "node scripts/quickjs-resource-method-repro.mjs"
   },
   "devDependencies": {
     "@bytecodealliance/jco": "1.31.0",
+    "componentize-qjs": "0.4.3",
     "typescript": "7.0.2"
   }
 }

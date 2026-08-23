@@ -29,7 +29,8 @@ fn component_bytes() -> Vec<u8> {
     let path = std::env::var_os("FLOATILE_TYPESCRIPT_CLOCK_WASM")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            workspace_root().join("target/typescript-runtime-spike/clock-typescript.wasm")
+            workspace_root()
+                .join("target/typescript-runtime-spike/clock-typescript-starlingmonkey.wasm")
         });
     std::fs::read(&path).unwrap_or_else(|error| {
         panic!(
