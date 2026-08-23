@@ -5,10 +5,13 @@ import { fileURLToPath } from "node:url";
 
 const spikeDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspace = resolve(spikeDir, "../..");
-const componentPath = resolve(
-  workspace,
-  "target/typescript-runtime-spike/clock-typescript.wasm",
-);
+const backend = process.argv[2] ?? "starlingmonkey";
+const componentPath = process.argv[3]
+  ? resolve(process.argv[3])
+  : resolve(
+      workspace,
+      `target/typescript-runtime-spike/clock-typescript-${backend}.wasm`,
+    );
 const uiPath = resolve(workspace, "target/typescript-runtime-spike/widget.ftui");
 const jco = resolve(
   spikeDir,
@@ -23,6 +26,9 @@ const world = execFileSync(jco, ["wit", componentPath], {
 const imports = [...world.matchAll(/^\s*import\s+([^;]+);$/gm)].map(
   (match) => match[1],
 );
+const exports = [...world.matchAll(/^\s*export\s+([^;]+);$/gm)].map(
+  (match) => match[1],
+);
 const unexpected = imports.filter(
   (name) => !name.startsWith("floatile:widget/"),
 );
@@ -35,6 +41,9 @@ if (imports.length !== 7) {
 if (!world.includes("export floatile:widget/widget-contract@1.0.0;")) {
   throw new Error("component does not export Floatile widget-contract@1.0.0");
 }
+const additionalExports = exports.filter(
+  (name) => name !== "floatile:widget/widget-contract@1.0.0",
+);
 if (/^\s*import\s+wasi:/m.test(world)) {
   throw new Error("WASI imports are forbidden for the TypeScript adapter");
 }
@@ -50,9 +59,10 @@ if (ui.uiApiVersion !== "1.0.0") {
 
 console.log(
   JSON.stringify({
-    backend: "componentize-js/starlingmonkey",
+    backend,
     componentBytes,
     ambientImports: 0,
+    additionalExports,
     uiApiVersion: ui.uiApiVersion,
   }),
 );

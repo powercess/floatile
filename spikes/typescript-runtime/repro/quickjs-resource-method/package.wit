@@ -1,0 +1,21 @@
+package floatile:quickjs-repro@1.0.0;
+
+interface contract {
+    variant event {
+        tick(u32),
+        message(string),
+        stop,
+    }
+
+    resource instance {
+        constructor();
+        ping: func();
+        scalar: func(value: u32);
+        handle: func(event: event);
+        get-last: func() -> string;
+    }
+}
+
+world quickjs-repro {
+    export contract;
+}

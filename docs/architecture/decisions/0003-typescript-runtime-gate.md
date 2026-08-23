@@ -28,9 +28,9 @@ Rust 参考时钟的 `build_ftui` 生成，以免在 UI schema codegen 落地前
 
 - `componentize-qjs` 0.4.3，sync/async 与 opt-size 均实测。
 - 普通 JavaScript 语义，组件约 1 MiB；`--stub-wasi` 后同样没有 WASI import。
-- 当前版本在 `widget-instance.handle-event(widget-event)` 的 resource method + variant 参数
-  lowering 路径中 trap；即使 JavaScript 方法体为空也会复现。`constructor/start` 和 Broker deny
-  路径可工作，故问题定位在 adapter 契约兼容性而非 Clock 业务逻辑。
+- 当前版本的导出 resource method 只要带任意参数（scalar 或 variant）都会在进入 JavaScript 前
+  trap；无参数 method 可工作。最小复现将原因定位为 method receiver 从 canonical 参数栈末尾而非
+  首位取出，故问题在 adapter receiver lowering，而非 Clock 业务逻辑或 Permission Broker。
 
 ### C. Javy
 
@@ -96,11 +96,31 @@ Apache-2.0 WITH LLVM-exception，ComponentizeJS 项目声明同一许可；生�
 命中 GHSA-mp2f-45pm-3cg9 / GHSA-h39j-r5qq-r9mm / GHSA-jwp9-9v96-94mx，且 npm registry 尚无
 advisory 所称的 4.2.2，spike lock 以本地禁用桩移除 AOT 链；不得在未修复前恢复。
 
+## 后续验证：QuickJS receiver 候选修复
+
+2026-08-23 在 `componentize-qjs` v0.4.3 源码上验证了最小候选修复：为 runtime 参数栈增加
+从首位移出值的操作，并在导出 resource method 分发中用它读取 receiver；普通参数继续按原顺序
+传给 JavaScript。上游扩展回归测试同时覆盖 `u32` 与 variant 参数，均通过。
+
+同一候选 CLI 生成的完整 Floatile Clock 未改 WIT、Broker 或限制，并通过：
+
+- Rust 参考行为、timer deny 审计后实例存活、无限循环 fuel/epoch 隔离、低内存失败后 peer 存活；
+- 七个 `floatile:widget/*` import、零 WASI import、16 MiB component 与默认 `.floatile` 包预算；
+- component 3,268,502 B，package 855,374 B；
+- release 单实例 startup 273 ms、首 tick 1,277 ms、RSS 增量 135,327,744 B；
+- release 10 实例 startup 2,401 ms、全部首 tick 3,402 ms、RSS 增量 662,474,752 B。
+
+这些数据显著优于本 ADR 的 StarlingMonkey 对照，但尚不改变 no-go 决策：修复未进入上游发布版，
+Windows/macOS 构建、稳定态 CPU、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime
+初始化函数 `init`，虽不增加 host capability，仍需在生产契约门中决定是否允许或由 adapter 隐藏。
+
 ## 后果与下一步
 
 - 好处：F11 不会因为“能编译”而被误标完成；R14/R15 的失败有可执行证据，不会以降低安全边界换
   取表面 TypeScript 支持。
 - 代价：P0 的 TypeScript clock 与公共 SDK 继续阻塞。
-- 下一个 PR：最小化并上游化 QuickJS `handle-event(variant)` trap，同时把 spike 改成可切换 backend
-  的同一行为向量；若固定版本/补丁仍失败，再单独评估 Javy + WIT adapter，而不是在本 PR 混入自研
-  runtime。
+- 本 PR：已将 QuickJS 问题最小化为任意 method 参数的 receiver 错位，形成可直接提交上游的修复与
+  回归测试，并把 spike 改为 StarlingMonkey/QuickJS 共用同一宿主行为向量。
+- 下一个 PR：在上游合并并发布固定版本后锁定该版本，补 Windows/macOS 构建、稳定态 CPU、
+  QuickJS/生成 component 的许可与 NOTICE、额外 `init` export 契约处理；全部通过后新建后继 ADR，
+  再决定是否启动公共 TypeScript SDK。
