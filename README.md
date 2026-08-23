@@ -56,7 +56,8 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
 
 权威进度与验收范围请查看[需求基线](docs/product/requirements.md)和
-[P0 验收标准](docs/architecture/p0-acceptance.md)。
+[P0 验收标准](docs/architecture/p0-acceptance.md)；P0 之后的平台北极星、领域模型与里程碑见
+[插件平台长期演进路线](docs/product/plugin-platform-roadmap.md)。
 
 ## 功能蓝图
 
@@ -208,6 +209,8 @@ crate 之间的依赖规则不是建议，而是安全与可移植性边界。�
 - **P0 验收（规划中）**：Windows/macOS/X11/Wayland 证据、性能数据、风险复盘与许可 ADR
 
 路线图会随验证证据调整。某项技术不可行但被准确记录和降级，同样是 P0 的有效产出。
+面向开发者平台的 PP-M0 至 PP-M10 长期路线独立维护在
+[插件平台长期演进路线](docs/product/plugin-platform-roadmap.md)，不会用未来规划覆盖本节的 P0 状态。
 
 ## 参与贡献
 
@@ -216,14 +219,16 @@ Floatile 欢迎问题报告、设计讨论、文档改进和小而完整的实�
 
 1. [贡献指南](CONTRIBUTING.md)——分支、提交、测试与 PR 规则
 2. [项目需求基线](docs/product/requirements.md)——P0 范围、需求 ID 与非目标
-3. [文档索引](docs/README.md)——各领域的权威事实源
-4. [开发与验证流程](docs/development/workflow.md)——本地门禁与证据要求
+3. [插件平台长期演进路线](docs/product/plugin-platform-roadmap.md)——平台原则、领域模型与 PP-M0 至 PP-M10
+4. [文档索引](docs/README.md)——各领域的权威事实源
+5. [开发与验证流程](docs/development/workflow.md)——本地门禁与证据要求
 
 普通变更应从最新 `dev` 创建单一目标分支，并通过 PR 合回 `dev`。安全、WIT、平台、持久化或
 crate 边界变更需要同步相应契约、测试和架构文档。
 
 ## 文档
 
+- [插件平台长期演进路线](docs/product/plugin-platform-roadmap.md)
 - [P0 技术设计](docs/architecture/p0-design.md)
 - [P0 验收标准](docs/architecture/p0-acceptance.md)
 - [技术栈与版本策略](docs/architecture/technology-stack.md)
