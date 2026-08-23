@@ -34,6 +34,8 @@
    `.agents/skills/verify-floatile`。
 3. 检查工作区状态，保留用户已有变更；不要顺手改无关代码。
 4. 明确该任务对应的需求、验收项和受影响 crate。没有对应需求时，先更新需求或 ADR。
+5. 涉及插件平台长期能力、Instance、Connection、Operation 或 capability 演进时，先读
+   `docs/product/plugin-platform-roadmap.md`，并用其中的 `PP-Mx`/`PP-Gx` 标明任务归属。
 
 ## 不可破坏的边界
 

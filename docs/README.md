@@ -9,6 +9,7 @@
 |---|---|---|
 | Git 分支、提交与 PR 协作 | `../CONTRIBUTING.md` | 分支命名、提交时机、message、审查或合并策略变化 |
 | 产品范围与需求 | `product/requirements.md` | 目标、非目标、验收映射变化 |
+| 插件平台长期方向与演进 | `product/plugin-platform-roadmap.md` | 平台北极星、领域模型、里程碑、优先级或执行顺序变化 |
 | P0 验收 | `architecture/p0-acceptance.md` | 验收步骤、阈值或结果变化 |
 | 总体架构与线程模型 | `architecture/p0-design.md` | 模块、数据流、线程或安全边界变化 |
 | crate 依赖边界 | `architecture/workspace-and-crates.md` | crate 职责或依赖方向变化 |
