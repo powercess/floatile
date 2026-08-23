@@ -101,6 +101,7 @@ advisory 所称的 4.2.2，spike lock 以本地禁用桩移除 AOT 链；不得�
 2026-08-23 在 `componentize-qjs` v0.4.3 源码上验证了最小候选修复：为 runtime 参数栈增加
 从首位移出值的操作，并在导出 resource method 分发中用它读取 receiver；普通参数继续按原顺序
 传给 JavaScript。上游扩展回归测试同时覆盖 `u32` 与 variant 参数，均通过。
+修复已提交为 [`andreiltd/componentize-qjs#76`](https://github.com/andreiltd/componentize-qjs/pull/76)。
 
 同一候选 CLI 生成的完整 Floatile Clock 未改 WIT、Broker 或限制，并通过：
 

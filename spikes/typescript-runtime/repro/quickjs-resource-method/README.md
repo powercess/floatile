@@ -20,4 +20,5 @@ FLOATILE_COMPONENTIZE_QJS_BIN=/absolute/path/to/componentize-qjs \
 修复版必须让 `scalar(7)` 与 `handle(tick(9))` 的实际值到达 JavaScript；fixture
 分别通过 `get-last()` 断言 `scalar:7` 与 `tick:9`，避免只证明“没有 trap”。
 
-上游基线：[`componentize-qjs` v0.4.3](https://github.com/andreiltd/componentize-qjs/releases/tag/v0.4.3)。
+上游基线：[`componentize-qjs` v0.4.3](https://github.com/andreiltd/componentize-qjs/releases/tag/v0.4.3)；
+候选修复与回归测试：[`andreiltd/componentize-qjs#76`](https://github.com/andreiltd/componentize-qjs/pull/76)。
