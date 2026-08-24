@@ -11,6 +11,7 @@ use floatile_core::{
 use floatile_ui_schema::path::PathSegments;
 use serde_json::Value;
 
+pub mod instance_control;
 pub mod instance_supervisor;
 pub mod plugin_manager;
 pub mod runtime_ui;

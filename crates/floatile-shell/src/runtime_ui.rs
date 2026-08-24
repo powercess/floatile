@@ -523,10 +523,7 @@ pub enum RuntimeUiLifecycleEvent {
 impl RuntimeUiSession {
     /// 非阻塞读取一个 lifecycle 事件。Slint timer 每轮有界调用，不等待 worker。
     pub fn try_lifecycle_event(&self) -> Option<RuntimeUiLifecycleEvent> {
-        match self.lifecycle.try_recv() {
-            Ok(event) => Some(event),
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
-        }
+        self.lifecycle.try_recv().ok()
     }
 }
 

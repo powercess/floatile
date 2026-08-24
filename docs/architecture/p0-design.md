@@ -58,11 +58,15 @@ plugin package
 [Slint main thread]
   input → declared UI event ───────┐
   render ← validated State update │ bounded channels
+  control snapshot / command ─────┤
                                   ▼
 [Tokio/runtime workers]
   instance actor → Wasmtime async callback
                  → WIT import → Broker → service
                  → host-ui State Patch → validate/commit → UI queue
+[shell control/supervisor workers]
+  SQLite desired state + verified Installation/Config Schema
+  → bounded reconcile/snapshot; runtime lifecycle → observed registry
 ```
 
 - Slint 回调只用 `try_send` 排队 event，不同步等待 WASM、Tokio、SQLite、审计持久化或任何不可信输入；
@@ -72,6 +76,9 @@ plugin package
   确认后提交，主线程只应用已验证 snapshot/diff。
 - worker 每轮最多转发 8 个 UI event，再让出 State 投影机会；queue full、UI 拥塞、shutdown 和
   cancellation 都有明确错误/丢弃策略与 tracing。
+- 实例控制命令、reconcile 动作和控制面快照均使用有界 channel；Slint timer 只做 `try_recv/try_send`。
+  observed lifecycle 只存在于当前进程，不覆盖 SQLite desired state；手动 retry 仅清除所选实例的已隔离
+  fingerprint，并由后台 worker 重新复核最新 Installation/Config。
 
 ## 4. UI、渲染与 DPI
 
