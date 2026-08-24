@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use floatile_core::install::{InstallMeta, content_digest, file_digest, hex_encode};
 use floatile_core::instance::{InstallationRef, InstanceModelError};
 use floatile_core::manifest::Manifest;
+use floatile_core::{InstanceDesiredState, InstanceId, PluginInstance};
+use floatile_store::{Store, StoreError};
 use semver::Version;
 use thiserror::Error;
 
@@ -26,6 +28,29 @@ pub struct InstalledPlugin {
     pub wasm: Vec<u8>,
     /// `entrypoints.ui` 指向的 widget.ftui 字节。
     pub ui_bytes: Vec<u8>,
+}
+
+/// 已按持久实例引用复核、可以交给 runtime UI 启动的单元。
+#[derive(Debug)]
+pub struct RunnableInstance {
+    pub instance: PluginInstance,
+    pub plugin: InstalledPlugin,
+}
+
+/// 单实例恢复失败；不包含 Config、State 或其他敏感值。
+#[derive(Debug)]
+pub struct InstanceLoadFailure {
+    pub instance_id: InstanceId,
+    pub plugin_id: String,
+    pub code: &'static str,
+    pub detail: String,
+}
+
+/// 宿主启动时的实例恢复计划。一个实例失败不清空其他 ready 实例。
+#[derive(Debug, Default)]
+pub struct RuntimeInstancePlan {
+    pub ready: Vec<RunnableInstance>,
+    pub failures: Vec<InstanceLoadFailure>,
 }
 
 /// 插件存储根目录：优先 `$FLOATTILE_PLUGIN_DIR`，否则平台数据目录下的 `plugins`。
@@ -108,6 +133,89 @@ pub fn load_installation(
         });
     }
     Ok(Some(plugin))
+}
+
+/// 从持久记录恢复 desired-running 实例，并固定到精确 Installation。
+///
+/// 该函数执行 SQLite 与文件 I/O，必须在 Slint 事件循环启动前或后台线程调用。每次启动尝试先推进
+/// generation，以便后续 Operation 丢弃旧 generation 的迟到结果；单实例失败记录在 plan 中并继续。
+pub fn plan_running_instances(
+    store: &Store,
+    plugin_store: &Path,
+    unix_ts: u64,
+) -> Result<RuntimeInstancePlan, StoreError> {
+    let mut plan = RuntimeInstancePlan::default();
+    for instance in store.instances().list()? {
+        if instance.desired_state() != InstanceDesiredState::Running {
+            continue;
+        }
+        let instance_id = instance.id();
+        let plugin_id = instance.installation().plugin().0.clone();
+        let updated_at = unix_ts.max(instance.updated_at());
+        match store
+            .instances()
+            .advance_generation(instance_id, updated_at)
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                plan.failures.push(InstanceLoadFailure {
+                    instance_id,
+                    plugin_id,
+                    code: "FINSTANCE_GENERATION",
+                    detail: "实例不存在、时间戳过期或 generation 已耗尽".to_owned(),
+                });
+                continue;
+            }
+            Err(error) => {
+                plan.failures.push(InstanceLoadFailure {
+                    instance_id,
+                    plugin_id,
+                    code: "FINSTANCE_STORE",
+                    detail: error.to_string(),
+                });
+                continue;
+            }
+        }
+
+        let instance = match store.instances().get(instance_id) {
+            Ok(Some(instance)) => instance,
+            Ok(None) => {
+                plan.failures.push(InstanceLoadFailure {
+                    instance_id,
+                    plugin_id,
+                    code: "FINSTANCE_MISSING",
+                    detail: "推进 generation 后实例记录消失".to_owned(),
+                });
+                continue;
+            }
+            Err(error) => {
+                plan.failures.push(InstanceLoadFailure {
+                    instance_id,
+                    plugin_id,
+                    code: "FINSTANCE_STORE",
+                    detail: error.to_string(),
+                });
+                continue;
+            }
+        };
+
+        match load_installation(plugin_store, instance.installation()) {
+            Ok(Some(plugin)) => plan.ready.push(RunnableInstance { instance, plugin }),
+            Ok(None) => plan.failures.push(InstanceLoadFailure {
+                instance_id,
+                plugin_id,
+                code: "FLOAD_INSTALLATION_MISSING",
+                detail: format!("安装版本 {} 不存在", instance.installation().version()),
+            }),
+            Err(error) => plan.failures.push(InstanceLoadFailure {
+                instance_id,
+                plugin_id,
+                code: error.code(),
+                detail: error.to_string(),
+            }),
+        }
+    }
+    Ok(plan)
 }
 
 /// 枚举插件存储下全部已安装插件，每个 id 取最高已安装版本并逐一做 digest 复核。
@@ -452,5 +560,118 @@ mod tests {
             list_installed(&store),
             Err(LoadError::DigestMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn plans_only_running_instances_and_advances_generation() {
+        let plugin_store = temp_store("instance-plan");
+        write_install(&plugin_store, "dev.floatile.clock", "1.0.0", None);
+        let installation = installation_ref(&plugin_store, "dev.floatile.clock", "1.0.0");
+        let store = floatile_store::open(":memory:").unwrap();
+        let first = store
+            .instances()
+            .create(
+                &installation,
+                &floatile_core::InstanceConfig::new(serde_json::json!({"timezone": "UTC"}))
+                    .unwrap(),
+                InstanceDesiredState::Running,
+                100,
+            )
+            .unwrap();
+        let second = store
+            .instances()
+            .create(
+                &installation,
+                &floatile_core::InstanceConfig::new(
+                    serde_json::json!({"timezone": "Asia/Shanghai"}),
+                )
+                .unwrap(),
+                InstanceDesiredState::Running,
+                100,
+            )
+            .unwrap();
+        let stopped = store
+            .instances()
+            .create(
+                &installation,
+                &floatile_core::InstanceConfig::empty(),
+                InstanceDesiredState::Stopped,
+                100,
+            )
+            .unwrap();
+
+        // 宿主时钟回拨也不得阻止启动；updated_at 维持单调。
+        let plan = plan_running_instances(&store, &plugin_store, 90).unwrap();
+
+        assert!(plan.failures.is_empty());
+        assert_eq!(plan.ready.len(), 2);
+        assert_eq!(plan.ready[0].instance.id(), first.id());
+        assert_eq!(plan.ready[1].instance.id(), second.id());
+        assert_eq!(plan.ready[0].instance.generation(), 1);
+        assert_eq!(plan.ready[1].instance.generation(), 1);
+        assert_eq!(
+            plan.ready[0].instance.config().to_value(),
+            serde_json::json!({"timezone": "UTC"})
+        );
+        assert_eq!(
+            store
+                .instances()
+                .get(stopped.id())
+                .unwrap()
+                .unwrap()
+                .generation(),
+            0
+        );
+    }
+
+    #[test]
+    fn instance_plan_isolates_tampered_installation() {
+        let plugin_store = temp_store("instance-isolation");
+        write_install(&plugin_store, "dev.floatile.clock", "1.0.0", None);
+        write_install(
+            &plugin_store,
+            "dev.floatile.cpu",
+            "1.0.0",
+            Some("logic/plugin.wasm"),
+        );
+        let healthy = installation_ref(&plugin_store, "dev.floatile.clock", "1.0.0");
+        let tampered = installation_ref(&plugin_store, "dev.floatile.cpu", "1.0.0");
+        let store = floatile_store::open(":memory:").unwrap();
+        let healthy_instance = store
+            .instances()
+            .create(
+                &healthy,
+                &floatile_core::InstanceConfig::empty(),
+                InstanceDesiredState::Running,
+                100,
+            )
+            .unwrap();
+        let tampered_instance = store
+            .instances()
+            .create(
+                &tampered,
+                &floatile_core::InstanceConfig::empty(),
+                InstanceDesiredState::Running,
+                100,
+            )
+            .unwrap();
+
+        let plan = plan_running_instances(&store, &plugin_store, 101).unwrap();
+
+        assert_eq!(plan.ready.len(), 1);
+        assert_eq!(plan.ready[0].instance.id(), healthy_instance.id());
+        assert_eq!(plan.failures.len(), 1);
+        assert_eq!(plan.failures[0].instance_id, tampered_instance.id());
+        assert_eq!(plan.failures[0].plugin_id, "dev.floatile.cpu");
+        assert_eq!(plan.failures[0].code, "FLOAD_DIGEST_MISMATCH");
+        assert_eq!(
+            store
+                .instances()
+                .get(tampered_instance.id())
+                .unwrap()
+                .unwrap()
+                .generation(),
+            1
+        );
     }
 }

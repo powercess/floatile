@@ -561,7 +561,8 @@ fn spawn_clock_runtime(
     Some(RuntimeSession { stop, worker })
 }
 
-fn launch_installed_plugins(
+fn launch_persisted_plugins(
+    instances: Vec<floatile_shell::plugin_manager::RunnableInstance>,
     caps: floatile_platform::PlatformCapabilities,
     audit_listener: Option<floatile_services::AuditListener>,
 ) -> (
@@ -570,45 +571,47 @@ fn launch_installed_plugins(
 ) {
     let sessions = Rc::new(RefCell::new(Vec::new()));
     let mut tasks = Vec::new();
-    let Some(store) = floatile_shell::plugin_manager::plugin_store() else {
-        return (sessions, tasks);
-    };
-    let plugins = match floatile_shell::plugin_manager::list_installed(&store) {
-        Ok(plugins) => plugins,
-        Err(error) => {
-            tracing::warn!(%error, "installed plugin enumeration failed; no plugin windows");
-            return (sessions, tasks);
-        }
-    };
-    for plugin in plugins {
-        // 内建参考时钟保留为 slint! 构建期基线；安装的同 id 包不重复起 interpreter 窗口。
-        if plugin.manifest.id.0 == "dev.floatile.clock" {
-            tracing::info!(
-                "builtin clock package kept as slint! baseline; not re-rendered at runtime"
-            );
-            continue;
-        }
+    for runnable in instances {
+        let instance_id = runnable.instance.id();
+        let plugin_id = runnable.plugin.manifest.id.0.clone();
+        let task_plugin_id = plugin_id.clone();
         let task_sessions = Rc::clone(&sessions);
         let task_audit_listener = audit_listener.clone();
         match slint::spawn_local(async move {
-            match floatile_shell::runtime_ui::spawn_runtime_ui(plugin, caps, task_audit_listener)
-                .await
+            match floatile_shell::runtime_ui::spawn_runtime_ui(
+                runnable.plugin,
+                runnable.instance,
+                caps,
+                task_audit_listener,
+            )
+            .await
             {
                 Ok(session) => {
-                    tracing::info!("third-party plugin runtime window started");
+                    tracing::info!(
+                        plugin_id = %task_plugin_id,
+                        instance_id = instance_id.0,
+                        "persistent plugin instance window started"
+                    );
                     task_sessions.borrow_mut().push(session);
                 }
                 Err(error) => {
                     tracing::warn!(
+                        plugin_id = %task_plugin_id,
+                        instance_id = instance_id.0,
                         code = %error.code(),
                         %error,
-                        "third-party plugin window failed to start (isolated; host continues)"
+                        "persistent plugin instance failed to start (isolated; host continues)"
                     );
                 }
             }
         }) {
             Ok(task) => tasks.push(task),
-            Err(error) => tracing::warn!(%error, "failed to schedule runtime plugin UI launch"),
+            Err(error) => tracing::warn!(
+                %plugin_id,
+                instance_id = instance_id.0,
+                %error,
+                "failed to schedule persistent plugin instance launch"
+            ),
         }
     }
     (sessions, tasks)
@@ -989,6 +992,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+    // 在 Slint 事件循环启动前完成 SQLite、manifest 与安装文件 I/O。只有 desired-running
+    // 实例进入异步 UI 启动队列；固定引用缺失或被篡改时仅隔离该实例。
+    let runtime_instance_plan = match (
+        store.as_ref(),
+        floatile_shell::plugin_manager::plugin_store(),
+    ) {
+        (Some(store), Some(plugin_store)) => {
+            match floatile_shell::plugin_manager::plan_running_instances(
+                store,
+                &plugin_store,
+                unix_now(),
+            ) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    tracing::warn!(%error, "persistent instance enumeration failed; no plugin windows");
+                    floatile_shell::plugin_manager::RuntimeInstancePlan::default()
+                }
+            }
+        }
+        _ => floatile_shell::plugin_manager::RuntimeInstancePlan::default(),
+    };
+    for failure in &runtime_instance_plan.failures {
+        tracing::warn!(
+            plugin_id = %failure.plugin_id,
+            instance_id = failure.instance_id.0,
+            code = failure.code,
+            detail = %failure.detail,
+            "persistent plugin instance could not be prepared (isolated; host continues)"
+        );
+    }
     let persisted = Arc::new(Mutex::new(PersistedState {
         store,
         monitors: Vec::new(),
@@ -1082,10 +1115,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             audit_listener.clone(),
         )
     });
-    // 第三方已安装插件（非内建时钟）走运行时 interpreter 窗口路径（FR-PLUGIN-01/F11）。
-    // 准备/编译任务由 Slint local executor 在事件循环启动后推进；会话与任务句柄均须
-    // 存活至 run() 结束。
-    let _runtime_plugin_launches = launch_installed_plugins(caps, audit_listener);
+    // 持久实例走运行时 interpreter 窗口路径（PP-M1/FR-PLUGIN-01/F11）。准备/编译任务由
+    // Slint local executor 在事件循环启动后推进；会话与任务句柄均须存活至 run() 结束。
+    let _runtime_plugin_launches =
+        launch_persisted_plugins(runtime_instance_plan.ready, caps, audit_listener);
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }

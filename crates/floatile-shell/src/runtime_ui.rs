@@ -53,6 +53,8 @@ pub enum RuntimeUiError {
     Callback(String),
     #[error("manifest 授权构造失败: {0}")]
     Grant(String),
+    #[error("持久实例与已加载 Installation 不匹配: {0}")]
+    InstanceIdentity(String),
     #[error("runtime 实例启动失败: {0}")]
     Runtime(String),
 }
@@ -71,6 +73,7 @@ impl RuntimeUiError {
             Self::Projection(_) => "RUI_PROJECTION",
             Self::Callback(_) => "RUI_CALLBACK",
             Self::Grant(_) => "RUI_GRANT",
+            Self::InstanceIdentity(_) => "RUI_INSTANCE_IDENTITY",
             Self::Runtime(_) => "RUI_RUNTIME",
         }
     }
@@ -379,10 +382,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use floatile_core::PluginInstance;
 use floatile_core::capability::{
     CapabilityId, EffectiveGrant, Grant, Grants, InstanceGrant, TrustLevel, narrow_instance,
     parse_capability_params,
 };
+use floatile_core::instance::InstallationRef;
 use floatile_core::manifest::Manifest;
 use floatile_core::types::{InstanceId, PluginId};
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
@@ -561,6 +566,25 @@ fn manifest_grants(
     narrow_instance(&plugin, instance, caps).map_err(|e| RuntimeUiError::Grant(e.to_string()))
 }
 
+fn validate_runtime_instance(
+    plugin: &InstalledPlugin,
+    instance: &PluginInstance,
+) -> Result<(InstanceId, String), RuntimeUiError> {
+    let actual_installation = InstallationRef::from_install_meta(&plugin.meta)
+        .map_err(|error| RuntimeUiError::InstanceIdentity(error.to_string()))?;
+    if actual_installation != *instance.installation() {
+        return Err(RuntimeUiError::InstanceIdentity(format!(
+            "instance {} expects {}@{}",
+            instance.id().0,
+            instance.installation().plugin().0,
+            instance.installation().version()
+        )));
+    }
+    let config_json = serde_json::to_string(instance.config())
+        .map_err(|error| RuntimeUiError::Runtime(format!("序列化实例配置失败: {error}")))?;
+    Ok((instance.id(), config_json))
+}
+
 /// 启动一个已安装插件的运行时窗口（FR-PLUGIN-01/F11 运行时 UI 渲染链闭合）。
 ///
 /// - 专用准备线程解析/复验/渲染 `widget.ftui`；Slint local executor 异步编译宿主
@@ -572,10 +596,12 @@ fn manifest_grants(
 /// 任一失败：本插件不启动，宿主与其插件存活（F12 隔离）；返回稳定 `RUI_*` code。
 pub async fn spawn_runtime_ui(
     plugin: InstalledPlugin,
+    instance: PluginInstance,
     caps: PlatformCapabilities,
     audit_listener: Option<AuditListener>,
 ) -> Result<RuntimeUiSession, RuntimeUiError> {
     let id = plugin.manifest.id.clone();
+    let (instance_id, config_json) = validate_runtime_instance(&plugin, &instance)?;
     // 1. 后台解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
     let prepared = prepare_runtime_ui(plugin.ui_bytes).await?;
     let rendered = prepared.rendered;
@@ -599,15 +625,14 @@ pub async fn spawn_runtime_ui(
     window.register_events(&events, sink)?;
 
     // 4. 实例授权（manifest 是上限，实例只可收窄）。
-    let grants = manifest_grants(&id, &plugin.manifest, INSTANCE_ID)?;
+    let grants = manifest_grants(&id, &plugin.manifest, instance_id)?;
 
     // 5. 派 worker 运行 runtime + 投影 + 事件回投。
     let (stop, stop_rx) = mpsc::sync_channel::<()>(1);
     let weak = window.weak();
     let wasm = plugin.wasm;
-    let config_json = "{}".into();
     let worker = thread::Builder::new()
-        .name(format!("floatile-runtime-{}", id.0))
+        .name(format!("floatile-runtime-{}-{}", id.0, instance_id.0))
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -631,7 +656,7 @@ pub async fn spawn_runtime_ui(
                 .with_audit_listener(audit_listener);
                 let config = WidgetConfig {
                     plugin: id.clone(),
-                    instance: INSTANCE_ID,
+                    instance: instance_id,
                     wasm,
                     initial_state,
                     state_schema,
@@ -655,7 +680,7 @@ pub async fn spawn_runtime_ui(
                 loop {
                     flush_event_overload_audit(
                         &id.0,
-                        INSTANCE_ID,
+                        instance_id,
                         &dropped_events,
                         overload_audit_listener.as_ref(),
                     );
@@ -724,7 +749,7 @@ pub async fn spawn_runtime_ui(
 
                 flush_event_overload_audit(
                     &id.0,
-                    INSTANCE_ID,
+                    instance_id,
                     &dropped_events,
                     overload_audit_listener.as_ref(),
                 );
@@ -743,8 +768,8 @@ pub async fn spawn_runtime_ui(
     })
 }
 
-/// 插件实例 ID：P0 单实例宿主的第三方插件默认实例（与内建时钟平级）。
-const INSTANCE_ID: InstanceId = InstanceId(1);
+#[cfg(test)]
+const TEST_INSTANCE_ID: InstanceId = InstanceId(1);
 
 #[cfg(test)]
 mod grants_tests {
@@ -752,6 +777,39 @@ mod grants_tests {
     use super::*;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU64;
+
+    fn installed_plugin() -> InstalledPlugin {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "manifestVersion": 1,
+            "id": "dev.floatile.clock",
+            "name": "World Clock",
+            "version": "0.2.0",
+            "engineApiVersion": "1.0.0",
+            "uiApiVersion": "1.0.0",
+            "type": "widget",
+            "entrypoints": { "ui": "ui/widget.ftui", "logic": "logic/plugin.wasm" },
+            "publisher": { "id": "dev.floatile", "name": "Floatile Labs" },
+            "sizes": { "default": { "width": 240, "height": 120 }, "min": { "width": 160, "height": 80 }, "max": { "width": 800, "height": 600 }, "resizable": true },
+            "permissions": []
+        }))
+        .unwrap();
+        InstalledPlugin {
+            manifest,
+            meta: floatile_core::install::InstallMeta {
+                manifest_version: 1,
+                id: "dev.floatile.clock".into(),
+                version: "0.2.0".into(),
+                engine_api_version: "1.0.0".into(),
+                ui_api_version: "1.0.0".into(),
+                installed_at: 0,
+                source: "clock.floatile".into(),
+                files: std::collections::BTreeMap::new(),
+                digest: "00".repeat(32),
+            },
+            wasm: Vec::new(),
+            ui_bytes: Vec::new(),
+        }
+    }
     #[test]
     fn manifest_grants_derives_timer_capability() {
         let manifest: Manifest = serde_json::from_str(
@@ -774,10 +832,10 @@ mod grants_tests {
         let grants = manifest_grants(
             &PluginId("dev.floatile.clock".into()),
             &manifest,
-            INSTANCE_ID,
+            TEST_INSTANCE_ID,
         )
         .unwrap();
-        assert_eq!(grants.instance, INSTANCE_ID);
+        assert_eq!(grants.instance, TEST_INSTANCE_ID);
         assert_eq!(grants.caps.len(), 1);
         assert_eq!(
             grants.caps[0].capability,
@@ -809,7 +867,7 @@ mod grants_tests {
         let grants = manifest_grants(
             &PluginId("dev.floatile.clock".into()),
             &manifest,
-            INSTANCE_ID,
+            TEST_INSTANCE_ID,
         )
         .unwrap();
         assert!(grants.caps.is_empty());
@@ -837,7 +895,7 @@ mod grants_tests {
         let err = manifest_grants(
             &PluginId("dev.floatile.clock".into()),
             &manifest,
-            INSTANCE_ID,
+            TEST_INSTANCE_ID,
         )
         .unwrap_err();
         assert_eq!(err.code(), "RUI_GRANT");
@@ -903,7 +961,12 @@ mod grants_tests {
         });
         let dropped = AtomicU64::new(3);
 
-        flush_event_overload_audit("dev.floatile.clock", INSTANCE_ID, &dropped, Some(&listener));
+        flush_event_overload_audit(
+            "dev.floatile.clock",
+            TEST_INSTANCE_ID,
+            &dropped,
+            Some(&listener),
+        );
 
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 1);
@@ -920,12 +983,70 @@ mod grants_tests {
             let _ = stop_rx.recv();
             thread::sleep(Duration::from_millis(250));
         });
-
         let started = std::time::Instant::now();
         reap_runtime_worker(&stop, worker);
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "UI-side shutdown must not wait for worker join"
         );
+    }
+
+    #[test]
+    fn runtime_context_preserves_same_installation_instance_ids_and_configs() {
+        let plugin = installed_plugin();
+        let installation = InstallationRef::from_install_meta(&plugin.meta).unwrap();
+        let first = PluginInstance::restore(
+            InstanceId(2),
+            installation.clone(),
+            floatile_core::InstanceConfig::new(serde_json::json!({"timezone": "UTC"})).unwrap(),
+            floatile_core::InstanceDesiredState::Running,
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+        let second = PluginInstance::restore(
+            InstanceId(3),
+            installation,
+            floatile_core::InstanceConfig::new(serde_json::json!({"timezone": "Asia/Shanghai"}))
+                .unwrap(),
+            floatile_core::InstanceDesiredState::Running,
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+
+        let first_context = validate_runtime_instance(&plugin, &first).unwrap();
+        let second_context = validate_runtime_instance(&plugin, &second).unwrap();
+
+        assert_eq!(first_context.0, InstanceId(2));
+        assert_eq!(second_context.0, InstanceId(3));
+        assert_eq!(first_context.1, r#"{"timezone":"UTC"}"#);
+        assert_eq!(second_context.1, r#"{"timezone":"Asia/Shanghai"}"#);
+    }
+
+    #[test]
+    fn runtime_context_rejects_mismatched_installation_identity() {
+        let plugin = installed_plugin();
+        let different_installation = InstallationRef::new(
+            PluginId("dev.floatile.clock".into()),
+            "0.2.0",
+            floatile_core::InstallationDigest::from_bytes([0xff; 32]),
+        )
+        .unwrap();
+        let instance = PluginInstance::restore(
+            InstanceId(2),
+            different_installation,
+            floatile_core::InstanceConfig::empty(),
+            floatile_core::InstanceDesiredState::Running,
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+
+        let error = validate_runtime_instance(&plugin, &instance).unwrap_err();
+        assert_eq!(error.code(), "RUI_INSTANCE_IDENTITY");
     }
 }
