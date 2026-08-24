@@ -43,16 +43,17 @@ Widget 可以自由布局，却不能绕过宿主直接读取文件、访问网�
 
 | 能力 | 状态 | 当前说明 |
 |---|:---:|---|
-| Rust workspace 与领域基础类型 | ✅ | 九个宿主/SDK crate、一个 WASM clock fixture、固定工具链与基础 CI 已建立 |
+| Rust workspace 与领域基础类型 | ✅ | 12 个 Rust crate、两个 WASM fixture、固定工具链与基础 CI 已建立 |
 | 原生参考时钟 | ✅ | 可运行的 Slint 时钟，每秒更新，用作窗口与性能基线 |
 | 透明、无边框、置顶窗口 | 🧪 | Windows、Linux X11 与 macOS 已有运行证据；X11 无合成器时显式降级为不透明，Wayland 待实测 |
 | 窗口拖拽 | 🧪 | Windows、Linux Xvfb 与 VMware Xfce/Xorg 已运行验证；macOS/Wayland 待交互实测 |
 | 平台能力探测与降级 | 🧪 | Windows 原生探测、X11 compositor/SHAPE/EWMH/RandR 实探测与 macOS 探测（点击穿透/置顶/显示器/指标/热键）已落地；Wayland 仅有显式协议降级 |
 | 编辑/展示模式、缩放与多屏布局 | 🧪 | Edit/Show、点击穿透联动和拖拽缩放已在 Windows 与 Linux X11 子路径落地；平台无关的主屏降级/原屏回归已实现，Canvas 接入及真实多屏/DPI/热插拔仍待验证 |
-| SQLite 布局持久化 | 🧪 | layout schema v2、CRUD、v1 升级/回滚及重启恢复测试已落地；shell 已接入启动保存/恢复与显示器变化重恢复（Xvfb+Openbox 实测）；真实多屏/热插拔实机验证与多实例编排待做 |
+| SQLite 持久化 | 🧪 | layout schema v2、audit schema v3 与 plugin instance schema v4 已落地；实例 CRUD 支持受限 Config、desired state、generation、重启恢复与不复用 ID；shell 按实例启动和真实多屏/热插拔实机验证待做 |
+| 持久化插件实例 | 🧪 | Package/Installation/Instance 已在领域与存储层分离；同一 Installation 可创建独立记录，并按 plugin/version/digest 精确复核；shell 生命周期编排与管理入口待下一条 PP-M1 切片 |
 | 统一 UI + WASM Widget | 🧪 | ADR-0001/0002 的 UI IR、renderer、运行时窗口、Wasmtime actor、Broker 与 Rust SDK 已落地并通过 Clock/恶意输入测试；ADR-0003 的 TypeScript runtime spike 为 no-go（StarlingMonkey 资源门失败、QuickJS 契约门失败），TypeScript SDK 与 F11 仍未完成 |
-| Permission Broker 与审计 | 🧪 | deny-by-default 决策、scope/配额、脱敏审计（target `floatile::audit`）与 clock/log/timer/storage/metrics/theme 能力已实现并有测试；恶意插件 fixture 与 SQLite 审计持久化待做 |
-| 插件 SDK 与打包 CLI | 🧪 | Rust 作者 SDK（Widget/View/Context/derive State）+ `floatile new/validate/build` 命令（模板、`.floatile` 校验、manifest 生成 + 打包）已实现；dev 预览（依赖 renderer spike）待做 |
+| Permission Broker 与审计 | 🧪 | deny-by-default、scope/配额、clock/log/timer/storage/metrics/theme、恶意插件 fixture 与脱敏 SQLite 审计已实现；插件 private KV 仍为进程内存储，真实容量数据待补 |
+| 插件 SDK 与打包 CLI | 🧪 | Rust SDK 与 `new/validate/build/install/dev/test/schema` 已实现；`dev` 目前只 watch+build，真实窗口 preview、inspect/run 与全命令 JSON 契约待做 |
 | 三平台与性能验收 | 🗺️ | 指标仅为目标值，目前不代表已达到或已验证 |
 
 权威进度与验收范围请查看[需求基线](docs/product/requirements.md)和

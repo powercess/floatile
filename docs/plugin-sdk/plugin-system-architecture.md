@@ -120,6 +120,20 @@ discover → validate → instantiate → start
 - callback 超时、fuel 耗尽、memory limit、trap 和队列溢出都转成稳定 runtime error，并记录宿主存活。
 - Show/Edit 属宿主权威状态；插件只接收通知，不得请求或覆盖点击穿透与宿主控件。
 
+### 4.1 持久实例身份
+
+PP-M1 的持久模型把 `Installation` 与 `PluginInstance` 分开：
+
+- `InstallationRef` 固定 `plugin_id + version + content digest`；宿主恢复实例时必须精确复核，
+  不得因为安装了更高版本就静默切换内容。
+- `PluginInstance` 持久化宿主分配的全局 ID、非敏感 canonical Config、desired
+  `running/stopped`、generation 与时间戳；运行时 observed state、WASM `State` 和窗口句柄不落库。
+- 内建参考时钟继续占用实例 ID 1；SQLite 持久实例从 2 开始分配且删除后不复用。
+- 删除实例同时删除其实例所有的布局，但不删除 Installation 和历史审计；Connection 尚未实现，
+  后续必须遵守共享引用不随单个实例删除的规则。
+- 当前切片只提供领域模型、SQLite CRUD 和精确 Installation 解析；shell 按实例启动、停止、恢复及
+  同包双窗口故障隔离属于下一条 PP-M1 切片。
+
 ## 5. State、Config 与 Storage
 
 | 数据 | 所有者 | 持久化 | 更新方式 |

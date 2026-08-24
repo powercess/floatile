@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use floatile_core::install::{InstallMeta, content_digest, file_digest, hex_encode};
+use floatile_core::instance::{InstallationRef, InstanceModelError};
 use floatile_core::manifest::Manifest;
 use semver::Version;
 use thiserror::Error;
@@ -46,6 +47,8 @@ pub enum LoadError {
     InvalidMeta(String),
     #[error("插件 {id} 文件 `{file}` digest 不匹配")]
     DigestMismatch { id: String, file: String },
+    #[error("安装 {id}@{version} 的内容身份与实例记录不匹配")]
+    InstallationMismatch { id: String, version: String },
     #[error("缺少 manifest.json")]
     MissingManifest,
     #[error("缺少入口 `{0}`")]
@@ -60,6 +63,7 @@ impl LoadError {
             Self::Read(_) => "FLOAD_READ",
             Self::InvalidMeta(_) => "FLOAD_INVALID_META",
             Self::DigestMismatch { .. } => "FLOAD_DIGEST_MISMATCH",
+            Self::InstallationMismatch { .. } => "FLOAD_INSTALLATION_MISMATCH",
             Self::MissingManifest => "FLOAD_MISSING_MANIFEST",
             Self::MissingEntrypoint(_) => "FLOAD_MISSING_ENTRYPOINT",
             Self::InvalidManifest(_) => "FLOAD_INVALID_MANIFEST",
@@ -80,6 +84,30 @@ pub fn load_installed(store: &Path, id: &str) -> Result<Option<InstalledPlugin>,
         return Ok(None);
     };
     load_from_dir(&dir).map(Some)
+}
+
+/// 加载实例固定引用的精确 Installation，不静默选择更高版本。
+///
+/// 目录不存在返回 `Ok(None)`；版本存在但 install metadata 的插件、版本或 digest 与引用不一致时
+/// 明确拒绝，避免实例在宿主重启后静默切换内容。
+pub fn load_installation(
+    store: &Path,
+    reference: &InstallationRef,
+) -> Result<Option<InstalledPlugin>, LoadError> {
+    let dir = store.join(&reference.plugin().0).join(reference.version());
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let plugin = load_from_dir(&dir)?;
+    let actual = InstallationRef::from_install_meta(&plugin.meta)
+        .map_err(|error: InstanceModelError| LoadError::InvalidMeta(error.to_string()))?;
+    if actual != *reference {
+        return Err(LoadError::InstallationMismatch {
+            id: reference.plugin().0.clone(),
+            version: reference.version().to_owned(),
+        });
+    }
+    Ok(Some(plugin))
 }
 
 /// 枚举插件存储下全部已安装插件，每个 id 取最高已安装版本并逐一做 digest 复核。
@@ -225,9 +253,10 @@ mod tests {
         .to_string()
     }
 
-    fn manifest_json_for(id: &str) -> String {
+    fn manifest_json_for(id: &str, version: &str) -> String {
         let mut manifest = serde_json::from_str::<serde_json::Value>(&manifest_json()).unwrap();
         manifest["id"] = serde_json::json!(id);
+        manifest["version"] = serde_json::json!(version);
         manifest.to_string()
     }
 
@@ -241,7 +270,10 @@ mod tests {
     /// 安装一个模拟版本目录（直接按 CLI 布列写 install.json + 文件）。
     fn write_install(store: &Path, id: &str, version: &str, tamper: Option<&str>) {
         let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        files.insert("manifest.json".into(), manifest_json_for(id).into_bytes());
+        files.insert(
+            "manifest.json".into(),
+            manifest_json_for(id, version).into_bytes(),
+        );
         files.insert("ui/widget.ftui".into(), b"{\"ui\":1}".to_vec());
         files.insert("logic/plugin.wasm".into(), vec![1, 2, 3, 4]);
 
@@ -280,6 +312,12 @@ mod tests {
         .unwrap();
     }
 
+    fn installation_ref(store: &Path, id: &str, version: &str) -> InstallationRef {
+        let bytes = std::fs::read(store.join(id).join(version).join("install.json")).unwrap();
+        let meta: InstallMeta = serde_json::from_slice(&bytes).unwrap();
+        InstallationRef::from_install_meta(&meta).unwrap()
+    }
+
     #[test]
     fn loads_highest_version_and_verifies_digest() {
         let store = temp_store("load");
@@ -293,6 +331,52 @@ mod tests {
         assert_eq!(plugin.wasm, vec![1, 2, 3, 4]);
         assert_eq!(plugin.ui_bytes, b"{\"ui\":1}");
         assert_eq!(plugin.manifest.id.0, "dev.floatile.clock");
+    }
+
+    #[test]
+    fn loads_exact_installation_without_silent_upgrade() {
+        let store = temp_store("exact");
+        write_install(&store, "dev.floatile.clock", "0.1.0", None);
+        write_install(&store, "dev.floatile.clock", "0.2.0", None);
+        let reference = installation_ref(&store, "dev.floatile.clock", "0.1.0");
+
+        let plugin = load_installation(&store, &reference)
+            .unwrap()
+            .expect("精确安装应存在");
+
+        assert_eq!(plugin.meta.version, "0.1.0");
+        assert_eq!(
+            InstallationRef::from_install_meta(&plugin.meta).unwrap(),
+            reference
+        );
+    }
+
+    #[test]
+    fn rejects_installation_with_different_digest() {
+        let store = temp_store("exact-digest");
+        write_install(&store, "dev.floatile.clock", "0.1.0", None);
+        let reference = InstallationRef::new(
+            floatile_core::PluginId("dev.floatile.clock".into()),
+            "0.1.0",
+            floatile_core::InstallationDigest::from_bytes([0xff; 32]),
+        )
+        .unwrap();
+
+        let error = load_installation(&store, &reference).unwrap_err();
+        assert!(matches!(error, LoadError::InstallationMismatch { .. }));
+        assert_eq!(error.code(), "FLOAD_INSTALLATION_MISMATCH");
+    }
+
+    #[test]
+    fn exact_installation_returns_none_when_version_is_absent() {
+        let store = temp_store("exact-none");
+        let reference = InstallationRef::new(
+            floatile_core::PluginId("dev.floatile.clock".into()),
+            "9.9.9",
+            floatile_core::InstallationDigest::from_bytes([0xff; 32]),
+        )
+        .unwrap();
+        assert!(load_installation(&store, &reference).unwrap().is_none());
     }
 
     #[test]

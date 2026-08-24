@@ -5,8 +5,11 @@
 
 use std::path::Path;
 
-use floatile_core::WidgetLayout;
-use rusqlite::Connection;
+use floatile_core::{
+    InstallationDigest, InstallationRef, InstanceConfig, InstanceDesiredState, InstanceId,
+    PluginId, PluginInstance, WidgetLayout,
+};
+use rusqlite::{Connection, OptionalExtension};
 
 /// 持久化错误。
 #[derive(Debug, thiserror::Error)]
@@ -22,7 +25,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -58,6 +61,9 @@ impl Store {
         }
         if current < 3 {
             self.migration_v3()?;
+        }
+        if current < 4 {
+            self.migration_v4()?;
         }
         Ok(())
     }
@@ -127,6 +133,39 @@ impl Store {
             .map_err(|e| StoreError::Migration(format!("v3 提交失败: {e}")))
     }
 
+    fn migration_v4(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugin_instances (
+                instance_id          INTEGER PRIMARY KEY,
+                plugin_id            TEXT NOT NULL,
+                installation_version TEXT NOT NULL,
+                installation_digest  BLOB NOT NULL
+                    CHECK (length(installation_digest) = 32),
+                config_json          TEXT NOT NULL,
+                desired_state        TEXT NOT NULL
+                    CHECK (desired_state IN ('stopped','running')),
+                generation           INTEGER NOT NULL DEFAULT 0
+                    CHECK (generation >= 0),
+                created_at           INTEGER NOT NULL CHECK (created_at >= 0),
+                updated_at           INTEGER NOT NULL
+                    CHECK (updated_at >= created_at)
+            );
+            CREATE INDEX IF NOT EXISTS plugin_instances_plugin
+                ON plugin_instances(plugin_id);
+            CREATE TABLE IF NOT EXISTS plugin_instance_id_allocator (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                next_id   INTEGER NOT NULL CHECK (next_id >= 2)
+            );
+            INSERT OR IGNORE INTO plugin_instance_id_allocator(singleton, next_id)
+                VALUES (1, 2);
+            PRAGMA user_version = 4;",
+        )
+        .map_err(|error| StoreError::Migration(format!("v4 建立插件实例表失败: {error}")))?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v4 提交失败: {error}")))
+    }
+
     /// 布局存储接口。
     pub fn layout(&self) -> LayoutStore<'_> {
         LayoutStore { conn: &self.conn }
@@ -139,6 +178,191 @@ impl Store {
     /// `floatile-services::audit`（长度/哈希，不落 secret 或完整值）。
     pub fn audit(&self) -> AuditStore<'_> {
         AuditStore { conn: &self.conn }
+    }
+    /// 持久化插件实例接口。
+    pub fn instances(&self) -> InstanceStore<'_> {
+        InstanceStore { conn: &self.conn }
+    }
+}
+
+/// 持久化插件实例 CRUD。
+pub struct InstanceStore<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> InstanceStore<'a> {
+    /// 创建实例并分配永不复用的宿主全局 ID。
+    ///
+    /// ID 1 已由当前内建参考时钟占用，持久化第三方实例从 2 开始。
+    pub fn create(
+        &self,
+        installation: &InstallationRef,
+        config: &InstanceConfig,
+        desired_state: InstanceDesiredState,
+        created_at: u64,
+    ) -> Result<PluginInstance, StoreError> {
+        installation
+            .validate()
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        let created_at_sql = sqlite_i64(created_at, "created_at")?;
+        let config_json = serde_json::to_string(config)?;
+        let tx = self.conn.unchecked_transaction()?;
+        let instance_id_sql: i64 = tx.query_row(
+            "UPDATE plugin_instance_id_allocator
+             SET next_id = next_id + 1
+             WHERE singleton = 1
+             RETURNING next_id - 1",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO plugin_instances (
+                instance_id, plugin_id, installation_version, installation_digest,
+                config_json, desired_state, generation, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?7)",
+            rusqlite::params![
+                instance_id_sql,
+                installation.plugin().0,
+                installation.version(),
+                installation.digest().as_bytes().as_slice(),
+                config_json,
+                desired_state.as_str(),
+                created_at_sql,
+            ],
+        )?;
+        tx.commit()?;
+
+        let instance_id = u64::try_from(instance_id_sql).map_err(|_| {
+            StoreError::Corrupt(format!("instance_id 不得为负数: {instance_id_sql}"))
+        })?;
+        PluginInstance::restore(
+            InstanceId(instance_id),
+            installation.clone(),
+            config.clone(),
+            desired_state,
+            0,
+            created_at,
+            created_at,
+        )
+        .map_err(|error| StoreError::Corrupt(error.to_string()))
+    }
+
+    /// 按全局实例 ID 读取。
+    pub fn get(&self, instance_id: InstanceId) -> Result<Option<PluginInstance>, StoreError> {
+        let instance_id = sqlite_i64(instance_id.0, "instance_id")?;
+        let mut statement = self.conn.prepare(
+            "SELECT
+                instance_id, plugin_id, installation_version, installation_digest,
+                config_json, desired_state, generation, created_at, updated_at
+             FROM plugin_instances
+             WHERE instance_id = ?1",
+        )?;
+        let mut rows = statement.query(rusqlite::params![instance_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        row_to_instance(row).map(Some)
+    }
+
+    /// 按实例 ID 稳定枚举全部实例。
+    pub fn list(&self) -> Result<Vec<PluginInstance>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT
+                instance_id, plugin_id, installation_version, installation_digest,
+                config_json, desired_state, generation, created_at, updated_at
+             FROM plugin_instances
+             ORDER BY instance_id ASC",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut instances = Vec::new();
+        while let Some(row) = rows.next()? {
+            instances.push(row_to_instance(row)?);
+        }
+        Ok(instances)
+    }
+
+    /// 原子替换 canonical config；过期时间戳不会覆盖较新的记录。
+    pub fn update_config(
+        &self,
+        instance_id: InstanceId,
+        config: &InstanceConfig,
+        updated_at: u64,
+    ) -> Result<bool, StoreError> {
+        let instance_id = sqlite_i64(instance_id.0, "instance_id")?;
+        let updated_at = sqlite_i64(updated_at, "updated_at")?;
+        let config_json = serde_json::to_string(config)?;
+        let changed = self.conn.execute(
+            "UPDATE plugin_instances
+             SET config_json = ?1, updated_at = ?2
+             WHERE instance_id = ?3 AND updated_at <= ?2",
+            rusqlite::params![config_json, updated_at, instance_id],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// 更新宿主重启后应恢复的运行意图；不把 observed runtime 状态持久化。
+    pub fn set_desired_state(
+        &self,
+        instance_id: InstanceId,
+        desired_state: InstanceDesiredState,
+        updated_at: u64,
+    ) -> Result<bool, StoreError> {
+        let instance_id = sqlite_i64(instance_id.0, "instance_id")?;
+        let updated_at = sqlite_i64(updated_at, "updated_at")?;
+        let changed = self.conn.execute(
+            "UPDATE plugin_instances
+             SET desired_state = ?1, updated_at = ?2
+             WHERE instance_id = ?3 AND updated_at <= ?2",
+            rusqlite::params![desired_state.as_str(), updated_at, instance_id],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// 启动或重启前推进 generation；迟到异步结果必须匹配该值才能投递。
+    pub fn advance_generation(
+        &self,
+        instance_id: InstanceId,
+        updated_at: u64,
+    ) -> Result<Option<u64>, StoreError> {
+        let instance_id = sqlite_i64(instance_id.0, "instance_id")?;
+        let updated_at = sqlite_i64(updated_at, "updated_at")?;
+        let generation: Option<i64> = self
+            .conn
+            .query_row(
+                "UPDATE plugin_instances
+                 SET generation = generation + 1, updated_at = ?1
+                 WHERE instance_id = ?2
+                   AND updated_at <= ?1
+                   AND generation < 9223372036854775807
+                 RETURNING generation",
+                rusqlite::params![updated_at, instance_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        generation
+            .map(|value| {
+                u64::try_from(value)
+                    .map_err(|_| StoreError::Corrupt(format!("generation 不得为负数: {value}")))
+            })
+            .transpose()
+    }
+
+    /// 删除实例及其实例所有的布局；Installation 和历史审计保留。
+    pub fn delete(&self, instance_id: InstanceId) -> Result<bool, StoreError> {
+        let instance_id = sqlite_i64(instance_id.0, "instance_id")?;
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "DELETE FROM plugin_instances WHERE instance_id = ?1",
+            rusqlite::params![instance_id],
+        )?;
+        if changed == 1 {
+            tx.execute(
+                "DELETE FROM layout WHERE instance_id = ?1",
+                rusqlite::params![instance_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
     }
 }
 
@@ -322,6 +546,40 @@ impl<'a> AuditStore<'a> {
     }
 }
 
+fn row_to_instance(row: &rusqlite::Row<'_>) -> Result<PluginInstance, StoreError> {
+    let instance_id = InstanceId(read_u64(row, 0, "instance_id")?);
+    let plugin = PluginId(row.get(1)?);
+    let version = row.get::<_, String>(2)?;
+    let digest = row.get::<_, Vec<u8>>(3)?;
+    let digest: [u8; 32] = digest.try_into().map_err(|bytes: Vec<u8>| {
+        StoreError::Corrupt(format!(
+            "installation_digest 必须为 32 字节，实际为 {}",
+            bytes.len()
+        ))
+    })?;
+    let installation =
+        InstallationRef::new(plugin, version, InstallationDigest::from_bytes(digest))
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    let config_json = row.get::<_, String>(4)?;
+    let config: InstanceConfig = serde_json::from_str(&config_json)
+        .map_err(|error| StoreError::Corrupt(format!("实例配置无效: {error}")))?;
+    let desired_state = InstanceDesiredState::parse(&row.get::<_, String>(5)?)
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    let generation = read_u64(row, 6, "generation")?;
+    let created_at = read_u64(row, 7, "created_at")?;
+    let updated_at = read_u64(row, 8, "updated_at")?;
+    PluginInstance::restore(
+        instance_id,
+        installation,
+        config,
+        desired_state,
+        generation,
+        created_at,
+        updated_at,
+    )
+    .map_err(|error| StoreError::Corrupt(error.to_string()))
+}
+
 fn sqlite_i64(value: u64, field: &'static str) -> Result<i64, StoreError> {
     i64::try_from(value)
         .map_err(|_| StoreError::Corrupt(format!("{field} 超出 SQLite INTEGER 范围: {value}")))
@@ -346,8 +604,8 @@ fn row_to_layout(row: &rusqlite::Row<'_>) -> Result<WidgetLayout, StoreError> {
         }
     };
     let layout = WidgetLayout {
-        instance_id: floatile_core::InstanceId(read_u64(row, 0, "instance_id")?),
-        plugin_id: floatile_core::PluginId(row.get(1)?),
+        instance_id: InstanceId(read_u64(row, 0, "instance_id")?),
+        plugin_id: PluginId(row.get(1)?),
         monitor_key: row
             .get::<_, Option<String>>(2)?
             .map(floatile_core::MonitorKey),
@@ -748,6 +1006,237 @@ mod tests {
         bad.decision = "maybe".into();
         assert!(matches!(
             store.audit().record(&bad),
+            Err(StoreError::Corrupt(_))
+        ));
+    }
+    fn installation() -> InstallationRef {
+        InstallationRef::new(
+            PluginId("dev.floatile.clock".into()),
+            "1.2.3",
+            InstallationDigest::from_bytes([0x2a; 32]),
+        )
+        .unwrap()
+    }
+
+    fn config(label: &str) -> InstanceConfig {
+        InstanceConfig::new(serde_json::json!({ "label": label })).unwrap()
+    }
+
+    fn v3_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store.migration_v2().unwrap();
+        store.migration_v3().unwrap();
+        store
+    }
+
+    #[test]
+    fn migration_v4_preserves_existing_data_and_allocates_after_builtin() {
+        let mut store = v3_store();
+        store.layout().save(&sample(1)).unwrap();
+        store
+            .audit()
+            .record(&sample_audit(
+                "dev.floatile.clock",
+                1,
+                "timer:schedule",
+                "allow",
+            ))
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        assert!(store.layout().get(1).unwrap().is_some());
+        assert_eq!(store.audit().list().unwrap().len(), 1);
+        let instance = store
+            .instances()
+            .create(
+                &installation(),
+                &config("first"),
+                InstanceDesiredState::Stopped,
+                1_700_000_100,
+            )
+            .unwrap();
+        assert_eq!(instance.id(), InstanceId(2));
+    }
+
+    #[test]
+    fn migration_v4_failure_rolls_back_allocator_and_version() {
+        let mut store = v3_store();
+        store
+            .conn
+            .execute_batch("CREATE TABLE plugin_instances (broken INTEGER);")
+            .unwrap();
+
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let allocator_exists: u32 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'plugin_instance_id_allocator'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(allocator_exists, 0);
+    }
+
+    #[test]
+    fn same_installation_instances_have_independent_state() {
+        let store = open(":memory:").unwrap();
+        let installation = installation();
+        let first = store
+            .instances()
+            .create(
+                &installation,
+                &config("first"),
+                InstanceDesiredState::Stopped,
+                100,
+            )
+            .unwrap();
+        let second = store
+            .instances()
+            .create(
+                &installation,
+                &config("second"),
+                InstanceDesiredState::Running,
+                100,
+            )
+            .unwrap();
+        assert_eq!(first.id(), InstanceId(2));
+        assert_eq!(second.id(), InstanceId(3));
+
+        assert!(
+            store
+                .instances()
+                .update_config(first.id(), &config("updated"), 110)
+                .unwrap()
+        );
+        assert!(
+            store
+                .instances()
+                .set_desired_state(first.id(), InstanceDesiredState::Running, 111)
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .instances()
+                .advance_generation(first.id(), 112)
+                .unwrap(),
+            Some(1)
+        );
+        assert!(
+            !store
+                .instances()
+                .update_config(first.id(), &config("stale"), 109)
+                .unwrap()
+        );
+
+        let first = store.instances().get(first.id()).unwrap().unwrap();
+        let second = store.instances().get(second.id()).unwrap().unwrap();
+        assert_eq!(
+            first.config().to_value(),
+            serde_json::json!({"label": "updated"})
+        );
+        assert_eq!(first.desired_state(), InstanceDesiredState::Running);
+        assert_eq!(first.generation(), 1);
+        assert_eq!(
+            second.config().to_value(),
+            serde_json::json!({"label": "second"})
+        );
+        assert_eq!(second.desired_state(), InstanceDesiredState::Running);
+        assert_eq!(second.generation(), 0);
+        assert_eq!(store.instances().list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn deleting_instance_removes_owned_layout_but_not_peer() {
+        let store = open(":memory:").unwrap();
+        let first = store
+            .instances()
+            .create(
+                &installation(),
+                &config("first"),
+                InstanceDesiredState::Stopped,
+                100,
+            )
+            .unwrap();
+        let second = store
+            .instances()
+            .create(
+                &installation(),
+                &config("second"),
+                InstanceDesiredState::Stopped,
+                100,
+            )
+            .unwrap();
+        store.layout().save(&sample(first.id().0)).unwrap();
+
+        assert!(store.instances().delete(first.id()).unwrap());
+        assert!(store.instances().get(first.id()).unwrap().is_none());
+        assert!(store.layout().get(first.id().0).unwrap().is_none());
+        assert!(store.instances().get(second.id()).unwrap().is_some());
+        assert!(!store.instances().delete(first.id()).unwrap());
+    }
+
+    #[test]
+    fn instances_persist_across_reopen_without_reusing_ids() {
+        let path = TempDb::new();
+        let first_id;
+        {
+            let store = open(&path.0).unwrap();
+            let first = store
+                .instances()
+                .create(
+                    &installation(),
+                    &config("persistent"),
+                    InstanceDesiredState::Running,
+                    100,
+                )
+                .unwrap();
+            first_id = first.id();
+            assert!(store.instances().delete(first_id).unwrap());
+        }
+        {
+            let store = open(&path.0).unwrap();
+            let second = store
+                .instances()
+                .create(
+                    &installation(),
+                    &config("replacement"),
+                    InstanceDesiredState::Stopped,
+                    200,
+                )
+                .unwrap();
+            assert!(second.id().0 > first_id.0);
+            assert_eq!(
+                second.config().to_value(),
+                serde_json::json!({"label": "replacement"})
+            );
+        }
+    }
+
+    #[test]
+    fn corrupt_instance_row_is_rejected() {
+        let store = open(":memory:").unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO plugin_instances (
+                    instance_id, plugin_id, installation_version, installation_digest,
+                    config_json, desired_state, generation, created_at, updated_at
+                 ) VALUES (2, 'dev.floatile.clock', '1.0.0', ?1, '[]', 'stopped', 0, 1, 1)",
+                rusqlite::params![[0u8; 32].as_slice()],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.instances().get(InstanceId(2)),
             Err(StoreError::Corrupt(_))
         ));
     }

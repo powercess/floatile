@@ -49,9 +49,9 @@
 
 ### 3.1 `floatile-core`
 
-- `PluginId`、`InstanceId`、布局/DPI/模式等纯领域类型。
+- `PluginId`、`InstanceId`、`InstallationRef`、`PluginInstance`、受限 Config、布局/DPI/模式等纯领域类型。
 - manifest、capability/grant/scope/quota 的纯数据与决策输入；无文件/数据库访问。
-- host/runtime 使用的稳定错误分类与版本值对象。
+- host/runtime 使用的稳定错误分类、版本值对象与实例持久化不变量。
 - 不放 UI IR/WIT 生成物，避免 guest 为 UI 类型依赖全部宿主 domain。
 
 ### 3.2 `floatile-ui-schema`
@@ -119,7 +119,9 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 ### 3.8 `floatile-store`
 
 - SQLite open/migration/transaction。
-- layout、plugin metadata、private KV、audit_log；新增前向 migration，禁止修改已发布 migration。
+- 当前 v4 持久化 layout、plugin instance 和 audit_log；plugin private KV 尚未接入 SQLite。
+- 实例 CRUD 负责不复用 ID、Config/时间戳复验和删除实例所有的布局；Installation 内容仍由
+  原子安装目录与 `install.json` digest 管理。
 - 不做 permission 决策，不向 plugin 暴露连接/SQL/path。
 
 ### 3.9 `floatile-sdk`
