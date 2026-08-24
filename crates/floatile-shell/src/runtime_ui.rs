@@ -507,7 +507,27 @@ pub struct RuntimeUiSession {
     /// 保持窗口存活。
     _window: RuntimePluginWindow,
     stop: mpsc::SyncSender<()>,
+    lifecycle: mpsc::Receiver<RuntimeUiLifecycleEvent>,
     worker: Option<thread::JoinHandle<()>>,
+}
+
+/// runtime worker 向 Slint 线程发布的 observed lifecycle。错误码稳定，detail 只用于
+/// 宿主诊断；控制面不得依赖自由文本判断状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeUiLifecycleEvent {
+    Running,
+    Failed { code: &'static str, detail: String },
+    Stopped,
+}
+
+impl RuntimeUiSession {
+    /// 非阻塞读取一个 lifecycle 事件。Slint timer 每轮有界调用，不等待 worker。
+    pub fn try_lifecycle_event(&self) -> Option<RuntimeUiLifecycleEvent> {
+        match self.lifecycle.try_recv() {
+            Ok(event) => Some(event),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
+        }
+    }
 }
 
 impl Drop for RuntimeUiSession {
@@ -629,6 +649,7 @@ pub async fn spawn_runtime_ui(
 
     // 5. 派 worker 运行 runtime + 投影 + 事件回投。
     let (stop, stop_rx) = mpsc::sync_channel::<()>(1);
+    let (lifecycle_tx, lifecycle_rx) = mpsc::sync_channel::<RuntimeUiLifecycleEvent>(4);
     let weak = window.weak();
     let wasm = plugin.wasm;
     let worker = thread::Builder::new()
@@ -641,6 +662,10 @@ pub async fn spawn_runtime_ui(
                 Ok(r) => r,
                 Err(error) => {
                     tracing::warn!(%error, "failed to build tokio runtime");
+                    let _ = lifecycle_tx.try_send(RuntimeUiLifecycleEvent::Failed {
+                        code: "RUI_RUNTIME",
+                        detail: error.to_string(),
+                    });
                     return;
                 }
             };
@@ -650,6 +675,10 @@ pub async fn spawn_runtime_ui(
                     Ok(m) => m,
                     Err(error) => {
                         tracing::warn!(%error, "failed to create widget manager");
+                        let _ = lifecycle_tx.try_send(RuntimeUiLifecycleEvent::Failed {
+                            code: "RUI_RUNTIME",
+                            detail: error.to_string(),
+                        });
                         return;
                     }
                 }
@@ -667,16 +696,27 @@ pub async fn spawn_runtime_ui(
                     Ok(h) => h,
                     Err(error) => {
                         tracing::warn!(%error, "failed to spawn runtime widget");
+                        let _ = lifecycle_tx.try_send(RuntimeUiLifecycleEvent::Failed {
+                            code: "RUI_RUNTIME",
+                            detail: error.to_string(),
+                        });
                         return;
                     }
                 };
                 if let Err(error) = handle.start().await {
                     tracing::warn!(%error, "runtime widget start failed");
+                    let _ = lifecycle_tx.try_send(RuntimeUiLifecycleEvent::Failed {
+                        code: "RUI_RUNTIME",
+                        detail: error.to_string(),
+                    });
                     let _ = handle.shutdown().await;
                     return;
                 }
+                let _ = lifecycle_tx.try_send(RuntimeUiLifecycleEvent::Running);
                 tracing::info!(plugin_id = %id.0, "runtime plugin window started");
 
+                let mut stopped_by_host = false;
+                let mut terminal_failure = None;
                 loop {
                     flush_event_overload_audit(
                         &id.0,
@@ -688,6 +728,7 @@ pub async fn spawn_runtime_ui(
                         stop_rx.try_recv(),
                         Ok(()) | Err(mpsc::TryRecvError::Disconnected)
                     ) {
+                        stopped_by_host = true;
                         break;
                     }
                     // 事件回投：UI 线程 sink → 本实例 handle_event。
@@ -715,6 +756,10 @@ pub async fn spawn_runtime_ui(
                         Ok(update) => update,
                         Err(_) => continue,
                     }) else {
+                        terminal_failure = Some((
+                            "RUI_RUNTIME_CLOSED",
+                            "runtime state update channel closed unexpectedly".to_owned(),
+                        ));
                         break;
                     };
                     // 沿 renderer binding 槽位解析为 (prop, text)，在 UI 线程投影。
@@ -743,6 +788,7 @@ pub async fn spawn_runtime_ui(
                         }
                     }) {
                         tracing::debug!(%error, "event loop delivery failed; stopping bridge");
+                        terminal_failure = Some(("RUI_UI_CLOSED", error.to_string()));
                         break;
                     }
                 }
@@ -757,6 +803,15 @@ pub async fn spawn_runtime_ui(
                 if let Err(error) = handle.shutdown().await {
                     tracing::warn!(%error, "runtime widget shutdown failed");
                 }
+                let event = match terminal_failure {
+                    Some((code, detail)) => RuntimeUiLifecycleEvent::Failed { code, detail },
+                    None if stopped_by_host => RuntimeUiLifecycleEvent::Stopped,
+                    None => RuntimeUiLifecycleEvent::Failed {
+                        code: "RUI_RUNTIME_CLOSED",
+                        detail: "runtime worker exited unexpectedly".to_owned(),
+                    },
+                };
+                let _ = lifecycle_tx.try_send(event);
             });
         })
         .map_err(|e| RuntimeUiError::Runtime(e.to_string()))?;
@@ -764,6 +819,7 @@ pub async fn spawn_runtime_ui(
     Ok(RuntimeUiSession {
         _window: window,
         stop,
+        lifecycle: lifecycle_rx,
         worker: Some(worker),
     })
 }
