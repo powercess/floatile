@@ -4,7 +4,7 @@
 //! 在 Xvfb/真实桌面上验证 ADR-0002 spike-3 判据之上的宿主 API 全链：
 //! `render_ftui → compile_component → RuntimePluginWindow::create_on_ui_thread →
 //! project_state → register_events`，即「已安装插件 UI 在运行时编译成宿主窗口、
-//! binding 槽位 State 投影、输入事件回投」三条断言。
+//! 同包双窗口 State 隔离、binding 槽位 State 投影、输入事件回投」四条断言。
 //!
 //! 注意保持单一 `#[test]`：Slint 事件循环每进程只可创建一次（`EventLoop can't be
 //! recreated`），多个测试在同一二进制里实例化窗口会冲突；窗口路径的证据都收敛到
@@ -111,13 +111,20 @@ fn runtime_window_renders_projects_state_and_forwards_events() {
     let definition = compile_component(&rendered).expect("interpreter 运行时编译");
     assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
     let caps = probe();
-    let window = RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings, &caps)
-        .expect("interpreter 自窗口应可实例化");
+    let window =
+        RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings.clone(), &caps)
+            .expect("interpreter 自窗口应可实例化");
+    let second_window =
+        RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings.clone(), &caps)
+            .expect("同一插件定义应可实例化第二个独立窗口");
 
     // 沿 binding 槽位投影权威 State → 再读出确认往返（ADR-0002 spike-3 断言之一）。
     window
         .project_state(&serde_json::json!({"time": "13:37:00", "running": true}))
         .expect("投影应成功");
+    second_window
+        .project_state(&serde_json::json!({"time": "08:00:00", "running": false}))
+        .expect("第二实例投影应成功");
     let projected = window
         .instance()
         .get_property(&prop)
@@ -126,6 +133,20 @@ fn runtime_window_renders_projects_state_and_forwards_events() {
         projected,
         Value::String("13:37:00".into()),
         "binding 槽位应投影到权威 State 文本"
+    );
+    let second_projected = second_window
+        .instance()
+        .get_property(&prop)
+        .expect("第二实例 binding 槽位可读");
+    assert_eq!(
+        second_projected,
+        Value::String("08:00:00".into()),
+        "同一插件的两个窗口必须保留各自独立 State"
+    );
+    assert_eq!(
+        window.instance().get_property(&prop).unwrap(),
+        Value::String("13:37:00".into()),
+        "第二实例投影不得改写第一实例窗口"
     );
 
     // 跨线程弱引用可取得（worker 投影路径前置）。
