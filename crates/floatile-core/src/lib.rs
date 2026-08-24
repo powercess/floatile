@@ -1,6 +1,7 @@
 pub mod capability;
 pub mod constants;
 pub mod install;
+pub mod instance;
 pub mod layout;
 pub mod manifest;
 pub mod types;
@@ -9,6 +10,10 @@ pub use capability::{
     CapabilityError, CapabilityId, CapabilityParams, DenyReason, EffectiveGrant, Grant, Grants,
     InstanceGrant, PermissionDecision, TrustLevel, decide, narrow_instance,
     parse_capability_params,
+};
+pub use instance::{
+    InstallationDigest, InstallationRef, InstanceConfig, InstanceDesiredState, InstanceModelError,
+    MAX_INSTANCE_CONFIG_BYTES, MAX_INSTANCE_CONFIG_DEPTH, PluginInstance,
 };
 pub use layout::{
     LAYOUT_RECORD_VERSION, LayoutRecoveryError, LayoutValidationError, MonitorLayout,

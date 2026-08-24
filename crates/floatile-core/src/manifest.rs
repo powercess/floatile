@@ -239,7 +239,7 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-fn validate_plugin_id(id: &str) -> Result<(), ManifestError> {
+pub(crate) fn validate_plugin_id(id: &str) -> Result<(), ManifestError> {
     let valid = !id.is_empty()
         && id.len() <= 128
         && id

@@ -166,7 +166,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 | ID | 里程碑 | 状态 | 主要交付 | 退出门 | 主要影响 |
 |---|---|---|---|---|---|
 | PP-M0 | 战略与事实源基线 | 进行中 | 本路线、P0 范围关系、稳定引用和 Agent 接手协议 | 事实源互链；不存在把规划写成已实现的表述 | `docs/` |
-| PP-M1 | 插件内核与真实多实例 | 规划中 | Package/Installation/Instance 分离；实例 CRUD、生命周期、持久化和故障隔离 | 同包多实例可独立配置、启动、停止、恢复和删除；迁移及失败测试通过 | `core`、`store`、`runtime`、`shell`、CLI |
+| PP-M1 | 插件内核与真实多实例 | 进行中 | Package/Installation/Instance 分离；实例 CRUD、生命周期、持久化和故障隔离 | 同包多实例可独立配置、启动、停止、恢复和删除；迁移及失败测试通过 | `core`、`store`、`runtime`、`shell`、CLI |
 | PP-M2 | Broker 化异步 Operation | 规划中 | 异步模型 spike/ADR；operation registry、队列、取消、deadline、generation 和 completion event | reference fixture 覆盖成功、拒绝、超时、取消、迟到结果、实例重启和过载 | `core`、`runtime`、`services`、WIT、SDK |
 | PP-M3 | Capability Registry 单源 | 规划中 | 统一 capability 元数据，生成/校验 manifest、Broker、SDK 文档与 contract vectors | 新增能力无需在多处手写语义；恶意插件和配额测试证明默认拒绝 | `core`、`services`、plugin API、SDK、CLI |
 | PP-M4 | Rust 作者闭环 | 规划中 | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
@@ -179,10 +179,13 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 
 ### 7.1 当前基线与最近顺序
 
-截至 2026-08-23，仓库已具备统一 UI IR、WIT 形状、Wasmtime actor、基础 capability 类型与 Broker、
-部分宿主服务、Rust SDK、包校验/安装和第三方运行时窗口等基础，但还不是完整的插件作者平台：
+截至 2026-08-24，仓库已具备统一 UI IR、WIT 形状、Wasmtime actor、基础 capability 类型与 Broker、
+部分宿主服务、Rust SDK、包校验/安装和第三方运行时窗口等基础。PP-M1 已落地第一条持久化切片：
+`floatile-core` 定义精确 Installation 引用、受限 Config、desired state、generation 和实例记录；
+`floatile-store` v4 提供从 2 开始且不复用 ID 的实例 CRUD，PluginManager 可按
+`plugin_id + version + digest` 精确复核安装内容。但仓库还不是完整的插件作者平台：
 
-- shell 主要按已安装包启动窗口，尚无持久、可管理的真实多实例领域模型；
+- shell 仍主要按已安装包启动窗口，尚未按持久实例记录启动、停止和恢复真实多实例；
 - 生成项目和 `dev` 流程尚不能证明仓库外作者可完成预览到运行闭环；
 - 网络、Connection、凭证托管和长任务 Operation 尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
@@ -190,14 +193,15 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 
 因此最近的 PR 顺序应优先建设通用底座：
 
-1. `docs(core): define plugin platform v1 domain model and roadmap`（PP-M0）；
-2. `feat(core): introduce persistent plugin instance model`（PP-M1）；
-3. `spike(runtime): validate brokered async operations`（PP-M2）；
-4. `refactor(capabilities): establish single-source capability registry`（PP-M3）；
-5. `feat(cli): complete the Rust plugin author loop`（PP-M4）；
-6. `feat(connections): add host-owned connection and credential references`（PP-M5）；
-7. `feat(http): implement the first bounded HTTPS Broker vertical slice`（PP-M5）；
-8. `feat(examples): add an AI balance monitor reference plugin`（PP-M5/PP-M6）。
+1. `docs(core): define plugin platform v1 domain model and roadmap`（PP-M0，已落地）；
+2. `feat(instances): introduce persistent plugin instance model`（PP-M1，本切片）；
+3. `feat(shell): launch and isolate persistent plugin instances`（PP-M1，下一切片）；
+4. `spike(runtime): validate brokered async operations`（PP-M2）；
+5. `refactor(capabilities): establish single-source capability registry`（PP-M3）；
+6. `feat(cli): complete the Rust plugin author loop`（PP-M4）；
+7. `feat(connections): add host-owned connection and credential references`（PP-M5）；
+8. `feat(http): implement the first bounded HTTPS Broker vertical slice`（PP-M5）；
+9. `feat(examples): add an AI balance monitor reference plugin`（PP-M5/PP-M6）。
 
 这是依赖顺序，不是要求一个 PR 同时完成整个里程碑。每个 PR 必须是一条可审查、可回退、包含失败
 路径和联动文档的纵向切片。
