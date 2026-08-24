@@ -1,4 +1,7 @@
 /target
+
+# 本机 cargo 配置（sccache 路径、wrapper 等本机专属，不入库）
+.cargo/
 node_modules/
 spikes/typescript-runtime/generated/
 **/*.rs.bk
