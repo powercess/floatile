@@ -11,9 +11,11 @@ build 打包+自校验。原子安装已实现（`floatile-cli install`：stagin
 rename 到 `<插件存储>/<id>/<version>/`，写 `install.json`，同版本重复安装拒绝、失败零残留）；
 `floatile-core::install` 为 InstallMeta 与内容 digest 的单一事实源，`floatile-shell::plugin_manager`
 按 digest 复核后加载已安装包。config.schema 结构/边界校验已落地（声明时引用文件必须是合法、有界、
-根为 object 的 JSON Schema，否则安装拒绝）。独立 manifest JSON Schema 产物已由单一源 serde 模型生成
+根为 object 的 JSON Schema，且 `$ref`/`$dynamicRef`/`$recursiveRef` 只能指向当前文档 fragment）。
+CLI 创建/配置与 shell 恢复实例时共用求值器；外部引用在安装期和求值前都拒绝，不会为
+不受信 schema 触发宿主网络/文件 I/O。独立 manifest JSON Schema 产物已由单一源 serde 模型生成
 （`floatile-core::manifest_json_schema` + `floatile schema <out>` 输出 JSON Schema；用 `jsonschema`
-自检与 serde 序列化无 drift）。签名与通用 JSON Schema 求值器仍待后续切片。
+自检与 serde 序列化无 drift）。签名仍待后续切片。
 
 manifest 是安装与运行时的显式事实，不是开发者主要编辑界面。Rust/TypeScript 项目使用最小
 `floatile.toml`，CLI 结合代码生成的 UI/State/Event schema 和 capability 候选产生 manifest；作者
@@ -83,7 +85,7 @@ manifest 是安装与运行时的显式事实，不是开发者主要编辑界�
 | `entrypoints.logic` | 是 | 规范相对路径，指向 WASM Component |
 | `sizes` | 是 | 有限正逻辑像素；default 在 min/max 内 |
 | `permissions` | 是 | 可以为空；未知 capability 或非法 params 拒绝 |
-| `config.schema` | 否 | 包内规范路径；缺省表示无用户配置 |
+| `config.schema` | 否 | 包内规范路径；缺省表示无用户配置；只允许当前 schema 文档内 fragment 引用 |
 | `storage.migrationVersion` | 否 | 非负整数；只描述插件私有 KV 迁移 |
 | `build` | 否 | 诊断元数据，不参与信任/授权 |
 | `signature` | P0 否 | 进入分发前另行 ADR 与 schema |

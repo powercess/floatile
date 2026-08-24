@@ -314,8 +314,7 @@ pub const MAX_CONFIG_SCHEMA_DEPTH: usize = 32;
 ///
 /// 语义（manifest-v1 §5/§6）：config.schema.json 是作者定义的纯 JSON Schema 文档。
 /// 这里做安装期结构校验——必须是可解析的 JSON、根必须是 `object`、大小与深度受
-/// 上限约束。通用 JSON Schema 求值器不在 P0 依赖范围内，运行期对具体用户配置的
-/// 校验由宿主在插件系统架构定义的位置另行接入。
+/// 上限约束。非 fragment 引用在安装期拒绝，防止后续求值器为不受信输入触发网络/文件 I/O。
 fn validate_config_schema(bytes: &[u8]) -> Result<(), PackageError> {
     if bytes.len() > MAX_CONFIG_SCHEMA_BYTES {
         return Err(PackageError::InvalidConfigSchema(format!(
@@ -348,7 +347,16 @@ fn check_schema_depth(value: &serde_json::Value, depth: usize) -> Result<(), Pac
             }
         }
         serde_json::Value::Object(map) => {
-            for item in map.values() {
+            for (key, item) in map {
+                if matches!(key.as_str(), "$ref" | "$dynamicRef" | "$recursiveRef")
+                    && item
+                        .as_str()
+                        .is_none_or(|reference| !reference.starts_with('#'))
+                {
+                    return Err(PackageError::InvalidConfigSchema(format!(
+                        "{key} 只允许引用当前 schema 内的 fragment"
+                    )));
+                }
                 check_schema_depth(item, depth + 1)?;
             }
         }
@@ -625,6 +633,17 @@ mod tests {
         ]);
         assert!(matches!(
             validate_package(&bytes, &PackageLimits::default()),
+            Err(PackageError::InvalidConfigSchema(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_external_config_schema_reference() {
+        let schema = serde_json::json!({
+            "$ref": "https://example.invalid/config.schema.json"
+        });
+        assert!(matches!(
+            validate_config_schema(&serde_json::to_vec(&schema).unwrap()),
             Err(PackageError::InvalidConfigSchema(_))
         ));
     }

@@ -131,10 +131,12 @@ PP-M1 的持久模型把 `Installation` 与 `PluginInstance` 分开：
 - 内建参考时钟继续占用实例 ID 1；SQLite 持久实例从 2 开始分配且删除后不复用。
 - 删除实例同时删除其实例所有的布局，但不删除 Installation 和历史审计；Connection 尚未实现，
   后续必须遵守共享引用不随单个实例删除的规则。
-- shell 在事件循环启动前枚举 desired-running 记录并推进 generation，按精确 Installation 复核后，
-  以真实实例 ID、Config 和实例授权启动独立 runtime/window；同包实例互不共享窗口或 State。
-- 缺失、篡改或身份不匹配的 Installation 以及单实例 UI/runtime 启动失败只隔离对应实例。当前仍缺
-  面向用户或 CLI 的实例管理入口和进程内动态启停；这些属于后续 PP-M1 切片。
+- shell 后台监督器持续枚举 desired-running 记录并在每次启动/重启前推进
+  generation；SQLite、manifest 和安装文件 I/O 不进 Slint 主线程，主线程只消费有界
+  启停批次。配置变更只重启对应实例，停止或删除会非阻塞地回收其窗口/runtime。
+- CLI 创建/配置与 shell 恢复都通过同一安装目录读取器复核 digest、精确身份和
+  Config schema；缺失、篡改、身份不匹配、Config 非法以及单实例 UI/runtime 启动失败
+  只隔离对应实例。当前尚缺 observed-state 管理界面、手动 retry 和动态多窗口实测证据。
 
 ## 5. State、Config 与 Storage
 

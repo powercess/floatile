@@ -11,6 +11,8 @@ use floatile_core::{
 };
 use rusqlite::{Connection, OptionalExtension};
 
+pub mod installation;
+
 /// 持久化错误。
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

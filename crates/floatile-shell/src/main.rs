@@ -561,62 +561,6 @@ fn spawn_clock_runtime(
     Some(RuntimeSession { stop, worker })
 }
 
-fn launch_persisted_plugins(
-    instances: Vec<floatile_shell::plugin_manager::RunnableInstance>,
-    caps: floatile_platform::PlatformCapabilities,
-    audit_listener: Option<floatile_services::AuditListener>,
-) -> (
-    Rc<RefCell<Vec<floatile_shell::runtime_ui::RuntimeUiSession>>>,
-    Vec<slint::JoinHandle<()>>,
-) {
-    let sessions = Rc::new(RefCell::new(Vec::new()));
-    let mut tasks = Vec::new();
-    for runnable in instances {
-        let instance_id = runnable.instance.id();
-        let plugin_id = runnable.plugin.manifest.id.0.clone();
-        let task_plugin_id = plugin_id.clone();
-        let task_sessions = Rc::clone(&sessions);
-        let task_audit_listener = audit_listener.clone();
-        match slint::spawn_local(async move {
-            match floatile_shell::runtime_ui::spawn_runtime_ui(
-                runnable.plugin,
-                runnable.instance,
-                caps,
-                task_audit_listener,
-            )
-            .await
-            {
-                Ok(session) => {
-                    tracing::info!(
-                        plugin_id = %task_plugin_id,
-                        instance_id = instance_id.0,
-                        "persistent plugin instance window started"
-                    );
-                    task_sessions.borrow_mut().push(session);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        plugin_id = %task_plugin_id,
-                        instance_id = instance_id.0,
-                        code = %error.code(),
-                        %error,
-                        "persistent plugin instance failed to start (isolated; host continues)"
-                    );
-                }
-            }
-        }) {
-            Ok(task) => tasks.push(task),
-            Err(error) => tracing::warn!(
-                %plugin_id,
-                instance_id = instance_id.0,
-                %error,
-                "failed to schedule persistent plugin instance launch"
-            ),
-        }
-    }
-    (sessions, tasks)
-}
-
 fn now_hhmmss() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -975,16 +919,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let controller = Arc::new(Mutex::new(floatile_shell::ShellController::new(false)));
 
     // 布局持久化：数据目录 + SQLite（数据库不可用时降级为无持久化运行）。
-    let store = data_dir()
-        .and_then(|dir| {
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| PlatformError::Platform(format!("创建数据目录失败: {e}")))?;
-            Ok(dir.join("layout.db"))
-        })
-        .and_then(|path| {
-            floatile_store::open(&path)
-                .map_err(|e| PlatformError::Platform(format!("打开布局数据库失败: {e}")))
-        });
+    let database_path = data_dir().and_then(|dir| {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| PlatformError::Platform(format!("创建数据目录失败: {e}")))?;
+        Ok(dir.join("layout.db"))
+    });
+    let store = match &database_path {
+        Ok(path) => floatile_store::open(path)
+            .map_err(|e| PlatformError::Platform(format!("打开布局数据库失败: {e}"))),
+        Err(error) => Err(PlatformError::Platform(error.to_string())),
+    };
     let store = match store {
         Ok(store) => Some(store),
         Err(error) => {
@@ -992,36 +936,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
-    // 在 Slint 事件循环启动前完成 SQLite、manifest 与安装文件 I/O。只有 desired-running
-    // 实例进入异步 UI 启动队列；固定引用缺失或被篡改时仅隔离该实例。
-    let runtime_instance_plan = match (
-        store.as_ref(),
-        floatile_shell::plugin_manager::plugin_store(),
-    ) {
-        (Some(store), Some(plugin_store)) => {
-            match floatile_shell::plugin_manager::plan_running_instances(
-                store,
-                &plugin_store,
-                unix_now(),
-            ) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    tracing::warn!(%error, "persistent instance enumeration failed; no plugin windows");
-                    floatile_shell::plugin_manager::RuntimeInstancePlan::default()
-                }
-            }
-        }
-        _ => floatile_shell::plugin_manager::RuntimeInstancePlan::default(),
-    };
-    for failure in &runtime_instance_plan.failures {
-        tracing::warn!(
-            plugin_id = %failure.plugin_id,
-            instance_id = failure.instance_id.0,
-            code = failure.code,
-            detail = %failure.detail,
-            "persistent plugin instance could not be prepared (isolated; host continues)"
-        );
-    }
     let persisted = Arc::new(Mutex::new(PersistedState {
         store,
         monitors: Vec::new(),
@@ -1115,10 +1029,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             audit_listener.clone(),
         )
     });
-    // 持久实例走运行时 interpreter 窗口路径（PP-M1/FR-PLUGIN-01/F11）。准备/编译任务由
-    // Slint local executor 在事件循环启动后推进；会话与任务句柄均须存活至 run() 结束。
-    let _runtime_plugin_launches =
-        launch_persisted_plugins(runtime_instance_plan.ready, caps, audit_listener);
+    // PP-M1 动态监督器在后台对齐 SQLite desired state；UI 线程只接收已备好的
+    // 启停动作。单实例安装缺失、篡改或 runtime 失败均隔离，不影响其他实例。
+    let _runtime_instance_supervisor = match (
+        database_path.ok(),
+        floatile_shell::plugin_manager::plugin_store(),
+    ) {
+        (Some(database), Some(plugin_store)) => {
+            match floatile_shell::instance_supervisor::DynamicInstanceSupervisor::start(
+                database,
+                plugin_store,
+                caps,
+                audit_listener,
+            ) {
+                Ok(supervisor) => Some(supervisor),
+                Err(error) => {
+                    tracing::warn!(%error, "persistent instance supervisor unavailable");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     if always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }

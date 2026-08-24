@@ -188,6 +188,49 @@ impl InstanceConfig {
     pub fn to_value(&self) -> Value {
         Value::Object(self.0.clone())
     }
+
+    /// 按 Installation 随包提供的 JSON Schema 校验 canonical Config。
+    ///
+    /// 错误只返回 JSON Pointer，不包含配置值，避免把可能敏感的用户输入带入日志。
+    pub fn validate_schema(&self, schema: &Value) -> Result<(), InstanceModelError> {
+        // 插件 schema 不得触发 JSON Schema resolver 的宿主网络/文件 I/O。
+        // 包内单文档 fragment 仍可用于 `$defs`/`definitions` 复用。
+        if schema_contains_external_reference(schema) {
+            return Err(InstanceModelError::InvalidConfigSchema);
+        }
+        let validator = jsonschema::validator_for(schema)
+            .map_err(|_| InstanceModelError::InvalidConfigSchema)?;
+        let value = self.to_value();
+        validator.validate(&value).map_err(|errors| {
+            let paths = errors
+                .take(8)
+                .map(|error| {
+                    let path = error.instance_path.to_string();
+                    if path.is_empty() {
+                        "/".to_owned()
+                    } else {
+                        path
+                    }
+                })
+                .collect();
+            InstanceModelError::ConfigSchemaMismatch { paths }
+        })
+    }
+}
+
+fn schema_contains_external_reference(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(schema_contains_external_reference),
+        Value::Object(map) => map.iter().any(|(key, value)| {
+            let is_reference = matches!(key.as_str(), "$ref" | "$dynamicRef" | "$recursiveRef");
+            (is_reference
+                && value
+                    .as_str()
+                    .is_none_or(|reference| !reference.starts_with('#')))
+                || schema_contains_external_reference(value)
+        }),
+        _ => false,
+    }
 }
 
 impl Default for InstanceConfig {
@@ -349,6 +392,10 @@ pub enum InstanceModelError {
     ConfigTooDeep { actual: usize, maximum: usize },
     #[error("实例配置无效: {0}")]
     InvalidConfig(String),
+    #[error("实例配置 schema 无效")]
+    InvalidConfigSchema,
+    #[error("实例配置不符合 schema，路径: {paths:?}")]
+    ConfigSchemaMismatch { paths: Vec<String> },
     #[error("未知实例 desired state `{0}`")]
     InvalidDesiredState(String),
     #[error("实例 updated_at {updated_at} 早于 created_at {created_at}")]
@@ -378,6 +425,54 @@ fn value_depth(value: &Value, depth: usize) -> usize {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn config_schema_accepts_valid_config_and_redacts_values_on_reject() {
+        let schema = json!({
+            "type": "object",
+            "required": ["timezone"],
+            "additionalProperties": false,
+            "properties": { "timezone": { "type": "string", "maxLength": 32 } }
+        });
+        let valid = InstanceConfig::new(json!({"timezone": "Asia/Shanghai"})).unwrap();
+        assert_eq!(valid.validate_schema(&schema), Ok(()));
+
+        let secret = "secret-value-must-not-appear";
+        let invalid = InstanceConfig::new(json!({"timezone": 7, "token": secret})).unwrap();
+        let error = invalid.validate_schema(&schema).unwrap_err();
+        assert!(matches!(
+            error,
+            InstanceModelError::ConfigSchemaMismatch { .. }
+        ));
+        assert!(!error.to_string().contains(secret));
+    }
+
+    #[test]
+    fn invalid_config_schema_is_rejected() {
+        let config = InstanceConfig::empty();
+        assert_eq!(
+            config.validate_schema(&json!({"type": 7})),
+            Err(InstanceModelError::InvalidConfigSchema)
+        );
+    }
+
+    #[test]
+    fn external_config_schema_references_are_rejected_without_resolution() {
+        let config = InstanceConfig::new(json!({"timezone": "UTC"})).unwrap();
+        assert_eq!(
+            config.validate_schema(&json!({"$ref": "https://example.invalid/schema.json"})),
+            Err(InstanceModelError::InvalidConfigSchema)
+        );
+        assert!(
+            config
+                .validate_schema(&json!({
+                    "$defs": { "zone": { "type": "string" } },
+                    "type": "object",
+                    "properties": { "timezone": { "$ref": "#/$defs/zone" } }
+                }))
+                .is_ok()
+        );
+    }
 
     use super::*;
 

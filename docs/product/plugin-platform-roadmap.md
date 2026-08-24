@@ -4,7 +4,7 @@
 >
 > 范围：Plugin Platform V1+
 >
-> 基线：2026-08-23
+> 基线：2026-08-25
 >
 > 关联事实源：`requirements.md`、`../plugin-sdk/plugin-system-architecture.md`、
 > `../security/permission-model.md`、`../security/http-broker.md`
@@ -179,14 +179,14 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 
 ### 7.1 当前基线与最近顺序
 
-截至 2026-08-24，仓库已具备统一 UI IR、WIT 形状、Wasmtime actor、基础 capability 类型与 Broker、
-部分宿主服务、Rust SDK、包校验/安装和第三方运行时窗口等基础。PP-M1 已落地持久模型和 shell
-恢复接线：`floatile-core` 定义精确 Installation 引用、受限 Config、desired state、generation
-和实例记录；`floatile-store` v4 提供从 2 开始且不复用 ID 的实例 CRUD；shell 在事件循环前枚举
-desired-running 实例、推进 generation、按 `plugin_id + version + digest` 精确复核，并以真实实例
-ID/Config 启动独立窗口。单实例加载或启动失败不会阻止同行实例。但仓库还不是完整的插件作者平台：
+截至 2026-08-25，仓库已具备统一 UI IR、WIT 形状、Wasmtime actor、基础 capability 类型与 Broker、
+部分宿主服务、Rust SDK、包校验/安装和第三方运行时窗口等基础。PP-M1 已打通自动化的
+持久多实例生命周期：`floatile instance` 提供创建、枚举、读取、配置、启停和删除；
+CLI 与 shell 共用安装目录 digest/身份/Config schema 复验；shell 后台监督器在不阻塞 Slint
+主线程的前提下动态对齐 desired state、推进 generation，并独立启停同包的多个窗口。
+单实例安装缺失、篡改、配置非法或 UI/runtime 失败不会阻止同行实例。但仓库还不是完整的插件作者平台：
 
-- 尚无实例管理入口和进程内动态启停，用户还不能完成创建、配置、启动、停止和删除闭环；
+- 实际动态多窗口的 Xvfb/真机恢复证据、observed-state 管理界面和手动 retry 仍缺；
 - 生成项目和 `dev` 流程尚不能证明仓库外作者可完成预览到运行闭环；
 - 网络、Connection、凭证托管和长任务 Operation 尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
@@ -196,14 +196,16 @@ ID/Config 启动独立窗口。单实例加载或启动失败不会阻止同行�
 
 1. `docs(core): define plugin platform v1 domain model and roadmap`（PP-M0，已落地）；
 2. `feat(instances): introduce persistent plugin instance model`（PP-M1，已落地）；
-3. `feat(shell): launch and isolate persistent plugin instances`（PP-M1，本切片）；
-4. `feat(cli): manage persistent plugin instances`（PP-M1，下一切片）；
-5. `spike(runtime): validate brokered async operations`（PP-M2）；
-6. `refactor(capabilities): establish single-source capability registry`（PP-M3）；
-7. `feat(cli): complete the Rust plugin author loop`（PP-M4）；
-8. `feat(connections): add host-owned connection and credential references`（PP-M5）；
-9. `feat(http): implement the first bounded HTTPS Broker vertical slice`（PP-M5）；
-10. `feat(examples): add an AI balance monitor reference plugin`（PP-M5/PP-M6）。
+3. `feat(shell): launch and isolate persistent plugin instances`（PP-M1，已落地）；
+4. `feat(instances): complete dynamic persistent instance lifecycle`（PP-M1，本切片）；
+5. `feat(shell): add instance control surface and lifecycle evidence`（PP-M1，下一 PR）：集中交付安装/实例列表、
+   observed starting/running/failed/stopped 状态、手动 retry、Config schema 表单和 Xvfb 动态双窗口恢复证据；
+6. `spike(runtime): validate brokered async operations`（PP-M2）；
+7. `refactor(capabilities): establish single-source capability registry`（PP-M3）；
+8. `feat(cli): complete the Rust plugin author loop`（PP-M4）；
+9. `feat(connections): add host-owned connection and credential references`（PP-M5）；
+10. `feat(http): implement the first bounded HTTPS Broker vertical slice`（PP-M5）；
+11. `feat(examples): add an AI balance monitor reference plugin`（PP-M5/PP-M6）。
 
 这是依赖顺序，不是要求一个 PR 同时完成整个里程碑。每个 PR 必须是一条可审查、可回退、包含失败
 路径和联动文档的纵向切片。
