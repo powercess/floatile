@@ -8,15 +8,17 @@
 //! 只读取本机已安装且已验证的产物。任意 UI 的动态渲染仍受「运行时编译 ADR」门禁；
 //! 本模块只提供参考时钟等 dev 包的宿主加载路径。
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use floatile_core::install::{InstallMeta, content_digest, file_digest, hex_encode};
-use floatile_core::instance::{InstallationRef, InstanceModelError};
+use floatile_core::install::InstallMeta;
+use floatile_core::instance::InstallationRef;
 use floatile_core::manifest::Manifest;
 use floatile_core::{InstanceDesiredState, InstanceId, PluginInstance};
+use floatile_store::installation::{
+    ConfigValidationError, InstallationCatalogError, InstalledInstallation, load_highest,
+    load_reference,
+};
 use floatile_store::{Store, StoreError};
-use semver::Version;
 use thiserror::Error;
 
 /// 已加载的已安装插件（已通过 digest 完整性校验）。
@@ -80,6 +82,8 @@ pub enum LoadError {
     MissingEntrypoint(String),
     #[error("manifest 非法: {0}")]
     InvalidManifest(#[from] floatile_core::manifest::ManifestError),
+    #[error("实例 Config 契约校验失败: {0}")]
+    InvalidConfig(#[from] ConfigValidationError),
 }
 
 impl LoadError {
@@ -92,6 +96,7 @@ impl LoadError {
             Self::MissingManifest => "FLOAD_MISSING_MANIFEST",
             Self::MissingEntrypoint(_) => "FLOAD_MISSING_ENTRYPOINT",
             Self::InvalidManifest(_) => "FLOAD_INVALID_MANIFEST",
+            Self::InvalidConfig(error) => error.code(),
         }
     }
 }
@@ -101,14 +106,10 @@ impl LoadError {
 /// 无任何已安装版本返回 `Ok(None)`（调用方回退内建实现）；存在多个版本时按 semver
 /// 取最高；任意文件 digest 不匹配返回错误并拒绝加载。
 pub fn load_installed(store: &Path, id: &str) -> Result<Option<InstalledPlugin>, LoadError> {
-    let id_dir = store.join(id);
-    if !id_dir.is_dir() {
-        return Ok(None);
-    }
-    let Some((_version, dir)) = select_highest_version(&id_dir)? else {
-        return Ok(None);
-    };
-    load_from_dir(&dir).map(Some)
+    load_highest(store, id)
+        .map_err(map_catalog_error)?
+        .map(installed_plugin)
+        .transpose()
 }
 
 /// 加载实例固定引用的精确 Installation，不静默选择更高版本。
@@ -119,20 +120,38 @@ pub fn load_installation(
     store: &Path,
     reference: &InstallationRef,
 ) -> Result<Option<InstalledPlugin>, LoadError> {
-    let dir = store.join(&reference.plugin().0).join(reference.version());
-    if !dir.is_dir() {
-        return Ok(None);
-    }
-    let plugin = load_from_dir(&dir)?;
-    let actual = InstallationRef::from_install_meta(&plugin.meta)
-        .map_err(|error: InstanceModelError| LoadError::InvalidMeta(error.to_string()))?;
-    if actual != *reference {
-        return Err(LoadError::InstallationMismatch {
+    load_reference(store, reference)
+        .map_err(|error| match error {
+            InstallationCatalogError::MetadataMismatch => LoadError::InstallationMismatch {
+                id: reference.plugin().0.clone(),
+                version: reference.version().to_owned(),
+            },
+            other => map_catalog_error(other),
+        })?
+        .map(installed_plugin)
+        .transpose()
+}
+
+/// 按持久实例的精确 Installation 引用加载运行单元，并在交给 runtime
+/// 前复验 Config schema。
+pub fn load_runnable_instance(
+    store: &Path,
+    instance: PluginInstance,
+) -> Result<Option<RunnableInstance>, LoadError> {
+    let reference = instance.installation();
+    let installation = load_reference(store, reference).map_err(|error| match error {
+        InstallationCatalogError::MetadataMismatch => LoadError::InstallationMismatch {
             id: reference.plugin().0.clone(),
             version: reference.version().to_owned(),
-        });
-    }
-    Ok(Some(plugin))
+        },
+        other => map_catalog_error(other),
+    })?;
+    let Some(installation) = installation else {
+        return Ok(None);
+    };
+    installation.validate_config(instance.config())?;
+    let plugin = installed_plugin(installation)?;
+    Ok(Some(RunnableInstance { instance, plugin }))
 }
 
 /// 从持久记录恢复 desired-running 实例，并固定到精确 Installation。
@@ -199,13 +218,14 @@ pub fn plan_running_instances(
             }
         };
 
-        match load_installation(plugin_store, instance.installation()) {
-            Ok(Some(plugin)) => plan.ready.push(RunnableInstance { instance, plugin }),
+        let version = instance.installation().version().to_owned();
+        match load_runnable_instance(plugin_store, instance) {
+            Ok(Some(runnable)) => plan.ready.push(runnable),
             Ok(None) => plan.failures.push(InstanceLoadFailure {
                 instance_id,
                 plugin_id,
                 code: "FLOAD_INSTALLATION_MISSING",
-                detail: format!("安装版本 {} 不存在", instance.installation().version()),
+                detail: format!("安装版本 {version} 不存在"),
             }),
             Err(error) => plan.failures.push(InstanceLoadFailure {
                 instance_id,
@@ -237,8 +257,8 @@ pub fn list_installed(store: &Path) -> Result<Vec<InstalledPlugin>, LoadError> {
         if !is_valid_plugin_id_dir(&id) {
             continue;
         }
-        if let Some((_version, dir)) = select_highest_version(&entry.path())? {
-            plugins.push(load_from_dir(&dir)?);
+        if let Some(installation) = load_highest(store, &id).map_err(map_catalog_error)? {
+            plugins.push(installed_plugin(installation)?);
         }
     }
     // 按 id 稳定排序，保证多插件集合输出确定、可测试。
@@ -257,92 +277,53 @@ fn is_valid_plugin_id_dir(name: &str) -> bool {
         && !name.ends_with('.')
 }
 
-/// 在插件的 `<id>/` 目录下挑选最高版本子目录。
-fn select_highest_version(id_dir: &Path) -> Result<Option<(Version, PathBuf)>, LoadError> {
-    let mut best: Option<(Version, PathBuf)> = None;
-    let entries = std::fs::read_dir(id_dir).map_err(|e| LoadError::Read(e.to_string()))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| LoadError::Read(e.to_string()))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(version) = Version::parse(&name) else {
-            continue;
-        };
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        if best.as_ref().is_none_or(|(v, _)| version > *v) {
-            best = Some((version, dir));
-        }
-    }
-    Ok(best)
-}
-
-/// 从单个已安装版本目录加载，重算并校验 digest 后解析 manifest/入口。
-fn load_from_dir(dir: &Path) -> Result<InstalledPlugin, LoadError> {
-    let meta_bytes = std::fs::read(dir.join("install.json"))
-        .map_err(|e| LoadError::InvalidMeta(e.to_string()))?;
-    let meta: InstallMeta =
-        serde_json::from_slice(&meta_bytes).map_err(|e| LoadError::InvalidMeta(e.to_string()))?;
-
-    // 重算每文件 digest 与聚合 digest，拦截安装后任何文件被篡改/增删。
-    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for (name, expect_hex) in &meta.files {
-        let bytes = std::fs::read(dir.join(name))
-            .map_err(|e| LoadError::Read(format!("{}: {e}", dir.join(name).display())))?;
-        let actual = hex_encode(&file_digest(&bytes));
-        if actual != *expect_hex {
-            return Err(LoadError::DigestMismatch {
-                id: meta.id.clone(),
-                file: name.clone(),
-            });
-        }
-        files.insert(name.clone(), bytes);
-    }
-    let aggregate = hex_encode(&content_digest(&files));
-    if aggregate != meta.digest {
-        // 文件集合与安装时不一致（增删/重命名）。取任一文件名用于诊断。
-        let probe = files
-            .keys()
-            .next()
-            .cloned()
-            .unwrap_or_else(|| "<all>".to_owned());
-        return Err(LoadError::DigestMismatch {
-            id: meta.id.clone(),
-            file: probe,
-        });
-    }
-
-    let manifest_bytes = files
-        .get("manifest.json")
-        .ok_or(LoadError::MissingManifest)?;
-    let manifest: Manifest = serde_json::from_slice(manifest_bytes)
-        .map_err(|e| LoadError::InvalidMeta(format!("manifest.json: {e}")))?;
-
-    let wasm = files
-        .get(manifest.entrypoints.logic.as_str())
-        .cloned()
+fn installed_plugin(installation: InstalledInstallation) -> Result<InstalledPlugin, LoadError> {
+    let wasm = installation
+        .file(installation.manifest.entrypoints.logic.as_str())
         .ok_or_else(|| {
-            LoadError::MissingEntrypoint(manifest.entrypoints.logic.as_str().to_owned())
-        })?;
-    let ui_bytes = files
-        .get(manifest.entrypoints.ui.as_str())
-        .cloned()
-        .ok_or_else(|| LoadError::MissingEntrypoint(manifest.entrypoints.ui.as_str().to_owned()))?;
-
+            LoadError::MissingEntrypoint(
+                installation.manifest.entrypoints.logic.as_str().to_owned(),
+            )
+        })?
+        .to_vec();
+    let ui_bytes = installation
+        .file(installation.manifest.entrypoints.ui.as_str())
+        .ok_or_else(|| {
+            LoadError::MissingEntrypoint(installation.manifest.entrypoints.ui.as_str().to_owned())
+        })?
+        .to_vec();
     Ok(InstalledPlugin {
-        manifest,
-        meta,
+        manifest: installation.manifest,
+        meta: installation.meta,
         wasm,
         ui_bytes,
     })
+}
+
+fn map_catalog_error(error: InstallationCatalogError) -> LoadError {
+    match error {
+        InstallationCatalogError::Read(detail) => LoadError::Read(detail),
+        InstallationCatalogError::InvalidMeta(detail) => LoadError::InvalidMeta(detail),
+        InstallationCatalogError::DigestMismatch { id, file } => {
+            LoadError::DigestMismatch { id, file }
+        }
+        InstallationCatalogError::MetadataMismatch => {
+            LoadError::InvalidMeta("安装元数据与 manifest 身份不一致".to_owned())
+        }
+        InstallationCatalogError::InvalidIdentity(error) => {
+            LoadError::InvalidMeta(error.to_string())
+        }
+        InstallationCatalogError::InvalidManifest(error) => LoadError::InvalidManifest(error),
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use floatile_core::install::content_digest;
+    use std::collections::BTreeMap;
+
+    use floatile_core::install::{content_digest, file_digest, hex_encode};
 
     fn manifest_json() -> String {
         serde_json::json!({
@@ -355,6 +336,7 @@ mod tests {
             "uiApiVersion": "1.0.0",
             "type": "widget",
             "entrypoints": { "ui": "ui/widget.ftui", "logic": "logic/plugin.wasm" },
+            "config": { "schema": "config.schema.json" },
             "sizes": { "default": { "width": 240, "height": 120 }, "min": { "width": 160, "height": 80 }, "max": { "width": 800, "height": 600 }, "resizable": true },
             "permissions": []
         })
@@ -384,6 +366,15 @@ mod tests {
         );
         files.insert("ui/widget.ftui".into(), b"{\"ui\":1}".to_vec());
         files.insert("logic/plugin.wasm".into(), vec![1, 2, 3, 4]);
+        files.insert(
+            "config.schema.json".into(),
+            serde_json::to_vec(&serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "timezone": { "type": "string" } }
+            }))
+            .unwrap(),
+        );
 
         let mut file_digests = BTreeMap::new();
         for (name, bytes) in &files {
@@ -622,6 +613,32 @@ mod tests {
                 .generation(),
             0
         );
+    }
+
+    #[test]
+    fn instance_plan_revalidates_config_before_runtime() {
+        let plugin_store = temp_store("instance-config-reject");
+        write_install(&plugin_store, "dev.floatile.clock", "1.0.0", None);
+        let installation = installation_ref(&plugin_store, "dev.floatile.clock", "1.0.0");
+        let store = floatile_store::open(":memory:").unwrap();
+        let instance = store
+            .instances()
+            .create(
+                &installation,
+                &floatile_core::InstanceConfig::new(serde_json::json!({"secret": "redacted"}))
+                    .unwrap(),
+                InstanceDesiredState::Running,
+                100,
+            )
+            .unwrap();
+
+        let plan = plan_running_instances(&store, &plugin_store, 101).unwrap();
+
+        assert!(plan.ready.is_empty());
+        assert_eq!(plan.failures.len(), 1);
+        assert_eq!(plan.failures[0].instance_id, instance.id());
+        assert_eq!(plan.failures[0].code, "FCONFIG_VALUE_INVALID");
+        assert!(!plan.failures[0].detail.contains("redacted"));
     }
 
     #[test]

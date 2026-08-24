@@ -7,12 +7,18 @@ license.workspace = true
 authors.workspace = true
 publish = false
 
+[[bin]]
+name = "floatile"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
 floatile-core = { workspace = true }
+floatile-platform = { workspace = true }
 floatile-runtime = { workspace = true }
+floatile-store = { workspace = true }
 floatile-ui-schema = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

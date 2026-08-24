@@ -144,13 +144,16 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 
 ### 3.11 `floatile-cli`
 
-- `new/dev/check/test/preview/build/inspect/migrate`。
+- `new/dev/check/test/preview/build/inspect/migrate`，以及持久实例
+  `create/list/get/configure/start/stop/delete`。
 - 生成 UI IR、State/Event schema、bindings 与 manifest；插件作者不编辑生成物。
 - manifest/UI/WASM/assets/archive 的正反例校验与可复现打包。
 - `--json --no-interactive` 是 CI/Agent 稳定接口。
 - dev/test 使用 mock capability 或受控 runtime，不绕过生产 Broker 语义。
 - `test` 依赖 `floatile-runtime`，用其 `WidgetHarness` 对已构建 `.floatile` 跑无头生命周期冒烟：
   仍走同一 deny-by-default Broker（权限按 manifest 声明经 `parse_capability_params` 单源授权）。
+- CLI 与 shell 通过 `floatile-store::installation` 共享安装目录 digest/身份/Config
+  schema 复验；CLI 不链接或执行宿主 capability 实现。
 
 ### 3.12 `floatile-renderer`
 

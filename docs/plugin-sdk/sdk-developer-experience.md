@@ -198,6 +198,7 @@ Detected capabilities:
 | `floatile build` | 可复现地产生 `.floatile`，默认不签名 |
 | `floatile inspect` | 显示 manifest、版本轴、权限、预算、entry digest |
 | `floatile migrate` | SDK/UI/manifest 兼容迁移；默认先 dry-run |
+| `floatile instance create/list/get/configure/start/stop/delete` | 按精确安装版本管理持久实例与 desired state |
 
 所有命令必须支持：
 
@@ -209,8 +210,10 @@ Detected capabilities:
 
 退出码与诊断 code 稳定；日志文本不是自动化接口。
 
-当前已落地：`new/validate/dev/build/install/test`；`test` 用 `floatile-runtime::harness` 对已构建包跑
-无头生命周期冒烟并输出稳定 JSON（见 §9）。`check/preview/inspect/migrate` 与全命令 `--json` 契约统一待续。
+当前已落地：`new/validate/dev/build/install/test/instance`；`test` 用
+`floatile-runtime::harness` 对已构建包跑无头生命周期冒烟。`instance` 子命令提供单一
+JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`--store`、
+`--config`/`--config-file`与 `--no-interactive`。`check/preview/inspect/migrate` 与其余命令的 JSON 契约统一待续。
 
 ## 8. 诊断格式
 
