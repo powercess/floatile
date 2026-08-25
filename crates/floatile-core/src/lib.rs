@@ -4,6 +4,7 @@ pub mod install;
 pub mod instance;
 pub mod layout;
 pub mod manifest;
+pub mod operation;
 pub mod types;
 
 pub use capability::{
@@ -23,6 +24,10 @@ pub use manifest::{
     BuildMeta, ConfigRef, Entrypoints, Manifest, ManifestError, PackagePath, PermissionDecl,
     PluginKind, Publisher, Sizes, StorageDecl, manifest_json_schema, validate_manifest,
     validate_manifest_json_with_schema,
+};
+pub use operation::{
+    OperationCompletion, OperationCompletionDisposition, OperationFailure, OperationId,
+    OperationOwner, OperationTerminal,
 };
 pub use types::{
     InstanceId, LogicalPosition, LogicalRect, LogicalSize, MonitorKey, PhysicalPosition,

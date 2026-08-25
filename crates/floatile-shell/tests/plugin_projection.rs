@@ -95,6 +95,7 @@ fn spawn_clock() -> floatile_runtime::WidgetHandle {
     let config = WidgetConfig {
         plugin: PluginId("dev.floatile.clock".into()),
         instance: InstanceId(1),
+        generation: 0,
         wasm: clock_wasm_bytes(),
         initial_state: json!({"time": "", "running": false}),
         state_schema: clock_state_schema(),

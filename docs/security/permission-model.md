@@ -96,6 +96,9 @@ P0/MVP 只实现固有能力与 L0。
 - **频率**：能力调用频率（如 `system:cpu` 采样 ≤1Hz）；`maxPerMinute` 计时器上限。
 - **后台预算**：widget 隐藏/最小化时，周期回调降频或挂起，累计后台秒数计入配额。
 - **事件队列**：每实例有界、串行；溢出返回 `queue-full`，不得无限分配或阻塞 UI 线程。
+- **异步 Operation**：每 instance generation 的提交队列、完成队列、并发数和 retained result 数均有
+  硬上限；无效 deadline、满载或关闭必须在执行 work 前失败。旧 generation、actor 满载/关闭时丢弃
+  payload，不能无限保留等待 guest。
 - **UI State**：单 patch、完整 State、嵌套深度、每秒更新次数有硬上限；schema 校验后原子应用。
 - **UI IR/Canvas**：节点、binding、If/ForEach 展开量、Canvas 指令/点数、asset 数量与解码后尺寸有硬上限。
 
@@ -111,6 +114,8 @@ P0/MVP 只实现固有能力与 L0。
   - `log:write` 本身进入插件日志而非 capability 参数审计；超限/拒绝另记审计；
   - 网络请求的 Authorization/Cookie/自定义敏感头只记存在性（布尔），不记值；
   - `system:*` 结果不记具体数值（可记范围分桶）。
+  - Operation 只记 ID、capability、动作、稳定终态/失败码、delivery disposition 和脱敏尺寸；请求/
+    结果 payload 不进入 completion signal、audit detail 或插件 State。
 - 审计日志仅供宿主 UI 查看（用户可在权限中心筛选），插件读不到。
 
 ## 7. 与 WIT 的关系
@@ -121,6 +126,9 @@ P0/MVP 只实现固有能力与 L0。
   绕过 Broker。
 - `widget.ftui` 只描述 UI。它不能声明能力或创建第二条 host 调用路径；manifest permissions 才是
   安装授权上限。
+- ADR-0004 的 Operation submit 必须在一次 Broker 入口中完成 check→execute；cancel 与 typed
+  `take-result` 同样重新授权。当前宿主 spike 未改变 WIT；正式新增接口时必须联动 capability-specific
+  schema、SDK、版本、contract vectors 与恶意 fixture，禁止通用 JSON-RPC/capability bus。
 
 ## 8. 未决问题
 

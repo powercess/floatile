@@ -84,6 +84,7 @@ fn spawn_evil(
     let config = WidgetConfig {
         plugin: PluginId("dev.floatile.evil".into()),
         instance: InstanceId(instance),
+        generation: 0,
         wasm: evil_wasm_bytes(),
         initial_state,
         state_schema: evil_state_schema(),

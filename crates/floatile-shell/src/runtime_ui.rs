@@ -586,7 +586,7 @@ fn manifest_grants(
 fn validate_runtime_instance(
     plugin: &InstalledPlugin,
     instance: &PluginInstance,
-) -> Result<(InstanceId, String), RuntimeUiError> {
+) -> Result<(InstanceId, u64, String), RuntimeUiError> {
     let actual_installation = InstallationRef::from_install_meta(&plugin.meta)
         .map_err(|error| RuntimeUiError::InstanceIdentity(error.to_string()))?;
     if actual_installation != *instance.installation() {
@@ -599,7 +599,7 @@ fn validate_runtime_instance(
     }
     let config_json = serde_json::to_string(instance.config())
         .map_err(|error| RuntimeUiError::Runtime(format!("序列化实例配置失败: {error}")))?;
-    Ok((instance.id(), config_json))
+    Ok((instance.id(), instance.generation(), config_json))
 }
 
 /// 启动一个已安装插件的运行时窗口（FR-PLUGIN-01/F11 运行时 UI 渲染链闭合）。
@@ -618,7 +618,7 @@ pub async fn spawn_runtime_ui(
     audit_listener: Option<AuditListener>,
 ) -> Result<RuntimeUiSession, RuntimeUiError> {
     let id = plugin.manifest.id.clone();
-    let (instance_id, config_json) = validate_runtime_instance(&plugin, &instance)?;
+    let (instance_id, generation, config_json) = validate_runtime_instance(&plugin, &instance)?;
     // 1. 后台解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
     let prepared = prepare_runtime_ui(plugin.ui_bytes).await?;
     let rendered = prepared.rendered;
@@ -683,6 +683,7 @@ pub async fn spawn_runtime_ui(
                 let config = WidgetConfig {
                     plugin: id.clone(),
                     instance: instance_id,
+                    generation,
                     wasm,
                     initial_state,
                     state_schema,
@@ -1075,8 +1076,10 @@ mod grants_tests {
 
         assert_eq!(first_context.0, InstanceId(2));
         assert_eq!(second_context.0, InstanceId(3));
-        assert_eq!(first_context.1, r#"{"timezone":"UTC"}"#);
-        assert_eq!(second_context.1, r#"{"timezone":"Asia/Shanghai"}"#);
+        assert_eq!(first_context.1, 1);
+        assert_eq!(second_context.1, 1);
+        assert_eq!(first_context.2, r#"{"timezone":"UTC"}"#);
+        assert_eq!(second_context.2, r#"{"timezone":"Asia/Shanghai"}"#);
     }
 
     #[test]

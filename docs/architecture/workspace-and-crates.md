@@ -50,6 +50,8 @@
 ### 3.1 `floatile-core`
 
 - `PluginId`、`InstanceId`、`InstallationRef`、`PluginInstance`、受限 Config、布局/DPI/模式等纯领域类型。
+- ADR-0004 的 `OperationId`、owner/generation、completion 与稳定终态纯模型；不在 core 执行、排队或
+  暂存结果。
 - manifest、capability/grant/scope/quota 的纯数据与决策输入；无文件/数据库访问。
 - host/runtime 使用的稳定错误分类、版本值对象与实例持久化不变量。
 - 不放 UI IR/WIT 生成物，避免 guest 为 UI 类型依赖全部宿主 domain。
@@ -104,6 +106,9 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - WIT host adapter 只持 `InstanceContext + PermissionBroker` 门面；不得持 service/OS raw handle。
 - 把 UI snapshot/patch 通过有界通道发送 shell；不直接操作 Slint。
 - trap/restart/isolation 与宿主存活保证。
+- ADR-0004 completion bridge 接收不含 payload 的 Operation 终态，按
+  `plugin + instance + generation` 过滤并 `try_send` 到有界 actor lane；旧代、满载或 actor 关闭时通知
+  Broker 丢弃宿主 retained result。当前只验证宿主模型，不代表 WIT/guest 已可调用。
 - S5b 已实现：Wasmtime 47 + 空 WASI 上下文（零 ambient）、逐调用 fuel、默认 2 s 墙钟预算（10 ms
   epoch ticker）、内存限制、串行 actor、State Patch 原子应用、WIT adapter 经 Broker；`clock-wasm`
   集成测试及 fuel/timeout/memory/peer 存活安全测试通过。shell 的 UI event 桥容量 64、`try_send`
@@ -115,6 +120,8 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - Timer/Storage/Metrics/Theme/Clock/Log capability 的实现。
 - 固有能力和声明能力使用同一 Broker 入口；固有能力只是固定 grant/scope。
 - 后续 Notification/Keyring/HTTP 仍必须经 Broker；P0 不留可调用 stub 假装实现。
+- ADR-0004 Operation registry 拥有有界提交/完成队列、并发许可、deadline、取消和 typed one-shot
+  result；原始 submit/cancel/take 仅 Broker 可见，避免 runtime 或 adapter 分离 authorize/execute。
 - S5b 已实现：Broker 决策/配额/脱敏审计（target `floatile::audit`）与七个能力服务；
   SQLite 审计持久化、decision cache 与真实容量数据待后续切片。
 

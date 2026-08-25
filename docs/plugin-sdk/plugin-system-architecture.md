@@ -2,7 +2,7 @@
 
 > 状态：Accepted（架构边界）；具体 API 字段在 P0 契约实现与测试后冻结
 > 范围：P0/MVP Widget 插件
-> 关联：FR-PLUGIN-01、FR-PERM-01、FR-PACK-01、F11、F12、ADR-0001
+> 关联：FR-PLUGIN-01、FR-PERM-01、FR-PACK-01、F11、F12、ADR-0001、ADR-0004
 
 本文是插件系统整体架构的事实源。WIT 字段以 `wit/` 为唯一源，包字段以 `manifest-v1.md` 为事实
 源，权限与审计以 `permission-model.md` 为事实源；本文定义这些部分必须如何组合，避免每层各自
@@ -173,6 +173,15 @@ manifest 的显式权限声明与最终用户 grant 仍是权威来源。
   保留数量和丢弃计数。
 - host import 不得持有 Slint 句柄；`host-ui` 只写 runtime 的 State 模型，再异步投递 UI。
 - shutdown 先停止接收新事件，再取消 Timer/能力调用，执行有预算的 `stop`，最后 drop Store。
+
+可能跨越一次插件回调的网络、同步或长计算采用 ADR-0004 的宿主 Operation，而不是在同步 WIT import
+内等待：capability-specific submit 经 Broker 授权并进入有界队列，返回宿主生成的 ID；完成桥只向
+匹配 `plugin + instance + generation` 的 actor 非阻塞投递终态元数据；typed payload 保留在宿主，
+由同一 capability 的 `take-result` 一次性领取。旧 generation、完成队列满或 actor 关闭均丢弃结果。
+
+当前只实现了 `core/services/runtime` 的宿主 spike 与 reference vectors；`wit/`、SDK 和真实 guest
+completion dispatch 尚未变化。正式接入必须从 WIT 唯一源生成，不得添加临时 host function、通用
+JSON payload 或无 Broker 的 service 执行入口。
 
 ## 8. Rust 与 TypeScript 执行
 
