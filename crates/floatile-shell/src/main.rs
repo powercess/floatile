@@ -1031,20 +1031,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     // PP-M1 动态监督器在后台对齐 SQLite desired state；UI 线程只接收已备好的
     // 启停动作。单实例安装缺失、篡改或 runtime 失败均隔离，不影响其他实例。
-    let _runtime_instance_supervisor = match (
-        database_path.ok(),
-        floatile_shell::plugin_manager::plugin_store(),
-    ) {
+    let runtime_database = database_path.as_ref().ok().cloned();
+    let runtime_plugin_store = floatile_shell::plugin_manager::plugin_store();
+    let runtime_instance_supervisor = match (runtime_database.clone(), runtime_plugin_store.clone())
+    {
         (Some(database), Some(plugin_store)) => {
             match floatile_shell::instance_supervisor::DynamicInstanceSupervisor::start(
                 database,
                 plugin_store,
                 caps,
-                audit_listener,
+                audit_listener.clone(),
             ) {
                 Ok(supervisor) => Some(supervisor),
                 Err(error) => {
                     tracing::warn!(%error, "persistent instance supervisor unavailable");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let instance_control_surface = match (
+        runtime_instance_supervisor.as_ref(),
+        runtime_database,
+        runtime_plugin_store,
+    ) {
+        (Some(supervisor), Some(database), Some(plugin_store)) => {
+            match floatile_shell::instance_control::InstanceControlSurface::start(
+                database,
+                plugin_store,
+                supervisor.handle(),
+            ) {
+                Ok(surface) => Some(surface),
+                Err(error) => {
+                    tracing::warn!(%error, "instance control surface unavailable");
                     None
                 }
             }
@@ -1343,9 +1363,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
     });
 
-    // 设置：S2 占位，记录事件
-    app.on_settings_clicked(|| {
-        tracing::info!("settings clicked (placeholder)");
+    // 设置：打开 PP-M1 插件安装/实例控制面；窗口与后台 worker 都已提前构造。
+    let control_window = instance_control_surface
+        .as_ref()
+        .map(|surface| surface.weak());
+    app.on_settings_clicked(move || {
+        let Some(window) = control_window.as_ref().and_then(slint::Weak::upgrade) else {
+            tracing::warn!("instance control surface unavailable");
+            return;
+        };
+        if let Err(error) = window.show() {
+            tracing::warn!(%error, "instance control surface show failed");
+        }
     });
 
     // 删除：移除持久化记录并关闭窗口（单窗口宿主语义）。

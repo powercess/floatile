@@ -162,6 +162,44 @@ pub fn load_highest(
     }
 }
 
+/// 枚举插件存储中每个合法插件 id 的最高语义版本，并逐一复核完整性。
+///
+/// 根目录不存在时返回空集合；任一规范插件目录损坏时返回错误，不把篡改静默伪装为
+/// “未安装”。结果按插件 id 稳定排序，供 shell 控制面与加载器共享。
+pub fn list_highest(root: &Path) -> Result<Vec<InstalledInstallation>, InstallationCatalogError> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(root)
+        .map_err(|error| InstallationCatalogError::Read(error.to_string()))?;
+    let mut installations = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| InstallationCatalogError::Read(error.to_string()))?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !entry.path().is_dir() || !is_valid_plugin_id_dir(&id) {
+            continue;
+        }
+        if let Some(installation) = load_highest(root, &id)? {
+            installations.push(installation);
+        }
+    }
+    installations.sort_by(|left, right| left.meta.id.cmp(&right.meta.id));
+    Ok(installations)
+}
+
+fn is_valid_plugin_id_dir(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '.'
+                || character == '-'
+        })
+        && name.contains('.')
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+}
+
 fn load_from_dir(dir: &Path) -> Result<InstalledInstallation, InstallationCatalogError> {
     let meta_bytes = std::fs::read(dir.join("install.json"))
         .map_err(|error| InstallationCatalogError::InvalidMeta(error.to_string()))?;
@@ -285,6 +323,34 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn catalog_lists_each_plugin_once_at_highest_version_in_stable_order() {
+        let root = temp_root("list");
+        write_install(&root, "dev.floatile.zulu", "1.0.0");
+        write_install(&root, "dev.floatile.alpha", "1.0.0");
+        write_install(&root, "dev.floatile.alpha", "2.0.0");
+        std::fs::create_dir_all(root.join("not-a-plugin-id")).unwrap();
+
+        let installations = list_highest(&root).unwrap();
+        let identities: Vec<_> = installations
+            .iter()
+            .map(|installation| {
+                (
+                    installation.meta.id.as_str(),
+                    installation.meta.version.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                ("dev.floatile.alpha", "2.0.0"),
+                ("dev.floatile.zulu", "1.0.0")
+            ]
+        );
+        assert!(list_highest(&root.join("missing")).unwrap().is_empty());
     }
 
     #[test]

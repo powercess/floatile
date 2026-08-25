@@ -76,6 +76,8 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - Slint/winit 事件循环、窗口/Canvas、Edit/Show 与布局编排。
 - 把已验证 UI IR 映射到宿主 Slint 组件；插件不提供 `.slint`。
 - 在主线程应用 runtime 发来的有界 State snapshot/patch，并把声明过的 UI event 投递 runtime。
+- 提供安装/实例控制面；后台 worker 读取 SQLite 与已验证 Installation、求值 Config Schema，Slint
+  主线程只消费有界快照并发送非阻塞命令。observed lifecycle 不写回 desired-state 数据库。
 - 不解析不可信包、不执行 WASM、不直接实现 plugin capability。
 - 内建 Reference Clock，用于与插件化时钟对比行为/性能。
 

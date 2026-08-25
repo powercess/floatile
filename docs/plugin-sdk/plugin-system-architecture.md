@@ -132,11 +132,13 @@ PP-M1 的持久模型把 `Installation` 与 `PluginInstance` 分开：
 - 删除实例同时删除其实例所有的布局，但不删除 Installation 和历史审计；Connection 尚未实现，
   后续必须遵守共享引用不随单个实例删除的规则。
 - shell 后台监督器持续枚举 desired-running 记录并在每次启动/重启前推进
-  generation；SQLite、manifest 和安装文件 I/O 不进 Slint 主线程，主线程只消费有界
-  启停批次。配置变更只重启对应实例，停止或删除会非阻塞地回收其窗口/runtime。
+  generation；SQLite、manifest、安装文件和 Config Schema 求值不进 Slint 主线程，主线程只消费有界
+  启停/快照批次。配置变更只重启对应实例，停止或删除会非阻塞地回收其窗口/runtime。
 - CLI 创建/配置与 shell 恢复都通过同一安装目录读取器复核 digest、精确身份和
   Config schema；缺失、篡改、身份不匹配、Config 非法以及单实例 UI/runtime 启动失败
-  只隔离对应实例。当前尚缺 observed-state 管理界面、手动 retry 和动态多窗口实测证据。
+  只隔离对应实例。runtime worker 通过有界 lifecycle channel 发布 `running/failed/stopped`，只有 WASM
+  `start()` 成功才进入 running；控制面提供稳定错误码和手动 retry。Linux X11/Xvfb 已验证同包双窗口、
+  单实例失败隔离与安装恢复后的 retry；其他平台的控制面交互和动态多窗口仍未实测。
 
 ## 5. State、Config 与 Storage
 

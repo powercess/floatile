@@ -15,8 +15,8 @@ use floatile_core::instance::InstallationRef;
 use floatile_core::manifest::Manifest;
 use floatile_core::{InstanceDesiredState, InstanceId, PluginInstance};
 use floatile_store::installation::{
-    ConfigValidationError, InstallationCatalogError, InstalledInstallation, load_highest,
-    load_reference,
+    ConfigValidationError, InstallationCatalogError, InstalledInstallation, list_highest,
+    load_highest, load_reference,
 };
 use floatile_store::{Store, StoreError};
 use thiserror::Error;
@@ -244,37 +244,11 @@ pub fn plan_running_instances(
 /// 各自实例；任意一个插件 digest 不匹配都会返回错误（拒绝加载，交由调用方决定是
 /// 隔离失败还是整体拒绝），绝不会静默跳过被篡改的插件。
 pub fn list_installed(store: &Path) -> Result<Vec<InstalledPlugin>, LoadError> {
-    let store_entries = std::fs::read_dir(store).map_err(|e| LoadError::Read(e.to_string()))?;
-    let mut plugins = Vec::new();
-    for entry in store_entries {
-        let entry = entry.map_err(|e| LoadError::Read(e.to_string()))?;
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if !entry.path().is_dir() {
-            continue;
-        }
-        // 只枚举「规范 id 目录」（安装目录布局 `<store>/<id>/<version>`）；跳过
-        // 非 id 命名的杂项目录，避免把 store 下的临时/无关目录当作插件加载。
-        if !is_valid_plugin_id_dir(&id) {
-            continue;
-        }
-        if let Some(installation) = load_highest(store, &id).map_err(map_catalog_error)? {
-            plugins.push(installed_plugin(installation)?);
-        }
-    }
-    // 按 id 稳定排序，保证多插件集合输出确定、可测试。
-    plugins.sort_by(|a, b| a.manifest.id.0.cmp(&b.manifest.id.0));
-    Ok(plugins)
-}
-
-/// 判断目录名是否形如合法插件 id（反向域名，含点分段）；不是则跳过。
-fn is_valid_plugin_id_dir(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
-        && name.contains('.')
-        && !name.starts_with('.')
-        && !name.ends_with('.')
+    list_highest(store)
+        .map_err(map_catalog_error)?
+        .into_iter()
+        .map(installed_plugin)
+        .collect()
 }
 
 fn installed_plugin(installation: InstalledInstallation) -> Result<InstalledPlugin, LoadError> {

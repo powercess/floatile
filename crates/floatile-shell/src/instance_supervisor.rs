@@ -18,12 +18,78 @@ use floatile_services::AuditListener;
 use slint::{Timer, TimerMode};
 
 use crate::plugin_manager::{RunnableInstance, load_runnable_instance};
-use crate::runtime_ui::{RuntimeUiSession, spawn_runtime_ui};
+use crate::runtime_ui::{RuntimeUiLifecycleEvent, RuntimeUiSession, spawn_runtime_ui};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const UI_DRAIN_INTERVAL: Duration = Duration::from_millis(50);
 const ACTION_QUEUE_CAPACITY: usize = 16;
+const COMMAND_QUEUE_CAPACITY: usize = 16;
 const UI_BATCH_LIMIT: usize = 8;
+
+/// 实例的宿主观测状态。它只存在于当前 shell 进程，不写回 desired-state 数据库。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedInstanceState {
+    Starting,
+    Running,
+    Failed,
+    Stopped,
+}
+
+impl ObservedInstanceState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+/// 控制面可读取的脱敏 observed 状态；错误只暴露稳定 code，不携带 Config 等值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedInstanceStatus {
+    pub instance_id: InstanceId,
+    pub state: ObservedInstanceState,
+    pub code: Option<&'static str>,
+}
+
+#[derive(Debug)]
+enum SupervisorCommand {
+    Retry(InstanceId),
+    Stop,
+}
+
+/// Slint 控制面使用的非阻塞 supervisor 句柄。
+#[derive(Clone)]
+pub struct InstanceSupervisorHandle {
+    commands: SyncSender<SupervisorCommand>,
+    observed: Rc<RefCell<BTreeMap<u64, ObservedInstanceStatus>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SupervisorCommandError {
+    #[error("supervisor command queue is full")]
+    QueueFull,
+    #[error("supervisor is unavailable")]
+    Closed,
+}
+
+impl InstanceSupervisorHandle {
+    /// 清除某实例已隔离的 fingerprint，让后台 worker 用最新持久快照再尝试一次。
+    pub fn retry(&self, instance_id: InstanceId) -> Result<(), SupervisorCommandError> {
+        self.commands
+            .try_send(SupervisorCommand::Retry(instance_id))
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => SupervisorCommandError::QueueFull,
+                mpsc::TrySendError::Disconnected(_) => SupervisorCommandError::Closed,
+            })
+    }
+
+    pub fn observed_snapshot(&self) -> Vec<ObservedInstanceStatus> {
+        self.observed.borrow().values().cloned().collect()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InstanceFingerprint {
@@ -100,7 +166,8 @@ pub struct DynamicInstanceSupervisor {
     sessions: Rc<RefCell<BTreeMap<u64, RuntimeUiSession>>>,
     desired_generations: Rc<RefCell<BTreeMap<u64, u64>>>,
     tasks: Rc<RefCell<Vec<slint::JoinHandle<()>>>>,
-    stop: SyncSender<()>,
+    observed: Rc<RefCell<BTreeMap<u64, ObservedInstanceStatus>>>,
+    commands: SyncSender<SupervisorCommand>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -112,18 +179,20 @@ impl DynamicInstanceSupervisor {
         audit_listener: Option<AuditListener>,
     ) -> Result<Self, std::io::Error> {
         let (action_tx, action_rx) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
-        let (stop, stop_rx) = mpsc::sync_channel(1);
+        let (commands, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let worker = thread::Builder::new()
             .name("floatile-instance-supervisor".to_owned())
-            .spawn(move || supervisor_worker(database, plugin_store, action_tx, stop_rx))?;
+            .spawn(move || supervisor_worker(database, plugin_store, action_tx, command_rx))?;
 
         let sessions = Rc::new(RefCell::new(BTreeMap::new()));
         let desired_generations = Rc::new(RefCell::new(BTreeMap::new()));
+        let observed = Rc::new(RefCell::new(BTreeMap::new()));
         let tasks: Rc<RefCell<Vec<slint::JoinHandle<()>>>> = Rc::new(RefCell::new(Vec::new()));
         let timer = Timer::default();
         let timer_sessions = Rc::clone(&sessions);
         let timer_desired = Rc::clone(&desired_generations);
         let timer_tasks = Rc::clone(&tasks);
+        let timer_observed = Rc::clone(&observed);
         timer.start(TimerMode::Repeated, UI_DRAIN_INTERVAL, move || {
             timer_tasks.borrow_mut().retain(|task| !task.is_finished());
             for _ in 0..UI_BATCH_LIMIT {
@@ -139,8 +208,10 @@ impl DynamicInstanceSupervisor {
                     &timer_sessions,
                     &timer_desired,
                     &timer_tasks,
+                    &timer_observed,
                 );
             }
+            poll_session_lifecycle(&timer_sessions, &timer_observed);
         });
 
         Ok(Self {
@@ -148,9 +219,17 @@ impl DynamicInstanceSupervisor {
             sessions,
             desired_generations,
             tasks,
-            stop,
+            observed,
+            commands,
             worker: Some(worker),
         })
+    }
+
+    pub fn handle(&self) -> InstanceSupervisorHandle {
+        InstanceSupervisorHandle {
+            commands: self.commands.clone(),
+            observed: Rc::clone(&self.observed),
+        }
     }
 }
 
@@ -158,13 +237,14 @@ impl Drop for DynamicInstanceSupervisor {
     fn drop(&mut self) {
         self.timer.stop();
         self.desired_generations.borrow_mut().clear();
+        self.observed.borrow_mut().clear();
         self.sessions.borrow_mut().clear();
         for task in self.tasks.borrow_mut().drain(..) {
             if !task.is_finished() {
                 task.abort();
             }
         }
-        let _ = self.stop.try_send(());
+        let _ = self.commands.try_send(SupervisorCommand::Stop);
         let Some(worker) = self.worker.take() else {
             return;
         };
@@ -183,7 +263,7 @@ fn supervisor_worker(
     database: PathBuf,
     plugin_store: PathBuf,
     action_tx: SyncSender<Vec<SupervisorAction>>,
-    stop_rx: Receiver<()>,
+    command_rx: Receiver<SupervisorCommand>,
 ) {
     let store = match floatile_store::open(&database) {
         Ok(store) => store,
@@ -213,7 +293,7 @@ fn supervisor_worker(
                 {
                     break;
                 }
-                if stop_rx.recv_timeout(POLL_INTERVAL).is_ok() {
+                if wait_for_command(&command_rx, &mut known) {
                     break;
                 }
                 continue;
@@ -227,10 +307,24 @@ fn supervisor_worker(
             }
         }
         known = next_known;
-        match stop_rx.recv_timeout(POLL_INTERVAL) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        if wait_for_command(&command_rx, &mut known) {
+            break;
         }
+    }
+}
+
+/// 等待下一轮 reconcile，并消费一个控制命令。返回 true 表示 worker 应停止。
+fn wait_for_command(
+    command_rx: &Receiver<SupervisorCommand>,
+    known: &mut BTreeMap<u64, InstanceFingerprint>,
+) -> bool {
+    match command_rx.recv_timeout(POLL_INTERVAL) {
+        Ok(SupervisorCommand::Retry(id)) => {
+            known.remove(&id.0);
+            false
+        }
+        Ok(SupervisorCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => true,
+        Err(mpsc::RecvTimeoutError::Timeout) => false,
     }
 }
 
@@ -312,12 +406,14 @@ fn apply_actions(
     sessions: &Rc<RefCell<BTreeMap<u64, RuntimeUiSession>>>,
     desired_generations: &Rc<RefCell<BTreeMap<u64, u64>>>,
     tasks: &Rc<RefCell<Vec<slint::JoinHandle<()>>>>,
+    observed: &Rc<RefCell<BTreeMap<u64, ObservedInstanceStatus>>>,
 ) {
     for action in actions {
         match action {
             SupervisorAction::Stop(id) => {
                 desired_generations.borrow_mut().remove(&id.0);
                 sessions.borrow_mut().remove(&id.0);
+                set_observed(observed, id, ObservedInstanceState::Stopped, None);
                 tracing::info!(instance_id = id.0, "persistent plugin instance stopped");
             }
             SupervisorAction::Failure {
@@ -329,6 +425,7 @@ fn apply_actions(
                 if let Some(id) = instance_id {
                     desired_generations.borrow_mut().remove(&id.0);
                     sessions.borrow_mut().remove(&id.0);
+                    set_observed(observed, id, ObservedInstanceState::Failed, Some(code));
                 }
                 tracing::warn!(
                     instance_id = instance_id.map(|id| id.0),
@@ -343,8 +440,10 @@ fn apply_actions(
                 let generation = runnable.instance.generation();
                 let plugin_id = runnable.plugin.manifest.id.0.clone();
                 desired_generations.borrow_mut().insert(id.0, generation);
+                set_observed(observed, id, ObservedInstanceState::Starting, None);
                 let task_sessions = Rc::clone(sessions);
                 let task_desired = Rc::clone(desired_generations);
+                let task_observed = Rc::clone(observed);
                 let task_audit = audit_listener.clone();
                 match slint::spawn_local(async move {
                     match spawn_runtime_ui(runnable.plugin, runnable.instance, caps, task_audit)
@@ -361,23 +460,102 @@ fn apply_actions(
                                 );
                             }
                         }
-                        Err(error) => tracing::warn!(
-                            instance_id = id.0,
-                            plugin_id = %plugin_id,
-                            generation,
-                            code = error.code(),
-                            %error,
-                            "persistent plugin instance failed to start (isolated; host continues)"
-                        ),
+                        Err(error) => {
+                            if task_desired.borrow().get(&id.0) == Some(&generation) {
+                                set_observed(
+                                    &task_observed,
+                                    id,
+                                    ObservedInstanceState::Failed,
+                                    Some(error.code()),
+                                );
+                            }
+                            tracing::warn!(
+                                instance_id = id.0,
+                                plugin_id = %plugin_id,
+                                generation,
+                                code = error.code(),
+                                %error,
+                                "persistent plugin instance failed to start (isolated; host continues)"
+                            );
+                        }
                     }
                 }) {
                     Ok(task) => tasks.borrow_mut().push(task),
-                    Err(error) => tracing::warn!(
-                        instance_id = id.0,
-                        %error,
-                        "failed to schedule persistent plugin instance launch"
-                    ),
+                    Err(error) => {
+                        set_observed(
+                            observed,
+                            id,
+                            ObservedInstanceState::Failed,
+                            Some("FINSTANCE_SCHEDULE"),
+                        );
+                        tracing::warn!(
+                            instance_id = id.0,
+                            %error,
+                            "failed to schedule persistent plugin instance launch"
+                        );
+                    }
                 }
+            }
+        }
+    }
+}
+
+fn set_observed(
+    observed: &Rc<RefCell<BTreeMap<u64, ObservedInstanceStatus>>>,
+    instance_id: InstanceId,
+    state: ObservedInstanceState,
+    code: Option<&'static str>,
+) {
+    observed.borrow_mut().insert(
+        instance_id.0,
+        ObservedInstanceStatus {
+            instance_id,
+            state,
+            code,
+        },
+    );
+}
+
+fn poll_session_lifecycle(
+    sessions: &Rc<RefCell<BTreeMap<u64, RuntimeUiSession>>>,
+    observed: &Rc<RefCell<BTreeMap<u64, ObservedInstanceStatus>>>,
+) {
+    let events: Vec<(u64, RuntimeUiLifecycleEvent)> = sessions
+        .borrow()
+        .iter()
+        .filter_map(|(id, session)| session.try_lifecycle_event().map(|event| (*id, event)))
+        .collect();
+    for (id, event) in events {
+        match event {
+            RuntimeUiLifecycleEvent::Running => set_observed(
+                observed,
+                InstanceId(id),
+                ObservedInstanceState::Running,
+                None,
+            ),
+            RuntimeUiLifecycleEvent::Failed { code, detail } => {
+                set_observed(
+                    observed,
+                    InstanceId(id),
+                    ObservedInstanceState::Failed,
+                    Some(code),
+                );
+                sessions.borrow_mut().remove(&id);
+                tracing::warn!(
+                    instance_id = id,
+                    code,
+                    detail,
+                    "persistent plugin runtime exited (isolated; host continues)"
+                );
+            }
+            RuntimeUiLifecycleEvent::Stopped => {
+                set_observed(
+                    observed,
+                    InstanceId(id),
+                    ObservedInstanceState::Stopped,
+                    None,
+                );
+                sessions.borrow_mut().remove(&id);
             }
         }
     }
@@ -467,5 +645,36 @@ mod tests {
         assert_eq!(deleted.len(), 1);
         assert!(matches!(deleted[0], DesiredAction::Stop(InstanceId(1))));
         assert!(known.is_empty());
+    }
+
+    #[test]
+    fn manual_retry_forgets_only_the_selected_fingerprint() {
+        let first = instance(
+            1,
+            InstanceDesiredState::Running,
+            serde_json::json!({"zone": "UTC"}),
+        );
+        let second = instance(
+            2,
+            InstanceDesiredState::Running,
+            serde_json::json!({"zone": "CET"}),
+        );
+        let (_, mut known) = plan_snapshot(&[first, second], &BTreeMap::new());
+        let (commands, command_rx) = mpsc::sync_channel(1);
+        commands
+            .try_send(SupervisorCommand::Retry(InstanceId(1)))
+            .unwrap();
+
+        assert!(!wait_for_command(&command_rx, &mut known));
+        assert!(!known.contains_key(&1));
+        assert!(known.contains_key(&2));
+    }
+
+    #[test]
+    fn observed_state_names_are_stable_control_contract() {
+        assert_eq!(ObservedInstanceState::Starting.as_str(), "starting");
+        assert_eq!(ObservedInstanceState::Running.as_str(), "running");
+        assert_eq!(ObservedInstanceState::Failed.as_str(), "failed");
+        assert_eq!(ObservedInstanceState::Stopped.as_str(), "stopped");
     }
 }
