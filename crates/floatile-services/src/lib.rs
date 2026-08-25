@@ -10,6 +10,7 @@ pub mod clock;
 pub mod errors;
 pub mod log;
 pub mod metrics;
+pub mod operation;
 pub mod storage;
 pub mod theme;
 pub mod timer;
@@ -20,6 +21,10 @@ pub use clock::{Clock, ClockSnapshot};
 pub use errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
 pub use log::{LogLevel, LogService};
 pub use metrics::{MemorySnapshot, MetricsService};
+pub use operation::{
+    OperationCancelError, OperationCompletionReceiver, OperationLimits, OperationRegistry,
+    OperationServiceError, OperationSubmitError, OperationTakeError,
+};
 pub use storage::StorageService;
 pub use theme::ThemeService;
 pub use timer::{TimerService, TimerSink};

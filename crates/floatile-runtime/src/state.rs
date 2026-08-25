@@ -331,6 +331,7 @@ mod tests {
         let grants = narrow_instance(&plugin, InstanceId(1), vec![]).unwrap();
         let broker = Broker::new(
             PluginId("t".into()),
+            0,
             grants,
             AuditSink::new("t", 1),
             Arc::new(|_| {}) as TimerSink,

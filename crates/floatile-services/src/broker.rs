@@ -4,9 +4,14 @@
 //! capability 调用都必须先经 `decide` 授权，拒绝与允许都写脱敏审计。固有能力
 //! （ui/log/clock）固定当前实例 scope 并合并进实例授权。
 
+use std::any::Any;
+use std::future::Future;
+use std::time::Duration;
+
 use floatile_core::types::PluginId;
 use floatile_core::{
     CapabilityId, CapabilityParams, DenyReason, EffectiveGrant, Grant, InstanceGrant,
+    OperationCompletion, OperationCompletionDisposition, OperationFailure, OperationId,
     PermissionDecision, decide,
 };
 
@@ -15,6 +20,10 @@ use crate::clock::{Clock, ClockSnapshot};
 use crate::errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
 use crate::log::{LogLevel, LogService};
 use crate::metrics::{MemorySnapshot, MetricsService};
+use crate::operation::{
+    OperationCancelError, OperationRegistry, OperationServiceError, OperationSubmitError,
+    OperationTakeError,
+};
 use crate::storage::StorageService;
 use crate::theme::ThemeService;
 use crate::timer::{TimerService, TimerSink};
@@ -28,6 +37,8 @@ const INHERENT: &[CapabilityId] = &[
 
 /// 按实例构造的 Broker。
 pub struct Broker {
+    plugin: PluginId,
+    generation: u64,
     grants: InstanceGrant,
     audit: AuditSink,
     clock: Clock,
@@ -36,12 +47,14 @@ pub struct Broker {
     storage: StorageService,
     metrics: MetricsService,
     theme: ThemeService,
+    operations: Option<OperationRegistry>,
 }
 
 impl Broker {
     /// `instance_grants` 来自 `narrow_instance`（插件授权收窄）；固有能力自动合并。
     pub fn new(
         plugin: PluginId,
+        generation: u64,
         instance_grants: InstanceGrant,
         audit: AuditSink,
         timer_sink: TimerSink,
@@ -90,17 +103,37 @@ impl Broker {
             timer.set_quota(max_per_minute, max_active);
         }
         let instance = grants.instance;
+        let log = LogService::new(plugin.0.clone(), instance.0);
 
         Self {
+            plugin,
+            generation,
             grants,
             audit,
             clock: Clock,
-            log: LogService::new(plugin.0.clone(), instance.0),
+            log,
             timer,
             storage: StorageService::new(storage_max_bytes),
             metrics: MetricsService::new(metrics_rate),
             theme: ThemeService::new(),
+            operations: None,
         }
+    }
+
+    /// 绑定本 instance generation 的 Operation registry；身份不一致时拒绝组合。
+    pub fn with_operations(
+        mut self,
+        operations: OperationRegistry,
+    ) -> Result<Self, OperationServiceError> {
+        let owner = operations.owner();
+        if owner.plugin != self.plugin
+            || owner.instance != self.grants.instance
+            || owner.generation != self.generation
+        {
+            return Err(OperationServiceError::OwnerMismatch);
+        }
+        self.operations = Some(operations);
+        Ok(self)
     }
 
     /// 纯授权检查（用于 UI State 等由 runtime 执行、Broker 只裁决的能力）。
@@ -121,6 +154,20 @@ impl Broker {
                 Err(reason)
             }
         }
+    }
+
+    fn authorize_existing_grant(
+        &self,
+        capability: CapabilityId,
+        detail: &str,
+    ) -> Result<(), DenyReason> {
+        let request = self
+            .grants
+            .caps
+            .iter()
+            .find(|grant| grant.capability == capability)
+            .and_then(|grant| grant.params.as_ref());
+        self.authorize(capability, request, detail)
     }
 
     // ---- 固有能力 ----
@@ -231,6 +278,123 @@ impl Broker {
         self.authorize(CapabilityId::ThemeSubscribe, None, "theme unsubscribe")?;
         self.theme.unsubscribe(id)
     }
+
+    // ---- 宿主托管异步 Operation（PP-M2 spike）----
+
+    /// 在同一个 Broker 调用中完成授权、脱敏审计与有界提交；没有可分离的公开 execute 步骤。
+    pub fn submit_operation<T, F>(
+        &self,
+        capability: CapabilityId,
+        request: Option<&CapabilityParams>,
+        timeout: Duration,
+        audit_detail: &str,
+        work: F,
+    ) -> Result<OperationId, OperationSubmitError>
+    where
+        T: Any + Send + 'static,
+        F: Future<Output = Result<T, OperationFailure>> + Send + 'static,
+    {
+        self.authorize(capability, request, audit_detail)
+            .map_err(OperationSubmitError::PermissionDenied)?;
+        let result = match &self.operations {
+            Some(operations) => operations.submit(capability, timeout, work),
+            None => Err(OperationSubmitError::Unavailable),
+        };
+        if let Err(error) = result {
+            let reason = match error {
+                OperationSubmitError::PermissionDenied(reason) => reason,
+                OperationSubmitError::QueueFull | OperationSubmitError::IdExhausted => {
+                    DenyReason::QuotaExceeded
+                }
+                OperationSubmitError::InvalidDeadline => DenyReason::InvalidInput,
+                OperationSubmitError::Unavailable => DenyReason::EnvironmentUnavailable,
+            };
+            self.audit.record(
+                capability,
+                false,
+                Some(reason),
+                &format!("operation submit failed={}", error.code()),
+            );
+        }
+        result
+    }
+
+    /// 主动取消仍持续经过 capability 授权，并只命中当前 Broker instance 的 active registry。
+    pub fn cancel_operation(
+        &self,
+        capability: CapabilityId,
+        id: OperationId,
+    ) -> Result<(), OperationCancelError> {
+        self.authorize_existing_grant(capability, &format!("operation={} action=cancel", id.get()))
+            .map_err(OperationCancelError::PermissionDenied)?;
+        self.operations
+            .as_ref()
+            .ok_or(OperationCancelError::Unavailable)?
+            .cancel(capability, id)
+    }
+
+    /// capability-specific adapter 一次性领取 typed result；领取时重新授权，支持未来动态撤权。
+    pub fn take_operation_result<T: Any + Send + 'static>(
+        &self,
+        capability: CapabilityId,
+        id: OperationId,
+    ) -> Result<T, OperationTakeError> {
+        self.authorize_existing_grant(
+            capability,
+            &format!("operation={} action=take-result", id.get()),
+        )
+        .map_err(OperationTakeError::PermissionDenied)?;
+        self.operations
+            .as_ref()
+            .ok_or(OperationTakeError::Unavailable)?
+            .take(capability, id)
+    }
+
+    /// runtime 在 completion 成为当前 generation 的 guest event 前记录唯一终态；不记录结果值。
+    pub fn audit_operation_completion(
+        &self,
+        completion: &OperationCompletion,
+        disposition: OperationCompletionDisposition,
+    ) -> bool {
+        let Some(operations) = &self.operations else {
+            return false;
+        };
+        if !completion.is_current_for(operations.owner()) {
+            return false;
+        }
+        self.audit.record(
+            completion.capability,
+            true,
+            None,
+            &format!(
+                "operation={} terminal={} delivery={}",
+                completion.id.get(),
+                completion.terminal.code(),
+                disposition.code()
+            ),
+        );
+        true
+    }
+
+    /// runtime 丢弃旧 generation、过载或关闭后的成功结果，避免宿主内存滞留。
+    pub fn discard_operation_result(&self, id: OperationId) -> bool {
+        self.operations
+            .as_ref()
+            .is_some_and(|operations| operations.discard_result(id))
+    }
+
+    /// instance stop/delete 时取消全部 active operation；每项仍只产生一个 cancelled 终态。
+    pub fn cancel_all_operations(&self) -> usize {
+        self.operations
+            .as_ref()
+            .map_or(0, OperationRegistry::cancel_all)
+    }
+}
+
+impl Drop for Broker {
+    fn drop(&mut self) {
+        let _ = self.cancel_all_operations();
+    }
 }
 
 /// 审计脱敏：消息只记长度，不落内容。
@@ -320,6 +484,7 @@ mod tests {
     fn inherent_caps_allowed_without_grant() {
         let broker = Broker::new(
             PluginId("dev.floatile.clock".into()),
+            0,
             test_grants(),
             AuditSink::new("dev.floatile.clock", 7),
             sink(),
@@ -345,6 +510,7 @@ mod tests {
     fn unlisted_capability_denied_and_audited() {
         let broker = Broker::new(
             PluginId("dev.floatile.clock".into()),
+            0,
             test_grants(),
             AuditSink::new("dev.floatile.clock", 7),
             sink(),
@@ -359,6 +525,7 @@ mod tests {
     fn storage_respects_scope_and_quota() {
         let mut broker = Broker::new(
             PluginId("dev.floatile.clock".into()),
+            0,
             test_grants(),
             AuditSink::new("dev.floatile.clock", 7),
             sink(),
@@ -387,6 +554,7 @@ mod tests {
         // 实例授权 maxActive=1：连续 schedule 两个未到期计时器第二个应超限。
         let mut broker = Broker::new(
             PluginId("dev.floatile.clock".into()),
+            0,
             test_grants(),
             AuditSink::new("dev.floatile.clock", 7),
             sink(),
@@ -412,6 +580,7 @@ mod tests {
         });
         let broker = Broker::new(
             PluginId("dev.floatile.clock".into()),
+            0,
             test_grants(),
             AuditSink::new("dev.floatile.clock", 7).with_listener(listener),
             sink(),

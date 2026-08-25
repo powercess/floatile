@@ -6,6 +6,7 @@
 
 mod error;
 pub mod harness;
+pub mod operation;
 mod state;
 
 use std::sync::Arc;
@@ -28,6 +29,9 @@ use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Store};
 
 pub use error::{InstanceError, RuntimeError};
+pub use operation::{
+    OperationBridgeError, OperationCompletionBridge, OperationDelivery, RuntimeOperationEvents,
+};
 pub use state::UiUpdate;
 
 /// 实例队列容量（有界背压）。
@@ -46,6 +50,8 @@ const DEFAULT_MAX_MEMORY: usize = 16 * 1024 * 1024;
 pub struct WidgetConfig {
     pub plugin: PluginId,
     pub instance: InstanceId,
+    /// 本次实例启动 generation；Operation completion 只可回到相同 generation。
+    pub generation: u64,
     /// WASM Component 字节。
     pub wasm: Vec<u8>,
     /// canonical initial State（来自已验证 UI IR）。
@@ -292,7 +298,13 @@ async fn run_actor(
     if let Some(listener) = &audit_listener {
         audit = audit.with_listener(Arc::clone(listener));
     }
-    let broker = Broker::new(config.plugin.clone(), config.grants, audit, sink);
+    let broker = Broker::new(
+        config.plugin.clone(),
+        config.generation,
+        config.grants,
+        audit,
+        sink,
+    );
 
     let initial_state_json = serde_json::to_string(&config.initial_state)
         .map_err(|e| RuntimeError::InstanceFailed(format!("initial state 序列化失败: {e}")))?;

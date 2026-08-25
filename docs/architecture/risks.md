@@ -56,10 +56,16 @@
 ### R11. 异步 wasmtime + 主线程事件循环的死锁/卡顿 — 中
 - 缓解：wasm 调用全部异步，不在 Slint 回调里阻塞；UI 回调只向容量 64 的桥做 `try_send`，过载
   丢弃并在 worker 聚合审计；fuel 按 guest 调用补充；共享 epoch ticker 强制每调用墙钟 deadline。
+- ADR-0004 已拒绝用同步 WIT import 等待长任务。宿主 Operation 使用有界提交/完成/并发/结果预算，
+  cancellation/deadline 产生唯一终态；completion 只带元数据并按 instance generation 非阻塞投递，
+  旧代、满载和 actor 关闭均丢弃 retained result。
 - 已验证：超大 fuel 的恶意无限循环被 25 ms 测试预算中断，同 Engine 已启动 peer 随后仍能处理事件；
-  8 线程并发洪泛只保留队列容量内事件。FTUI 解析/校验/renderer 已移到准备线程。
+  8 线程并发洪泛只保留队列容量内事件；Operation reference fixture 覆盖拒绝、超时、取消、迟到
+  completion、实例重启、提交/结果/actor 队列过载和后续工作存活。FTUI 解析/校验/renderer 已移到
+  准备线程。
 - 剩余：Slint 1.17 `ComponentDefinition` 含 `Rc`、不可跨线程，宿主生成的有界源码仍须在 UI executor
-  编译；需回填真实插件编译时延与三平台 UI heartbeat，超预算时再决策通用预编译 renderer。
+  编译；Operation 正式 WIT/SDK/guest dispatch、动态撤权和宿主重启恢复仍未实现；需回填真实插件
+  编译时延与三平台 UI heartbeat，超预算时再决策通用预编译 renderer。
 
 ### R12. Slint 字体/SVG 传递依赖停止维护 — 高（公开分发/第三方资源前）
 - Slint 1.17.1 经 `resvg/usvg` 带入 `rustybuzz 0.20.1`（RUSTSEC-2026-0206）与

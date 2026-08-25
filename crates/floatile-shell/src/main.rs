@@ -499,6 +499,7 @@ fn spawn_clock_runtime(
                 let config = WidgetConfig {
                     plugin: plugin.clone(),
                     instance: CLOCK_INSTANCE_ID,
+                    generation: 0,
                     wasm,
                     initial_state,
                     state_schema: clock_state_schema(),

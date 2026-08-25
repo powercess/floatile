@@ -53,6 +53,7 @@ impl From<crate::InstanceError> for HarnessError {
 pub struct WidgetHarness {
     plugin: PluginId,
     instance: InstanceId,
+    generation: u64,
     wasm: Vec<u8>,
     initial_state: Value,
     state_schema: JsonSchema,
@@ -69,6 +70,7 @@ impl WidgetHarness {
         Self {
             plugin,
             instance: InstanceId(1),
+            generation: 0,
             wasm,
             initial_state: Value::Object(Default::default()),
             state_schema: JsonSchema::default(),
@@ -83,6 +85,12 @@ impl WidgetHarness {
     /// 设置实例 id（默认 1）。
     pub fn instance(mut self, instance: InstanceId) -> Self {
         self.instance = instance;
+        self
+    }
+
+    /// 设置本次测试实例 generation（默认 0）。
+    pub fn generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
         self
     }
 
@@ -166,6 +174,7 @@ impl WidgetHarness {
         let config = WidgetConfig {
             plugin: self.plugin,
             instance: self.instance,
+            generation: self.generation,
             wasm: self.wasm,
             initial_state: self.initial_state,
             state_schema: self.state_schema,

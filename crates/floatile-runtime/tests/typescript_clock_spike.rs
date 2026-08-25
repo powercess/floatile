@@ -92,6 +92,7 @@ fn widget_config(instance: InstanceId, wasm: Vec<u8>, config_json: &str) -> Widg
     WidgetConfig {
         plugin: PluginId("dev.floatile.clock-typescript-spike".into()),
         instance,
+        generation: 0,
         wasm,
         initial_state: json!({"time": "", "running": false}),
         state_schema: clock_behavior::state_schema(),

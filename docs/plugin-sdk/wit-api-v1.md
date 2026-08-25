@@ -231,6 +231,12 @@ actor 等待当前回调完成或超时后才取下一个 event。任何 host im
 `host-ui` 写 runtime State 并异步投递 UI；不能直接调用 Slint。Storage、Timer、Metrics、Theme 由
 services 实现，adapter 只能持有 Broker/instance context，不能持有原生能力句柄。
 
+ADR-0004 已选择“capability-specific typed submit/take-result + 通用 Operation ID/cancel + 仅元数据
+completion signal”作为未来长任务合约，并由宿主 spike 验证队列、deadline、取消、generation 与
+过载语义。该合约**不属于当前 v1.0 WIT**：`wit/floatile-widget.wit`、bindings、SDK 与
+`engineApiVersion` 在本 spike 中均未变化。下一 PP-M2 切片必须先修改 WIT 唯一源并完成 §8 的全部
+联动；在此之前不得暴露临时 import 或把宿主 Rust API 描述为插件 API。
+
 ## 8. 版本与兼容
 
 - WIT package/world 版本对应 `engineApiVersion`，不对应 `uiApiVersion` 或 SDK 包版本。

@@ -29,9 +29,11 @@ floatile-shell
 ├─ PluginManager ← manifest/package validation
 ├─ floatile-runtime
 │  ├─ per-instance actor / bounded queue / State
+│  ├─ Operation completion bridge / generation filter
 │  └─ Wasmtime Component / fuel / memory / timeout
 ├─ floatile-services
-│  └─ PermissionBroker → log/clock/timer/storage/metrics/theme
+│  ├─ PermissionBroker → log/clock/timer/storage/metrics/theme
+│  └─ bounded Operation registry / deadline / cancel / typed results
 ├─ floatile-store
 └─ floatile-platform
 
@@ -64,6 +66,8 @@ plugin package
   instance actor → Wasmtime async callback
                  → WIT import → Broker → service
                  → host-ui State Patch → validate/commit → UI queue
+  Broker → bounded Operation workers → metadata completion
+         → generation filter / try_send → instance actor
 [shell control/supervisor workers]
   SQLite desired state + verified Installation/Config Schema
   → bounded reconcile/snapshot; runtime lifecycle → observed registry
@@ -72,6 +76,9 @@ plugin package
 - Slint 回调只用 `try_send` 排队 event，不同步等待 WASM、Tokio、SQLite、审计持久化或任何不可信输入；
   UI→runtime 队列容量 64，满载事件立即丢弃，worker 聚合记录 `ui:event-queue` 脱敏审计。
 - runtime 每实例 bounded queue 严格串行；timeout/cancel 后才能处理下一事件。
+- 跨回调长任务由宿主 Operation worker 托管；提交、完成、并发和 retained result 分别有界。完成信号
+  不携带 payload，runtime 仅向相同 instance generation 非阻塞投递；旧代、满队列和关闭 actor 的结果
+  立即丢弃。当前是 ADR-0004 宿主 spike，正式 WIT/SDK 尚未接入。
 - State Patch 在 worker 上解析、原子应用和 schema 校验，runtime State 为权威；SDK mirror 只在 host
   确认后提交，主线程只应用已验证 snapshot/diff。
 - worker 每轮最多转发 8 个 UI event，再让出 State 投影机会；queue full、UI 拥塞、shutdown 和
@@ -123,6 +130,8 @@ plugin package
 - 声明能力：timer、private storage、process metrics、theme；manifest 是上限，grant 可收窄。
 - P0 不实现网络/文件/命令/secret；没有 WIT interface，也没有临时 host function。
 - allow/deny/scope/quota/unavailable/invalid input 都有稳定错误与脱敏 audit。
+- ADR-0004 Operation 的 submit/cancel/take 全部经同一 Broker；registry 原始执行入口不跨 crate 公开。
+  P0 WIT 尚不暴露 Operation，首个 typed capability 接入时必须联动版本与 contract tests。
 
 ## 9. Runtime 与安全
 
