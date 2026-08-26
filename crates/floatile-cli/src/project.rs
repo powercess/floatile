@@ -217,6 +217,16 @@ name = "clock"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "build_ftui"
+required-features = ["build-host"]
+
+[features]
+build-host = []
+
 [dependencies]
 # NOTE: floatile-sdk 尚未发布（许可 ADR 未通过）。独立构建前需先发布 SDK，
 # 或改用 path/patch 指向本地 SDK。workspace 内成员（如 plugins/clock-wasm）
@@ -244,7 +254,9 @@ impl Widget for MyWidget {
         view::column(vec![view::text_bind("$.message")])
     }
 
-    fn start(&mut self, _ctx: &mut Context<Self>) {}
+    fn start(&mut self, ctx: &mut Context<Self>) {
+        let _ = ctx.timer().schedule(1000);
+    }
 
     fn event(&mut self, _event: WidgetEvent, ctx: &mut Context<Self>) {
         let _ = ctx.log(LogLevel::Info, "event received");
@@ -253,16 +265,29 @@ impl Widget for MyWidget {
 
 #[cfg(target_arch = "wasm32")]
 floatile_sdk::impl_export_widget!(MyWidget);
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn __floatile_ftui_json() -> String {
+    floatile_sdk::build::build_ftui::<MyWidget>(std::collections::BTreeMap::new())
+}
 "#
     .to_owned();
+    let build_ftui_rs = r#"fn main() {
+    print!("{}", clock::__floatile_ftui_json());
+}
+"#;
 
     write_file(&dir.join("floatile.toml"), &floatile_toml)?;
     write_file(&dir.join("Cargo.toml"), &cargo_toml)?;
     write_file(&manifest_dir.join("lib.rs"), &lib_rs)?;
+    write_file(&manifest_dir.join("bin/build_ftui.rs"), build_ftui_rs)?;
     Ok(())
 }
 
 fn write_file(path: &Path, content: &str) -> Result<(), ProjectError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ProjectError::Io(e.to_string()))?;
+    }
     let mut f = std::fs::File::create(path).map_err(|e| ProjectError::Io(e.to_string()))?;
     f.write_all(content.as_bytes())
         .map_err(|e| ProjectError::Io(e.to_string()))

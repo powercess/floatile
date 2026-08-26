@@ -102,3 +102,108 @@ fn generated_project_resolves_only_packaged_sdk_sources() {
 
     std::fs::remove_dir_all(temp).expect("clean temp root");
 }
+
+fn write_project_patch_config(project: &Path, sdk: &Path, macros: &Path, ui_schema: &Path) {
+    let cargo_dir = project.join(".cargo");
+    std::fs::create_dir(&cargo_dir).unwrap();
+    let config = format!(
+        "[patch.crates-io]\nfloatile-sdk = {{ path = {:?} }}\nfloatile-sdk-macros = {{ path = {:?} }}\nfloatile-ui-schema = {{ path = {:?} }}\n",
+        sdk.display().to_string(),
+        macros.display().to_string(),
+        ui_schema.display().to_string(),
+    );
+    std::fs::write(cargo_dir.join("config.toml"), config).unwrap();
+}
+
+fn cli(args: &[&str]) -> serde_json::Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_floatile"))
+        .env("RUSTC_WRAPPER", "")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "floatile {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schemaVersion"], 1, "floatile {args:?}");
+    value
+}
+
+#[test]
+#[ignore = "requires network, Xvfb, and FLOATTILE_PREVIEW_HOST"]
+fn clean_directory_completes_the_rust_author_loop() {
+    let root = workspace_root();
+    cargo_package(&root, "floatile-ui-schema", false);
+    cargo_package(&root, "floatile-sdk-macros", false);
+    cargo_package(&root, "floatile-sdk", true);
+    let temp = std::env::temp_dir().join(format!("floatile-author-loop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    std::fs::create_dir(&temp).unwrap();
+    let ui_schema = unpack(&root, &temp, "floatile-ui-schema");
+    let macros = unpack(&root, &temp, "floatile-sdk-macros");
+    let sdk = unpack(&root, &temp, "floatile-sdk");
+    let project = temp.join("clean-widget");
+    let package = temp.join("clean-widget.floatile");
+    let plugin_store = temp.join("plugins");
+    let database = temp.join("layout.db");
+
+    let project_text = project.to_string_lossy();
+    let package_text = package.to_string_lossy();
+    let store_text = plugin_store.to_string_lossy();
+    let database_text = database.to_string_lossy();
+    cli(&[
+        "new",
+        &project_text,
+        "dev.example.cleanloop",
+        "Clean Loop",
+        "--json",
+        "--no-interactive",
+    ]);
+    write_project_patch_config(&project, &sdk, &macros, &ui_schema);
+    cli(&["check", &project_text, "--json", "--deny-warnings"]);
+    let tested = cli(&[
+        "test",
+        &project_text,
+        "--event",
+        "start",
+        "--payload",
+        "{}",
+        "--deny-all",
+        "--advance-ms",
+        "20",
+        "--timeout",
+        "300",
+        "--json",
+    ]);
+    assert_eq!(tested["phases"]["events"], 1);
+    cli(&[
+        "dev",
+        &project_text,
+        "--once",
+        "--duration-ms",
+        "500",
+        "--json",
+    ]);
+    cli(&["preview", &project_text, "--duration-ms", "500", "--json"]);
+    cli(&["build", &project_text, &package_text, "--json"]);
+    cli(&["install", &package_text, "--store", &store_text, "--json"]);
+    cli(&[
+        "run",
+        &project_text,
+        "--store",
+        &store_text,
+        "--db",
+        &database_text,
+        "--duration-ms",
+        "500",
+        "--json",
+    ]);
+    let inspected = cli(&["inspect", &package_text, "--json"]);
+    assert_eq!(inspected["package"]["id"], "dev.example.cleanloop");
+    let manifest = std::fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    assert!(!manifest.contains(root.to_string_lossy().as_ref()));
+    std::fs::remove_dir_all(temp).unwrap();
+}

@@ -622,10 +622,11 @@ fn cmd_validate(args: &[String]) -> ExitCode {
 
 fn cmd_dev(args: &[String]) -> ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let positionals = match author_positionals(args, &["--interval"], &[], 1) {
-        Ok(positionals) => positionals,
-        Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
-    };
+    let positionals =
+        match author_positionals(args, &["--interval", "--duration-ms"], &["--once"], 1) {
+            Ok(positionals) => positionals,
+            Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
+        };
     let dir = positionals
         .first()
         .map(PathBuf::from)
@@ -639,6 +640,40 @@ fn cmd_dev(args: &[String]) -> ExitCode {
     };
     if let Err(error) = dev::ensure_project(&dir) {
         return render_basic_error(error.code(), error.public_detail().as_ref(), json, false);
+    }
+    if args.iter().any(|argument| argument == "--once") {
+        let duration_ms = match option_u64(args, "--duration-ms", 800) {
+            Ok(value) if value > 0 => value,
+            Ok(_) => return render_basic_error("FDEV_ARGUMENT", "运行时限必须大于 0", json, true),
+            Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
+        };
+        return match preview::preview_project(&dir, Duration::from_millis(duration_ms)) {
+            Ok(report) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "schemaVersion": 1,
+                            "status": report.status,
+                            "severity": report.severity,
+                            "code": report.code,
+                            "warnings": report.warnings,
+                            "event": "preview_started",
+                            "generation": 1,
+                            "running": report.running,
+                        })
+                    );
+                } else {
+                    println!("[ok] preview generation 1 reached running");
+                }
+                if report.running {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
+        };
     }
     let out = dir.join("out").join("plugin.floatile");
     dev::dev_loop(&dir, &out, interval, json);

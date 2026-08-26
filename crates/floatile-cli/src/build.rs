@@ -63,7 +63,9 @@ struct CargoMeta {
 }
 
 fn cargo_metadata(manifest: &Path) -> Result<CargoMeta, BuildError> {
+    let project_dir = manifest.parent().unwrap_or_else(|| Path::new("."));
     let output = Command::new("cargo")
+        .current_dir(project_dir)
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .arg("--manifest-path")
         .arg(manifest)
@@ -127,6 +129,7 @@ pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildEr
 
     // 1. 编译 wasm 组件。
     let wasm_build = Command::new("cargo")
+        .current_dir(project_dir)
         .args(["build", "--release", "--target", "wasm32-wasip2"])
         .arg("--manifest-path")
         .arg(&manifest_path)
@@ -146,6 +149,7 @@ pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildEr
 
     // 2. 宿主运行 build_ftui 生成 widget.ftui。
     let ftui_output = Command::new("cargo")
+        .current_dir(project_dir)
         .args([
             "run",
             "--quiet",
