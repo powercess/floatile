@@ -11,6 +11,7 @@ pub mod install;
 pub mod instance;
 pub mod output;
 pub mod package;
+pub mod preview;
 pub mod project;
 pub mod test;
 
@@ -25,6 +26,7 @@ pub use instance::{
 };
 pub use output::{CommandErrorReport, CommandWarning, OUTPUT_SCHEMA_VERSION};
 pub use package::{PackageError, PackageLimits, ValidatedPackage, validate_package};
+pub use preview::{PreviewError, PreviewReport, PreviewSession, preview_project};
 pub use project::{
     ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,
 };

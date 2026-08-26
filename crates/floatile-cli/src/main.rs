@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use floatile_cli::{
-    CommandErrorReport, build, check, dev, inspect, install, instance, package, project, test,
+    CommandErrorReport, build, check, dev, inspect, install, instance, package, preview, project,
+    test,
 };
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
 
@@ -13,7 +14,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|schema> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|preview|schema> [参数]"
         );
         return ExitCode::from(2);
     }
@@ -27,6 +28,7 @@ fn main() -> ExitCode {
         "instance" => cmd_instance(&args[2..]),
         "dev" => cmd_dev(&args[2..]),
         "test" => cmd_test(&args[2..]),
+        "preview" => cmd_preview(&args[2..]),
         "schema" => cmd_schema(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
@@ -618,19 +620,24 @@ fn cmd_validate(args: &[String]) -> ExitCode {
 }
 
 fn cmd_dev(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|a| a == "--json");
+    let positionals = match author_positionals(args, &["--interval"], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
+    };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let json = args.iter().any(|a| a == "--json");
-    let interval: u64 = args
-        .windows(2)
-        .find(|w| w[0] == "--interval")
-        .and_then(|w| w[1].parse().ok())
-        .unwrap_or(500);
-    if let Err(e) = dev::ensure_project(&dir) {
-        eprintln!("dev 失败: {e}");
-        return ExitCode::FAILURE;
+    let interval = match option_u64(args, "--interval", 500) {
+        Ok(value) if value >= 50 => value,
+        Ok(_) => {
+            return render_basic_error("FDEV_ARGUMENT", "--interval 不得小于 50ms", json, true);
+        }
+        Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
+    };
+    if let Err(error) = dev::ensure_project(&dir) {
+        return render_basic_error(error.code(), error.public_detail().as_ref(), json, false);
     }
     let out = dir.join("out").join("plugin.floatile");
     dev::dev_loop(&dir, &out, interval, json);
@@ -779,6 +786,42 @@ fn cmd_install(args: &[String]) -> ExitCode {
     }
 }
 
+fn cmd_preview(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &["--duration-ms"], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FPREVIEW_ARGUMENT", &detail, json, true),
+    };
+    let project = positionals
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let duration_ms = match option_u64(args, "--duration-ms", 5_000) {
+        Ok(value) if value > 0 => value,
+        Ok(_) => {
+            return render_basic_error("FPREVIEW_ARGUMENT", "--duration-ms 必须大于 0", json, true);
+        }
+        Err(detail) => return render_basic_error("FPREVIEW_ARGUMENT", &detail, json, true),
+    };
+    match preview::preview_project(&project, Duration::from_millis(duration_ms)) {
+        Ok(report) => {
+            if json {
+                println!("{}", serialize_json(&report));
+            } else if report.running {
+                println!("preview: PASS，真实宿主窗口已进入 running");
+            } else {
+                eprintln!("preview: FAIL code={}", report.code);
+            }
+            if report.running {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
+    }
+}
+
 fn author_positionals<'a>(
     args: &'a [String],
     value_options: &[&str],
@@ -809,6 +852,16 @@ fn author_positionals<'a>(
         return Err(format!("位置参数最多允许 {maximum} 个"));
     }
     Ok(positionals)
+}
+
+fn option_u64(args: &[String], name: &str, default: u64) -> Result<u64, String> {
+    let Some(index) = args.iter().position(|argument| argument == name) else {
+        return Ok(default);
+    };
+    args.get(index + 1)
+        .ok_or_else(|| format!("{name} 缺少值"))?
+        .parse()
+        .map_err(|_| format!("{name} 必须是整数"))
 }
 
 fn render_basic_error(code: &str, detail: &str, json: bool, argument_error: bool) -> ExitCode {

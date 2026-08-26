@@ -164,6 +164,9 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
   仍走同一 deny-by-default Broker（权限按 manifest 声明经 `parse_capability_params` 单源授权）。
 - CLI 与 shell 通过 `floatile-store::installation` 共享安装目录 digest/身份/Config
   schema 复验；CLI 不链接或执行宿主 capability 实现。
+- `preview/dev` 由 CLI 完成 build、包安全校验和原子临时安装，再派生 shell 所属的
+  `floatile-preview-host` 子进程；子进程使用正式 renderer、Slint、Wasmtime 与 Permission Broker。
+  两侧只通过稳定 JSON 和已验证 Installation 交接，保持 CLI 不链接宿主 capability 实现。
 
 ### 3.12 `floatile-renderer`
 

@@ -14,6 +14,7 @@ use serde_json::Value;
 pub mod instance_control;
 pub mod instance_supervisor;
 pub mod plugin_manager;
+pub mod preview;
 pub mod runtime_ui;
 
 /// 单窗口宿主内建参考时钟的实例 ID。

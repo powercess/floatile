@@ -199,7 +199,9 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   项目检查在自动清理的临时目录复用正式构建/校验链并输出五阶段稳定 JSON，并按组件实际导入的
   WIT function 对照 Capability Registry 与 manifest 声明。Rust SDK 已用根 WIT 的受 drift 测试约束发行
   快照补齐 Cargo 包内容，生成模板已从独立 SDK 包快照通过干净目录 `wasm32-wasip2` 编译，不依赖仓库
-  私有 path；公开 registry 上传仍受许可 ADR 阻断。真实窗口 `dev/preview` 与其余命令统一诊断待后续切片；
+  私有 path；公开 registry 上传仍受许可 ADR 阻断。`preview` 已通过 shell 专用子进程复用正式
+  renderer/Slint/Wasmtime/Broker，Xvfb 验证 guest start 后进入 running；`dev` 已接入保留上一代的预览
+  generation 替换。作者级持久 `run` 与最终干净目录全流程仍待后续切片；
 - 网络、Connection 与凭证托管尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。
