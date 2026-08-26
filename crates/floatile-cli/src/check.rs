@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::build::{BuildError, build_project};
 use crate::inspect::{InspectError, InspectReport, inspect_package};
+use crate::output::{CommandWarning, OUTPUT_SCHEMA_VERSION};
 use crate::package::{PackageLimits, imported_capabilities, validate_package};
 
 /// `floatile check --json` 的成功结果。
@@ -37,12 +38,7 @@ pub struct CheckPhases {
 }
 
 /// 版本化 warning 结构。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckWarning {
-    pub code: String,
-    pub message: String,
-}
+pub type CheckWarning = CommandWarning;
 
 #[derive(Debug, Error)]
 pub enum CheckError {
@@ -139,7 +135,7 @@ pub fn check_project(project_dir: &Path) -> Result<CheckReport, CheckError> {
         return Err(CheckError::CapabilityMissing(missing));
     }
     Ok(CheckReport {
-        schema_version: 1,
+        schema_version: OUTPUT_SCHEMA_VERSION,
         status: "ok",
         code: "ok",
         phases: CheckPhases {

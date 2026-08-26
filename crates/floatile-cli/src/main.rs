@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use floatile_cli::{build, check, dev, inspect, install, instance, package, project, test};
+use floatile_cli::{
+    CommandErrorReport, build, check, dev, inspect, install, instance, package, project, test,
+};
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
 
 fn main() -> ExitCode {
@@ -117,17 +119,8 @@ fn render_check_error(
     argument_error: bool,
 ) -> ExitCode {
     if json {
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "schemaVersion": 1,
-                "status": "error",
-                "code": code,
-                "detail": detail,
-                "phases": phases,
-                "warnings": [],
-            })
-        );
+        let report = CommandErrorReport::new(code, detail, phases);
+        eprintln!("{}", serialize_json(&report));
     } else {
         eprintln!("check: FAIL code={code} detail={detail}");
     }
@@ -211,15 +204,8 @@ fn cmd_inspect(args: &[String]) -> ExitCode {
 
 fn render_inspect_error(code: &str, detail: &str, json: bool) -> ExitCode {
     if json {
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "schemaVersion": 1,
-                "status": "error",
-                "code": code,
-                "detail": detail,
-            })
-        );
+        let report = CommandErrorReport::new(code, detail, serde_json::json!({}));
+        eprintln!("{}", serialize_json(&report));
     } else {
         eprintln!("inspect 失败: code={code} detail={detail}");
     }
@@ -228,6 +214,12 @@ fn render_inspect_error(code: &str, detail: &str, json: bool) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn serialize_json(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| {
+        r#"{"schemaVersion":1,"status":"error","severity":"error","code":"FCLI_SERIALIZE","detail":"自动化结果序列化失败","phases":{},"warnings":[]}"#.to_owned()
+    })
 }
 
 fn cmd_instance(args: &[String]) -> ExitCode {

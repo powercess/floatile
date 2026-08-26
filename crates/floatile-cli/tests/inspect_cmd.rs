@@ -73,6 +73,8 @@ fn inspect_reports_validated_package_contract_and_digests() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["schemaVersion"], 1);
     assert_eq!(report["status"], "ok");
+    assert_eq!(report["code"], "ok");
+    assert_eq!(report["warnings"], serde_json::json!([]));
     assert_eq!(report["package"]["id"], "dev.floatile.clock");
     assert_eq!(report["compatibility"]["status"], "compatible");
     assert_eq!(report["permissions"][0]["capability"], "timer:schedule");
@@ -116,6 +118,8 @@ fn inspect_rejects_corrupt_packages_with_stable_redacted_json() {
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["schemaVersion"], 1);
     assert_eq!(error["status"], "error");
+    assert_eq!(error["severity"], "error");
+    assert_eq!(error["warnings"], serde_json::json!([]));
     assert_eq!(error["code"], "FPAK_CORRUPT_ZIP");
     assert!(
         !error["detail"]

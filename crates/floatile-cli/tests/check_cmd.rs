@@ -71,6 +71,7 @@ fn check_failure_is_stable_redacted_and_cleans_temporary_directory() {
     let report: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(report["schemaVersion"], 1);
     assert_eq!(report["status"], "error");
+    assert_eq!(report["severity"], "error");
     assert_eq!(report["code"], "FBUILD_CARGO_METADATA");
     assert_eq!(report["phases"]["metadata"], false);
     assert!(
@@ -92,4 +93,5 @@ fn check_unknown_option_uses_json_mode_regardless_of_option_order() {
     assert_eq!(output.status.code(), Some(2));
     let report: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(report["code"], "FCHECK_ARGUMENT");
+    assert_eq!(report["severity"], "error");
 }

@@ -9,6 +9,7 @@ pub mod dev;
 pub mod inspect;
 pub mod install;
 pub mod instance;
+pub mod output;
 pub mod package;
 pub mod project;
 pub mod test;
@@ -22,6 +23,7 @@ pub use instance::{
     InstanceCommandError, InstanceView, configure_instance, create_instance, delete_instance,
     get_instance, list_instances, set_instance_desired_state,
 };
+pub use output::{CommandErrorReport, CommandWarning, OUTPUT_SCHEMA_VERSION};
 pub use package::{PackageError, PackageLimits, ValidatedPackage, validate_package};
 pub use project::{
     ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,

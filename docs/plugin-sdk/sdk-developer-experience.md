@@ -223,6 +223,8 @@ JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路�
 使用声明能力但 manifest 未声明时以 `FCHECK_CAPABILITY_MISSING` 失败；已声明但未导入时产生
 `FCHECK_CAPABILITY_UNUSED` warning，`--deny-warnings` 可将其提升为失败。固有能力无需写入 manifest；
 该静态诊断不做控制流可达性证明，也不替代 Permission Broker 的运行时强制。
+`check/inspect` 的失败已共用版本化自动化契约：固定 `schemaVersion/status/severity/code/detail/phases/warnings`
+字段，命令只可向 `detail` 写入有界脱敏描述；其余作者命令将在 PP-M4 后续切片逐个接入同一契约。
 `preview/migrate` 与其余命令的 JSON 契约统一待续。
 
 ## 8. 诊断格式
