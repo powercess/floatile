@@ -549,7 +549,7 @@ fn cmd_schema(args: &[String]) -> ExitCode {
 
 fn cmd_new(args: &[String]) -> ExitCode {
     let json = args.iter().any(|argument| argument == "--json");
-    let positionals = match author_positionals(args, &[], 3) {
+    let positionals = match author_positionals(args, &[], &[], 3) {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FNEW_ARGUMENT", &detail, json, true),
     };
@@ -622,7 +622,7 @@ fn cmd_validate(args: &[String]) -> ExitCode {
 
 fn cmd_dev(args: &[String]) -> ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let positionals = match author_positionals(args, &["--interval"], 1) {
+    let positionals = match author_positionals(args, &["--interval"], &[], 1) {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
     };
@@ -646,7 +646,7 @@ fn cmd_dev(args: &[String]) -> ExitCode {
 
 fn cmd_build(args: &[String]) -> ExitCode {
     let json = args.iter().any(|argument| argument == "--json");
-    let positionals = match author_positionals(args, &[], 2) {
+    let positionals = match author_positionals(args, &[], &[], 2) {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FBUILD_ARGUMENT", &detail, json, true),
     };
@@ -680,7 +680,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
 
 fn cmd_test(args: &[String]) -> ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let positionals = match author_positionals(args, &["--timeout"], 1) {
+    let positionals = match author_positionals(
+        args,
+        &["--timeout", "--event", "--payload", "--advance-ms"],
+        &["--deny-all"],
+        1,
+    ) {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FTEST_ARGUMENT", &detail, json, true),
     };
@@ -693,8 +698,23 @@ fn cmd_test(args: &[String]) -> ExitCode {
         .find(|w| w[0] == "--timeout")
         .and_then(|w| w[1].parse().ok())
         .unwrap_or(4000);
+    let advance_ms = match option_u64(args, "--advance-ms", 0) {
+        Ok(value) => value,
+        Err(detail) => return render_basic_error("FTEST_ARGUMENT", &detail, json, true),
+    };
+    let event = option_string(args, "--event");
+    let payload = option_string(args, "--payload").unwrap_or_else(|| "{}".to_owned());
+    if serde_json::from_str::<serde_json::Value>(&payload).is_err() {
+        return render_basic_error("FTEST_ARGUMENT", "--payload 必须是有效 JSON", json, true);
+    }
+    let scenario = test::TestScenario {
+        ui_events: event.map(|name| vec![(name, payload)]).unwrap_or_default(),
+        deny_all: args.iter().any(|argument| argument == "--deny-all"),
+        advance_time: Duration::from_millis(advance_ms),
+    };
     let out = dir.join("out").join("plugin.floatile");
-    match test::test_project(&dir, &out, Duration::from_millis(timeout_ms)) {
+    match test::test_project_with_scenario(&dir, &out, Duration::from_millis(timeout_ms), scenario)
+    {
         Ok(status) => {
             if json {
                 println!(
@@ -735,7 +755,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
 
 fn cmd_install(args: &[String]) -> ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let positionals = match author_positionals(args, &["--store"], 1) {
+    let positionals = match author_positionals(args, &["--store"], &[], 1) {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FINST_ARGUMENT", &detail, json, true),
     };
@@ -789,7 +809,7 @@ fn cmd_install(args: &[String]) -> ExitCode {
 
 fn cmd_preview(args: &[String]) -> ExitCode {
     let json = args.iter().any(|argument| argument == "--json");
-    let positionals = match author_positionals(args, &["--duration-ms"], 1) {
+    let positionals = match author_positionals(args, &["--duration-ms"], &[], 1) {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FPREVIEW_ARGUMENT", &detail, json, true),
     };
@@ -825,7 +845,8 @@ fn cmd_preview(args: &[String]) -> ExitCode {
 
 fn cmd_run(args: &[String]) -> ExitCode {
     let json = args.iter().any(|argument| argument == "--json");
-    let positionals = match author_positionals(args, &["--duration-ms", "--db", "--store"], 1) {
+    let positionals = match author_positionals(args, &["--duration-ms", "--db", "--store"], &[], 1)
+    {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FRUN_ARGUMENT", &detail, json, true),
     };
@@ -874,13 +895,16 @@ fn cmd_run(args: &[String]) -> ExitCode {
 fn author_positionals<'a>(
     args: &'a [String],
     value_options: &[&str],
+    boolean_options: &[&str],
     maximum: usize,
 ) -> Result<Vec<&'a str>, String> {
     let mut positionals = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let argument = args[index].as_str();
-        if matches!(argument, "--json" | "--no-interactive" | "--deny-warnings") {
+        if matches!(argument, "--json" | "--no-interactive" | "--deny-warnings")
+            || boolean_options.contains(&argument)
+        {
             index += 1;
         } else if value_options.contains(&argument) {
             if args
@@ -918,6 +942,13 @@ fn option_path(args: &[String], name: &str) -> Option<PathBuf> {
         .position(|argument| argument == name)
         .and_then(|index| args.get(index + 1))
         .map(PathBuf::from)
+}
+
+fn option_string(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|argument| argument == name)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
 }
 
 fn render_basic_error(code: &str, detail: &str, json: bool, argument_error: bool) -> ExitCode {

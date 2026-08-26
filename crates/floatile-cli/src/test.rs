@@ -79,6 +79,15 @@ pub struct TestPhases {
     pub start: bool,
     pub state_updates: usize,
     pub shutdown: bool,
+    pub events: usize,
+    pub audit_denials: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TestScenario {
+    pub ui_events: Vec<(String, String)>,
+    pub deny_all: bool,
+    pub advance_time: Duration,
 }
 
 /// 从 `.floatile` zip 读取一个条目。
@@ -100,6 +109,15 @@ pub fn test_project(
     project_dir: &Path,
     out: &Path,
     state_timeout: Duration,
+) -> Result<TestStatus, TestError> {
+    test_project_with_scenario(project_dir, out, state_timeout, TestScenario::default())
+}
+
+pub fn test_project_with_scenario(
+    project_dir: &Path,
+    out: &Path,
+    state_timeout: Duration,
+    scenario: TestScenario,
 ) -> Result<TestStatus, TestError> {
     ensure_project(project_dir)?;
     if let Some(parent) = out.parent() {
@@ -136,6 +154,11 @@ pub fn test_project(
         })
         .collect::<Vec<_>>();
 
+    let grants = if scenario.deny_all {
+        Vec::new()
+    } else {
+        grants
+    };
     let harness = WidgetHarness::new(pkg.id.clone(), wasm)
         .initial_state(doc.state.initial)
         .state_schema(doc.state.schema)
@@ -147,10 +170,14 @@ pub fn test_project(
         .enable_all()
         .build()
         .map_err(|e| TestError::Runtime(format!("创建运行时: {e}")))?;
-    rt.block_on(run_smoke(harness, state_timeout))
+    rt.block_on(run_smoke(harness, state_timeout, scenario))
 }
 
-async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStatus, TestError> {
+async fn run_smoke(
+    harness: WidgetHarness,
+    timeout: Duration,
+    scenario: TestScenario,
+) -> Result<TestStatus, TestError> {
     let instance = harness
         .build()
         .map_err(|e| TestError::Runtime(e.to_string()))?;
@@ -171,13 +198,31 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
                 start: false,
                 state_updates: 0,
                 shutdown: false,
+                events: 0,
+                audit_denials: 0,
             },
             warnings: Vec::new(),
         });
     }
 
     let mut instance = instance;
+    let mut emitted = 0usize;
+    for (name, payload) in &scenario.ui_events {
+        instance
+            .emit_ui(name, payload)
+            .await
+            .map_err(|error| TestError::Runtime(error.to_string()))?;
+        emitted += 1;
+    }
+    if !scenario.advance_time.is_zero() {
+        instance.advance_time(scenario.advance_time).await;
+    }
     let state_updates = instance.count_state_updates(timeout).await;
+    let audit_denials = instance
+        .audit()
+        .iter()
+        .filter(|event| event.decision == "deny")
+        .count();
     let shutdown = instance.shutdown().await;
     let shutdown_ok = shutdown.is_ok();
     let ok = shutdown_ok;
@@ -203,6 +248,8 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
             start: true,
             state_updates,
             shutdown: shutdown_ok,
+            events: emitted,
+            audit_denials,
         },
         warnings: Vec::new(),
     })

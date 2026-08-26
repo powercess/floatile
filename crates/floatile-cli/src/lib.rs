@@ -32,4 +32,6 @@ pub use project::{
     ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,
 };
 pub use run::{RunError, RunReport, default_run_paths, run_project};
-pub use test::{TestError, TestPhases, TestStatus, test_project};
+pub use test::{
+    TestError, TestPhases, TestScenario, TestStatus, test_project, test_project_with_scenario,
+};

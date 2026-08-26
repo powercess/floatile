@@ -202,7 +202,8 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   私有 path；公开 registry 上传仍受许可 ADR 阻断。`preview` 已通过 shell 专用子进程复用正式
   renderer/Slint/Wasmtime/Broker，Xvfb 验证 guest start 后进入 running；`dev` 已接入保留上一代的预览
   generation 替换。作者级 `run` 已打通 build、原子安装、持久实例创建、generation 推进和真实宿主
-  running，并拒绝同版本不同 digest；最终干净目录全流程与收尾门禁仍待后续切片；
+  running，并拒绝同版本不同 digest；无头 `test` 可注入 UI event、短时推进和 deny-all Broker 场景，
+  输出 State/audit 计数。最终干净目录全流程与收尾门禁仍待后续切片；
 - 网络、Connection 与凭证托管尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。

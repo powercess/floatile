@@ -232,6 +232,9 @@ JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路�
 `run` 构建并原子安装项目、创建固定到精确 Installation 的 desired-running 持久实例，再由 shell 宿主
 从 SQLite 重读实例、推进 generation、复验 digest/Config 后启动真实窗口。相同 id/version 仅在内容
 digest 一致时复用安装，不同内容必须提升版本；重复 `run` 创建彼此隔离的新实例。
+`test` 支持注入一个有界 UI event/payload、短时推进和 `--deny-all` Broker 场景；结果报告 event 数、
+State 更新数和 deny 审计数。当前 `advance_time` 使用真实 Tokio 短时延，不宣称虚拟时间；timeout、取消
+和 operation vectors 继续由 runtime 契约测试覆盖，不在 CLI 复制服务实现。
 Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快照，仓库测试要求二者逐字节一致；
 干净目录测试从 `floatile-sdk`、`floatile-sdk-macros` 与 `floatile-ui-schema` 的独立 Cargo 包快照解析
 模板依赖，不使用仓库内部 path。许可 ADR 通过前这些包只用于仓库内可发布性验证，不授权上传 registry。

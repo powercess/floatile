@@ -48,3 +48,28 @@ fn test_project_runs_clock_smoke() {
 
     let _ = std::fs::remove_file(&out);
 }
+
+#[test]
+fn test_scenario_injects_event_and_exercises_broker_denial() {
+    let project_dir = workspace_root().join("plugins/clock-wasm");
+    let out = std::env::temp_dir().join(format!(
+        "floatile-test-scenario-{}.floatile",
+        std::process::id()
+    ));
+    let status = floatile_cli::test_project_with_scenario(
+        &project_dir,
+        &out,
+        Duration::from_millis(300),
+        floatile_cli::TestScenario {
+            ui_events: vec![("start".to_owned(), "{}".to_owned())],
+            deny_all: true,
+            advance_time: Duration::from_millis(20),
+        },
+    )
+    .expect("scenario should run");
+    assert!(status.ok, "scenario failed: {status:?}");
+    assert_eq!(status.phases.events, 1);
+    assert!(status.phases.state_updates >= 1);
+    assert!(status.phases.audit_denials >= 1);
+    let _ = std::fs::remove_file(out);
+}
