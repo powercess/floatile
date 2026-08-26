@@ -52,7 +52,8 @@
 - `PluginId`、`InstanceId`、`InstallationRef`、`PluginInstance`、受限 Config、布局/DPI/模式等纯领域类型。
 - ADR-0004 的 `OperationId`、owner/generation、completion 与稳定终态纯模型；不在 core 执行、排队或
   暂存结果。
-- manifest、capability/grant/scope/quota 的纯数据与决策输入；无文件/数据库访问。
+- manifest、capability/grant/scope/quota 的纯数据与决策输入；`CAPABILITY_REGISTRY` 是稳定名称、暴露方式、
+  参数族、风险、执行形态、WIT/SDK/CLI/审计映射的机器可读单源；无文件/数据库访问。
 - host/runtime 使用的稳定错误分类、版本值对象与实例持久化不变量。
 - 不放 UI IR/WIT 生成物，避免 guest 为 UI 类型依赖全部宿主 domain。
 

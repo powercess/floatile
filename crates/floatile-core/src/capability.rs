@@ -3,7 +3,7 @@
 //! 事实源：`docs/security/permission-model.md`。本模块只定义能力集合、授权结构
 //! 与决策输入；执行、配额记账与脱敏审计在 `floatile-services`。
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::types::{InstanceId, PluginId};
 
@@ -11,62 +11,217 @@ use crate::types::{InstanceId, PluginId};
 ///
 /// 固有能力（UI/log/clock）固定当前实例 scope，不写入 manifest permissions，
 /// 但仍经过 Broker 的身份、schema、配额与审计路径。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
 pub enum CapabilityId {
-    #[serde(rename = "ui:update-state")]
     UiUpdateState,
-    #[serde(rename = "log:write")]
     LogWrite,
-    #[serde(rename = "clock:read")]
     ClockRead,
-    #[serde(rename = "storage:read")]
     StorageRead,
-    #[serde(rename = "storage:write")]
     StorageWrite,
-    #[serde(rename = "timer:schedule")]
     TimerSchedule,
-    #[serde(rename = "theme:subscribe")]
     ThemeSubscribe,
-    #[serde(rename = "system:cpu")]
     SystemCpu,
-    #[serde(rename = "system:memory")]
     SystemMemory,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapabilityExposure {
+    Inherent,
+    Declared,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapabilityParamKind {
+    None,
+    Storage,
+    Timer,
+    Metrics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum CapabilityRisk {
+    Inherent,
+    L0,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapabilityExecution {
+    Sync,
+    SyncAndOperation,
+}
+
+/// Capability Registry 的单项稳定元数据。执行实现仍属于 Broker/services，
+/// 但名称、暴露方式、参数族、风险、WIT/SDK 映射不再由各层重复声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityDefinition {
+    pub id: CapabilityId,
+    pub name: &'static str,
+    pub exposure: CapabilityExposure,
+    pub params: CapabilityParamKind,
+    pub risk: CapabilityRisk,
+    pub execution: CapabilityExecution,
+    pub wit_interface: &'static str,
+    pub sdk_surface: &'static str,
+    pub author_section: Option<&'static str>,
+    pub audit_redaction: &'static str,
+}
+
+pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
+    CapabilityDefinition {
+        id: CapabilityId::UiUpdateState,
+        name: "ui:update-state",
+        exposure: CapabilityExposure::Inherent,
+        params: CapabilityParamKind::None,
+        risk: CapabilityRisk::Inherent,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-ui",
+        sdk_surface: "ctx.state",
+        author_section: None,
+        audit_redaction: "size-and-error-path-only",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::LogWrite,
+        name: "log:write",
+        exposure: CapabilityExposure::Inherent,
+        params: CapabilityParamKind::None,
+        risk: CapabilityRisk::Inherent,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-log",
+        sdk_surface: "ctx.log",
+        author_section: None,
+        audit_redaction: "message-length-only",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::ClockRead,
+        name: "clock:read",
+        exposure: CapabilityExposure::Inherent,
+        params: CapabilityParamKind::None,
+        risk: CapabilityRisk::Inherent,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-clock",
+        sdk_surface: "ctx.clock",
+        author_section: None,
+        audit_redaction: "no-result-values",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::StorageRead,
+        name: "storage:read",
+        exposure: CapabilityExposure::Declared,
+        params: CapabilityParamKind::Storage,
+        risk: CapabilityRisk::L0,
+        execution: CapabilityExecution::SyncAndOperation,
+        wit_interface: "host-storage",
+        sdk_surface: "ctx.storage",
+        author_section: Some("storage"),
+        audit_redaction: "key-metadata-no-values",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::StorageWrite,
+        name: "storage:write",
+        exposure: CapabilityExposure::Declared,
+        params: CapabilityParamKind::Storage,
+        risk: CapabilityRisk::L0,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-storage",
+        sdk_surface: "ctx.storage",
+        author_section: Some("storage"),
+        audit_redaction: "key-and-size-no-values",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::TimerSchedule,
+        name: "timer:schedule",
+        exposure: CapabilityExposure::Declared,
+        params: CapabilityParamKind::Timer,
+        risk: CapabilityRisk::L0,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-timer",
+        sdk_surface: "ctx.timer",
+        author_section: Some("timer"),
+        audit_redaction: "delay-and-budget-only",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::ThemeSubscribe,
+        name: "theme:subscribe",
+        exposure: CapabilityExposure::Declared,
+        params: CapabilityParamKind::None,
+        risk: CapabilityRisk::L0,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-theme",
+        sdk_surface: "ctx.theme",
+        author_section: Some("theme"),
+        audit_redaction: "token-name-no-values",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::SystemCpu,
+        name: "system:cpu",
+        exposure: CapabilityExposure::Declared,
+        params: CapabilityParamKind::Metrics,
+        risk: CapabilityRisk::L0,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-metrics",
+        sdk_surface: "ctx.metrics",
+        author_section: Some("metrics"),
+        audit_redaction: "result-bucket-only",
+    },
+    CapabilityDefinition {
+        id: CapabilityId::SystemMemory,
+        name: "system:memory",
+        exposure: CapabilityExposure::Declared,
+        params: CapabilityParamKind::None,
+        risk: CapabilityRisk::L0,
+        execution: CapabilityExecution::Sync,
+        wit_interface: "host-metrics",
+        sdk_surface: "ctx.metrics",
+        author_section: Some("metrics"),
+        audit_redaction: "result-bucket-only",
+    },
+];
+
 impl CapabilityId {
     pub fn name(&self) -> &'static str {
-        match self {
-            Self::UiUpdateState => "ui:update-state",
-            Self::LogWrite => "log:write",
-            Self::ClockRead => "clock:read",
-            Self::StorageRead => "storage:read",
-            Self::StorageWrite => "storage:write",
-            Self::TimerSchedule => "timer:schedule",
-            Self::ThemeSubscribe => "theme:subscribe",
-            Self::SystemCpu => "system:cpu",
-            Self::SystemMemory => "system:memory",
-        }
+        self.definition().name
+    }
+
+    pub fn definition(&self) -> &'static CapabilityDefinition {
+        &CAPABILITY_REGISTRY[*self as usize]
     }
 
     /// 固有能力：安装时不提示，固定当前实例 scope，不可放宽。
     pub fn is_inherent(&self) -> bool {
-        matches!(self, Self::UiUpdateState | Self::LogWrite | Self::ClockRead)
+        self.definition().exposure == CapabilityExposure::Inherent
     }
 
     /// 按 manifest capability 字符串解析；未注册的能力返回 `None`。
     pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "ui:update-state" => Self::UiUpdateState,
-            "log:write" => Self::LogWrite,
-            "clock:read" => Self::ClockRead,
-            "storage:read" => Self::StorageRead,
-            "storage:write" => Self::StorageWrite,
-            "timer:schedule" => Self::TimerSchedule,
-            "theme:subscribe" => Self::ThemeSubscribe,
-            "system:cpu" => Self::SystemCpu,
-            "system:memory" => Self::SystemMemory,
-            _ => return None,
-        })
+        CAPABILITY_REGISTRY
+            .iter()
+            .find(|definition| definition.name == name)
+            .map(|definition| definition.id)
+    }
+}
+
+impl Serialize for CapabilityId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for CapabilityId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        Self::from_name(&name)
+            .ok_or_else(|| serde::de::Error::custom(format!("未知 capability `{name}`")))
     }
 }
 
@@ -189,8 +344,8 @@ pub fn parse_capability_params(
             detail: "params 必须是 JSON object".to_owned(),
         })?;
 
-    let params = match capability {
-        CapabilityId::StorageRead | CapabilityId::StorageWrite => {
+    let params = match capability.definition().params {
+        CapabilityParamKind::Storage => {
             let mut keys = Vec::new();
             let mut max_bytes = 64 * 1024;
             for (k, v) in obj {
@@ -226,7 +381,7 @@ pub fn parse_capability_params(
             }
             CapabilityParams::Storage { keys, max_bytes }
         }
-        CapabilityId::TimerSchedule => {
+        CapabilityParamKind::Timer => {
             let mut max_per_minute = 60;
             let mut max_active = 8;
             for (k, v) in obj {
@@ -262,7 +417,7 @@ pub fn parse_capability_params(
                 max_active,
             }
         }
-        CapabilityId::SystemCpu => {
+        CapabilityParamKind::Metrics => {
             let mut sample_rate_hz = 1;
             for (k, v) in obj {
                 match k.as_str() {
@@ -286,11 +441,7 @@ pub fn parse_capability_params(
             CapabilityParams::Metrics { sample_rate_hz }
         }
         // 无参数能力：任何 params 都拒绝。
-        CapabilityId::UiUpdateState
-        | CapabilityId::LogWrite
-        | CapabilityId::ClockRead
-        | CapabilityId::ThemeSubscribe
-        | CapabilityId::SystemMemory => {
+        CapabilityParamKind::None => {
             return Err(CapabilityError::InvalidParams {
                 capability: capability.name(),
                 detail: "该能力不接受 params".to_owned(),
@@ -301,17 +452,17 @@ pub fn parse_capability_params(
 }
 
 fn default_params(capability: CapabilityId) -> Result<Option<CapabilityParams>, CapabilityError> {
-    Ok(Some(match capability {
-        CapabilityId::StorageRead | CapabilityId::StorageWrite => CapabilityParams::Storage {
+    Ok(Some(match capability.definition().params {
+        CapabilityParamKind::Storage => CapabilityParams::Storage {
             keys: Vec::new(),
             max_bytes: 64 * 1024,
         },
-        CapabilityId::TimerSchedule => CapabilityParams::Timer {
+        CapabilityParamKind::Timer => CapabilityParams::Timer {
             max_per_minute: 60,
             max_active: 8,
         },
-        CapabilityId::SystemCpu => CapabilityParams::Metrics { sample_rate_hz: 1 },
-        _ => return Ok(None),
+        CapabilityParamKind::Metrics => CapabilityParams::Metrics { sample_rate_hz: 1 },
+        CapabilityParamKind::None => return Ok(None),
     }))
 }
 
@@ -468,6 +619,55 @@ fn params_within(plugin: Option<&CapabilityParams>, instance: Option<&Capability
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn registry_is_unique_indexed_and_serde_round_trips() {
+        let mut names = BTreeSet::new();
+        for (index, definition) in CAPABILITY_REGISTRY.iter().enumerate() {
+            assert_eq!(definition.id as usize, index);
+            assert!(names.insert(definition.name), "重复 capability 名称");
+            assert_eq!(
+                CapabilityId::from_name(definition.name),
+                Some(definition.id)
+            );
+            assert_eq!(definition.id.definition(), definition);
+            assert!(!definition.wit_interface.is_empty());
+            assert!(!definition.sdk_surface.is_empty());
+            assert!(!definition.audit_redaction.is_empty());
+            assert_eq!(
+                serde_json::from_value::<CapabilityId>(json!(definition.name)).unwrap(),
+                definition.id
+            );
+            assert_eq!(
+                serde_json::to_value(definition.id).unwrap(),
+                json!(definition.name)
+            );
+            if definition.exposure == CapabilityExposure::Declared {
+                assert!(definition.author_section.is_some());
+            }
+        }
+        assert!(CapabilityId::from_name("storage:read-extra").is_none());
+        assert!(serde_json::from_value::<CapabilityId>(json!("unknown:capability")).is_err());
+    }
+
+    #[test]
+    fn registry_covers_every_wit_capability_interface() {
+        let wit = include_str!("../../../wit/floatile-widget.wit");
+        let world = wit.split("world floatile-widget {").nth(1).unwrap();
+        let imported: BTreeSet<_> = world
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix("import "))
+            .filter_map(|line| line.strip_suffix(';'))
+            .filter(|interface| *interface != "host-operation")
+            .collect();
+        let registered: BTreeSet<_> = CAPABILITY_REGISTRY
+            .iter()
+            .map(|definition| definition.wit_interface)
+            .collect();
+        assert_eq!(imported, registered);
+    }
 
     fn plugin_grants() -> Grants {
         Grants {

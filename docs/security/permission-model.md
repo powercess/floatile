@@ -9,6 +9,11 @@
 能力由宿主定义。固有实例能力无需用户确认，但仍经过 Broker 的实例 scope、schema、配额与审计；
 声明能力必须同时出现在 manifest 与有效 grants 中。
 
+P0 能力的机器可读事实源是 `floatile_core::CAPABILITY_REGISTRY`。每项记录稳定 ID/名称、固有或声明
+暴露方式、参数族、风险等级、执行形态、WIT interface、SDK 表面、作者配置段和审计脱敏策略。
+Capability serde、manifest permission JSON Schema、CLI 作者段展开和 Broker 固有 grant 均消费该注册表；
+契约测试校验枚举顺序/名称唯一性、WIT capability interface 覆盖、manifest 声明集合和 Broker 默认拒绝。
+
 ### 1.1 固有实例能力
 
 | capability | 含义 | 强制 scope/配额 |

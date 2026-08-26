@@ -13,7 +13,8 @@ rename 到 `<插件存储>/<id>/<version>/`，写 `install.json`，同版本重�
 按 digest 复核后加载已安装包。config.schema 结构/边界校验已落地（声明时引用文件必须是合法、有界、
 根为 object 的 JSON Schema，且 `$ref`/`$dynamicRef`/`$recursiveRef` 只能指向当前文档 fragment）。
 CLI 创建/配置与 shell 恢复实例时共用求值器；外部引用在安装期和求值前都拒绝，不会为
-不受信 schema 触发宿主网络/文件 I/O。独立 manifest JSON Schema 产物已由单一源 serde 模型生成
+不受信 schema 触发宿主网络/文件 I/O。独立 manifest JSON Schema 产物已由单一源 serde 模型和
+`CAPABILITY_REGISTRY` 生成（permission 的稳定名称与参数 schema 不再手写平行列表）
 （`floatile-core::manifest_json_schema` + `floatile schema <out>` 输出 JSON Schema；用 `jsonschema`
 自检与 serde 序列化无 drift）。签名仍待后续切片。
 

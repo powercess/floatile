@@ -169,7 +169,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 | PP-M0 | 战略与事实源基线 | 进行中 | 本路线、P0 范围关系、稳定引用和 Agent 接手协议 | 事实源互链；不存在把规划写成已实现的表述 | `docs/` |
 | PP-M1 | 插件内核与真实多实例 | 已完成（Xvfb 验证） | Package/Installation/Instance 分离；实例 CRUD、生命周期、持久化和故障隔离 | 同包多实例可独立配置、启动、停止、恢复和删除；迁移及失败测试通过 | `core`、`store`、`runtime`、`shell`、CLI |
 | PP-M2 | Broker 化异步 Operation | 已完成（自动化契约验证） | ADR-0004；operation registry、队列、取消、deadline、generation、v1.1 WIT/SDK、元数据 completion 与首个 `storage:read` typed adapter | reference fixture 覆盖成功、拒绝、超时、取消、迟到结果、实例重启和过载；host/guest contract vectors 通过 | `core`、`runtime`、`services`、WIT、SDK |
-| PP-M3 | Capability Registry 单源 | 规划中 | 统一 capability 元数据，生成/校验 manifest、Broker、SDK 文档与 contract vectors | 新增能力无需在多处手写语义；恶意插件和配额测试证明默认拒绝 | `core`、`services`、plugin API、SDK、CLI |
+| PP-M3 | Capability Registry 单源 | 已完成（自动化契约验证） | 统一 capability 元数据，生成/校验 manifest、Broker、SDK 映射与 contract vectors | 注册表/WIT/manifest/CLI/Broker 动态覆盖测试；恶意插件和配额测试证明默认拒绝 | `core`、`services`、plugin API、SDK、CLI |
 | PP-M4 | Rust 作者闭环 | 规划中 | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
 | PP-M5 | 外部数据平台 | 规划中 | Connection、Credential Vault、HTTPS Broker、调度、缓存、重试、限流和连接健康状态 | AI 余额参考插件只使用通用能力，且 secret 不进入 guest、日志、State 或包 | `core`、`store`、`services`、shell、WIT、SDK |
 | PP-M6 | UI 平台 | 规划中 | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
@@ -193,6 +193,8 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
 - 生成项目和 `dev` 流程尚不能证明仓库外作者可完成预览到运行闭环；
 - Broker 化 Operation 已通过 v1.1 WIT/SDK 暴露通用 cancel、元数据 completion 与首个
   `storage:read` typed submit/take；更多 capability adapter、动态撤权与真实容量数据仍待后续切片；
+- PP-M3 已由 `floatile-core` 的机器可读 Capability Registry 统一稳定名称、暴露方式、参数族、风险、
+  执行形态、WIT/SDK/CLI 与审计映射；manifest schema、CLI 和 Broker 已消费注册表并有 drift 测试；
 - 网络、Connection 与凭证托管尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。
@@ -210,7 +212,7 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
 7. `feat(runtime): expose typed brokered operations through WIT`（PP-M2，本切片）：从 `wit/` 单源增加
    operation ID/cancel/completion metadata 与首个 `storage:read` typed submit/take，联动 Rust SDK、
    plugin API、runtime actor 和 host/guest contract fixture；
-8. `refactor(capabilities): establish single-source capability registry`（PP-M3）；
+8. `refactor(capabilities): establish single-source capability registry`（PP-M3，已落地）；
 9. `feat(cli): complete the Rust plugin author loop`（PP-M4）；
 10. `feat(connections): add host-owned connection and credential references`（PP-M5）；
 11. `feat(http): implement the first bounded HTTPS Broker vertical slice`（PP-M5）；

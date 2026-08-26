@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use floatile_core::types::PluginId;
 use floatile_core::{
-    CapabilityId, CapabilityParams, DenyReason, EffectiveGrant, Grant, InstanceGrant,
-    OperationCompletion, OperationCompletionDisposition, OperationFailure, OperationId,
-    PermissionDecision, decide,
+    CAPABILITY_REGISTRY, CapabilityExposure, CapabilityId, CapabilityParams, DenyReason,
+    EffectiveGrant, Grant, InstanceGrant, OperationCompletion, OperationCompletionDisposition,
+    OperationFailure, OperationId, PermissionDecision, decide,
 };
 
 use crate::audit::AuditSink;
@@ -27,13 +27,6 @@ use crate::operation::{
 use crate::storage::StorageService;
 use crate::theme::ThemeService;
 use crate::timer::{TimerService, TimerSink};
-
-/// 固有能力（固定 scope，安装时不提示；合并进实例授权）。
-const INHERENT: &[CapabilityId] = &[
-    CapabilityId::UiUpdateState,
-    CapabilityId::LogWrite,
-    CapabilityId::ClockRead,
-];
 
 /// 按实例构造的 Broker。
 pub struct Broker {
@@ -60,10 +53,13 @@ impl Broker {
         timer_sink: TimerSink,
     ) -> Self {
         let mut caps = instance_grants.caps.clone();
-        for inherent in INHERENT {
-            if !caps.iter().any(|g| g.capability == *inherent) {
+        for definition in CAPABILITY_REGISTRY
+            .iter()
+            .filter(|definition| definition.exposure == CapabilityExposure::Inherent)
+        {
+            if !caps.iter().any(|g| g.capability == definition.id) {
                 caps.push(Grant {
-                    capability: *inherent,
+                    capability: definition.id,
                     params: None,
                     effective: EffectiveGrant::DerivedFromInstall,
                 });
@@ -563,29 +559,27 @@ mod tests {
     }
 
     #[test]
-    fn inherent_caps_allowed_without_grant() {
+    fn registry_exposure_drives_default_broker_grants() {
+        let empty_grants = InstanceGrant {
+            instance: InstanceId(7),
+            caps: Vec::new(),
+        };
         let broker = Broker::new(
             PluginId("dev.floatile.clock".into()),
             0,
-            test_grants(),
+            empty_grants,
             AuditSink::new("dev.floatile.clock", 7),
             sink(),
         );
-        assert!(
-            broker
-                .authorize(CapabilityId::ClockRead, None, "clock")
-                .is_ok()
-        );
-        assert!(
-            broker
-                .authorize(CapabilityId::UiUpdateState, None, "ui")
-                .is_ok()
-        );
-        assert!(
-            broker
-                .authorize(CapabilityId::LogWrite, None, "log")
-                .is_ok()
-        );
+        for definition in CAPABILITY_REGISTRY {
+            let result = broker.authorize(definition.id, None, "registry exposure test");
+            match definition.exposure {
+                CapabilityExposure::Inherent => assert!(result.is_ok(), "{}", definition.name),
+                CapabilityExposure::Declared => {
+                    assert_eq!(result, Err(DenyReason::NotGranted), "{}", definition.name)
+                }
+            }
+        }
     }
 
     #[test]
