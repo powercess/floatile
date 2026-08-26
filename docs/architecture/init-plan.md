@@ -115,7 +115,8 @@
   作者级 `Event` 类型化（`FromWidgetEvent`）已落地；`floatile-runtime::harness`（作者级
   `WidgetHarness`：grant/start/emit/wait_for_state/advance_time/audit，含 clock 集成测试）与
   `floatile test` 无头冒烟命令（build → 提取 → 生命周期/State/宿主存活 + 稳定 JSON）已落地；
-  剩余 `dev` 预览接入物理窗口、`preview` 截图与 CLI 全命令 JSON 诊断统一。
+  `floatile inspect` 已落地完整包复验与版本化 manifest/版本轴/权限/预算/entry digest JSON 契约；
+  剩余 `dev` 预览接入物理窗口、`preview` 截图与 CLI 其余命令 JSON 诊断统一。
 
 #### S5d — TypeScript SDK
 
