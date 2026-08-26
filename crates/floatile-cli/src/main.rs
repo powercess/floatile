@@ -93,12 +93,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 );
                 println!("  metadata wasm ui manifest package: ok");
                 println!("  warnings={}", report.warnings.len());
+                for warning in &report.warnings {
+                    println!("  warning code={} {}", warning.code, warning.message);
+                }
             }
             ExitCode::SUCCESS
         }
         Err(error) => render_check_error(
             error.code(),
-            error.public_detail(),
+            error.public_detail().as_ref(),
             error.phases(),
             json,
             false,

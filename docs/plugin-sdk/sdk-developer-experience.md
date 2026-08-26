@@ -219,7 +219,10 @@ JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`
 `check` 在自动清理的临时目录中复用正式 build + package validation + inspect 链，返回
 `metadata/wasm/ui/manifest/package` 五阶段、warning 数组和 inspection 结果；支持相同的三个自动化选项，
 JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路径/cargo stderr 的有界描述。
-静态比较“代码实际调用能力”与声明权限尚未实现，不能把当前空 warning 数组解释为该检查已完成。
+`check` 按 Component Model 实际保留的 Floatile interface/function imports 与 Capability Registry 比对：
+使用声明能力但 manifest 未声明时以 `FCHECK_CAPABILITY_MISSING` 失败；已声明但未导入时产生
+`FCHECK_CAPABILITY_UNUSED` warning，`--deny-warnings` 可将其提升为失败。固有能力无需写入 manifest；
+该静态诊断不做控制流可达性证明，也不替代 Permission Broker 的运行时强制。
 `preview/migrate` 与其余命令的 JSON 契约统一待续。
 
 ## 8. 诊断格式
