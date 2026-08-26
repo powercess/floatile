@@ -8,12 +8,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 
-use floatile_core::ManifestError;
 use floatile_core::manifest::{Manifest, PackagePath, validate_manifest};
+use floatile_core::{CAPABILITY_REGISTRY, CapabilityId, ManifestError};
 use floatile_ui_schema::UiDocument;
 use floatile_ui_schema::UiSchemaError;
 use thiserror::Error;
 use wasmtime::component::Component;
+use wasmtime::component::types::ComponentItem;
 
 /// P0 包预算（manifest-v1 §6；evil corpus 数据后可冻结）。
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +53,48 @@ pub struct ValidatedPackage {
     /// 全部校验通过的普通文件条目（相对规范路径 → 字节），供原子安装精确落盘。
     /// 内存有界：受 `max_uncompressed_total` 约束。
     pub files: BTreeMap<String, Vec<u8>>,
+}
+
+/// 经组件类型信息推导出的宿主能力使用集合。
+///
+/// Component Model 保留实际导入的 interface 函数；函数到 capability 的映射来自
+/// Capability Registry。这里只提供作者诊断，运行时授权仍由 PermissionBroker 强制。
+pub fn imported_capabilities(bytes: &[u8]) -> Result<BTreeSet<CapabilityId>, PackageError> {
+    let (engine, component) = parse_component(bytes)?;
+    let ty = component.component_type();
+    let mut used = BTreeSet::new();
+
+    for (name, import) in ty.imports(&engine) {
+        let Some(interface) = floatile_interface_name(name) else {
+            continue;
+        };
+        let ComponentItem::ComponentInstance(instance) = import.ty else {
+            continue;
+        };
+        let functions: BTreeSet<_> = instance
+            .exports(&engine)
+            .filter_map(|(name, item)| {
+                matches!(item.ty, ComponentItem::ComponentFunc(_)).then_some(name)
+            })
+            .collect();
+        for definition in CAPABILITY_REGISTRY {
+            if definition.wit_interface == interface
+                && definition
+                    .wit_functions
+                    .iter()
+                    .any(|function| functions.contains(function))
+            {
+                used.insert(definition.id);
+            }
+        }
+    }
+    Ok(used)
+}
+
+fn floatile_interface_name(import: &str) -> Option<&str> {
+    import
+        .strip_prefix("floatile:widget/")
+        .and_then(|name| name.split('@').next())
 }
 
 /// 包校验错误（稳定 code `FPAK_*`）。
@@ -280,12 +323,7 @@ fn read_entry(
 /// 校验 WASM Component：可解析、import 只允许 floatile:widget 与 wasi、导出
 /// widget-contract world。
 fn validate_wasm(bytes: &[u8]) -> Result<Vec<u8>, PackageError> {
-    let mut config = wasmtime::Config::new();
-    config.wasm_component_model(true);
-    let engine =
-        wasmtime::Engine::new(&config).map_err(|e| PackageError::InvalidWasm(e.to_string()))?;
-    let component = Component::from_binary(&engine, bytes)
-        .map_err(|e| PackageError::InvalidWasm(e.to_string()))?;
+    let (engine, component) = parse_component(bytes)?;
     let ty = component.component_type();
 
     for (name, _extern) in ty.imports(&engine) {
@@ -303,6 +341,16 @@ fn validate_wasm(bytes: &[u8]) -> Result<Vec<u8>, PackageError> {
         return Err(PackageError::MissingWorldExport);
     }
     Ok(bytes.to_vec())
+}
+
+fn parse_component(bytes: &[u8]) -> Result<(wasmtime::Engine, Component), PackageError> {
+    let mut config = wasmtime::Config::new();
+    config.wasm_component_model(true);
+    let engine =
+        wasmtime::Engine::new(&config).map_err(|e| PackageError::InvalidWasm(e.to_string()))?;
+    let component = Component::from_binary(&engine, bytes)
+        .map_err(|e| PackageError::InvalidWasm(e.to_string()))?;
+    Ok((engine, component))
 }
 
 /// config.schema 文件字节上限（独立于通用解压预算；schema 是小而静态的文档）。
@@ -452,6 +500,19 @@ mod tests {
         let pkg = validate_package(&valid_pkg_bytes(), &PackageLimits::default()).unwrap();
         assert_eq!(pkg.manifest.id.0, "dev.floatile.clock");
         assert_eq!(pkg.entry_names.len(), 3);
+    }
+
+    #[test]
+    fn derives_function_level_capabilities_from_component_imports() {
+        let used = imported_capabilities(&real_wasm()).unwrap();
+        assert!(used.contains(&CapabilityId::UiUpdateState));
+        assert!(used.contains(&CapabilityId::LogWrite));
+        assert!(used.contains(&CapabilityId::ClockRead));
+        assert!(used.contains(&CapabilityId::TimerSchedule));
+        assert!(!used.contains(&CapabilityId::StorageRead));
+        assert!(!used.contains(&CapabilityId::StorageWrite));
+        assert!(!used.contains(&CapabilityId::SystemCpu));
+        assert!(!used.contains(&CapabilityId::SystemMemory));
     }
 
     #[test]

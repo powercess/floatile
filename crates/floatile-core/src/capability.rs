@@ -11,7 +11,7 @@ use crate::types::{InstanceId, PluginId};
 ///
 /// 固有能力（UI/log/clock）固定当前实例 scope，不写入 manifest permissions，
 /// 但仍经过 Broker 的身份、schema、配额与审计路径。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(usize)]
 pub enum CapabilityId {
     UiUpdateState,
@@ -66,6 +66,7 @@ pub struct CapabilityDefinition {
     pub risk: CapabilityRisk,
     pub execution: CapabilityExecution,
     pub wit_interface: &'static str,
+    pub wit_functions: &'static [&'static str],
     pub sdk_surface: &'static str,
     pub author_section: Option<&'static str>,
     pub audit_redaction: &'static str,
@@ -80,6 +81,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::Inherent,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-ui",
+        wit_functions: &["update-state"],
         sdk_surface: "ctx.state",
         author_section: None,
         audit_redaction: "size-and-error-path-only",
@@ -92,6 +94,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::Inherent,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-log",
+        wit_functions: &["log"],
         sdk_surface: "ctx.log",
         author_section: None,
         audit_redaction: "message-length-only",
@@ -104,6 +107,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::Inherent,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-clock",
+        wit_functions: &["now"],
         sdk_surface: "ctx.clock",
         author_section: None,
         audit_redaction: "no-result-values",
@@ -116,6 +120,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::L0,
         execution: CapabilityExecution::SyncAndOperation,
         wit_interface: "host-storage",
+        wit_functions: &["get", "submit-get", "take-get-result"],
         sdk_surface: "ctx.storage",
         author_section: Some("storage"),
         audit_redaction: "key-metadata-no-values",
@@ -128,6 +133,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::L0,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-storage",
+        wit_functions: &["set", "delete"],
         sdk_surface: "ctx.storage",
         author_section: Some("storage"),
         audit_redaction: "key-and-size-no-values",
@@ -140,6 +146,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::L0,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-timer",
+        wit_functions: &["schedule", "cancel"],
         sdk_surface: "ctx.timer",
         author_section: Some("timer"),
         audit_redaction: "delay-and-budget-only",
@@ -152,6 +159,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::L0,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-theme",
+        wit_functions: &["get-token", "subscribe", "unsubscribe"],
         sdk_surface: "ctx.theme",
         author_section: Some("theme"),
         audit_redaction: "token-name-no-values",
@@ -164,6 +172,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::L0,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-metrics",
+        wit_functions: &["cpu-percent"],
         sdk_surface: "ctx.metrics",
         author_section: Some("metrics"),
         audit_redaction: "result-bucket-only",
@@ -176,6 +185,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         risk: CapabilityRisk::L0,
         execution: CapabilityExecution::Sync,
         wit_interface: "host-metrics",
+        wit_functions: &["memory"],
         sdk_surface: "ctx.metrics",
         author_section: Some("metrics"),
         audit_redaction: "result-bucket-only",
@@ -633,6 +643,7 @@ mod tests {
             );
             assert_eq!(definition.id.definition(), definition);
             assert!(!definition.wit_interface.is_empty());
+            assert!(!definition.wit_functions.is_empty());
             assert!(!definition.sdk_surface.is_empty());
             assert!(!definition.audit_redaction.is_empty());
             assert_eq!(
@@ -667,6 +678,41 @@ mod tests {
             .map(|definition| definition.wit_interface)
             .collect();
         assert_eq!(imported, registered);
+
+        for interface in registered {
+            let marker = format!("interface {interface} {{");
+            let body = wit
+                .split(&marker)
+                .nth(1)
+                .unwrap_or_else(|| panic!("WIT 缺少 interface {interface}"));
+            let mut depth = 1usize;
+            let mut functions = BTreeSet::new();
+            for line in body.lines() {
+                let trimmed = line.trim();
+                if depth == 1
+                    && let Some((name, _)) = trimmed.split_once(": func(")
+                {
+                    functions.insert(name);
+                }
+                depth += trimmed
+                    .chars()
+                    .filter(|character| *character == '{')
+                    .count();
+                depth -= trimmed
+                    .chars()
+                    .filter(|character| *character == '}')
+                    .count();
+                if depth == 0 {
+                    break;
+                }
+            }
+            let mapped: BTreeSet<_> = CAPABILITY_REGISTRY
+                .iter()
+                .filter(|definition| definition.wit_interface == interface)
+                .flat_map(|definition| definition.wit_functions.iter().copied())
+                .collect();
+            assert_eq!(functions, mapped, "{interface} function 映射漂移");
+        }
     }
 
     fn plugin_grants() -> Grants {
