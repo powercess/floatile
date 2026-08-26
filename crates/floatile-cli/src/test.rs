@@ -18,6 +18,7 @@ use zip::ZipArchive;
 
 use crate::build::{BuildError, build_project};
 use crate::dev::ensure_project;
+use crate::output::{CommandWarning, OUTPUT_SCHEMA_VERSION};
 
 /// 测试错误（稳定 code `FTEST_*`）。
 #[derive(Debug, thiserror::Error)]
@@ -44,15 +45,30 @@ impl TestError {
             Self::Runtime(_) => "FTEST_RUNTIME",
         }
     }
+
+    pub fn public_detail(&self) -> &'static str {
+        match self {
+            Self::Build(_) => "测试项目构建失败",
+            Self::Zip(_) => "测试包读取失败",
+            Self::Manifest(_) => "测试包 manifest 无效",
+            Self::Ftui(_) => "测试包 UI IR 无效",
+            Self::Runtime(_) => "插件测试运行时失败",
+        }
+    }
 }
 
 /// 无头测试各阶段结果（稳定 JSON 结构）。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TestStatus {
+    pub schema_version: u32,
+    pub status: &'static str,
+    pub severity: &'static str,
     pub ok: bool,
     pub code: String,
     pub detail: String,
     pub phases: TestPhases,
+    pub warnings: Vec<CommandWarning>,
 }
 
 /// 生命周期冒烟各阶段。
@@ -143,6 +159,9 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
     if let Err(e) = start {
         // start 失败（构造/trap）：实例已终止，无法再驱动。
         return Ok(TestStatus {
+            schema_version: OUTPUT_SCHEMA_VERSION,
+            status: "error",
+            severity: "error",
             ok: false,
             code: "FTEST_START".into(),
             detail: e.to_string(),
@@ -153,6 +172,7 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
                 state_updates: 0,
                 shutdown: false,
             },
+            warnings: Vec::new(),
         });
     }
 
@@ -163,6 +183,9 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
     let ok = shutdown_ok;
 
     Ok(TestStatus {
+        schema_version: OUTPUT_SCHEMA_VERSION,
+        status: if ok { "ok" } else { "error" },
+        severity: if ok { "info" } else { "error" },
         ok,
         code: if ok {
             "ok".into()
@@ -181,5 +204,6 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
             state_updates,
             shutdown: shutdown_ok,
         },
+        warnings: Vec::new(),
     })
 }

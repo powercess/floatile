@@ -223,8 +223,10 @@ JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路�
 使用声明能力但 manifest 未声明时以 `FCHECK_CAPABILITY_MISSING` 失败；已声明但未导入时产生
 `FCHECK_CAPABILITY_UNUSED` warning，`--deny-warnings` 可将其提升为失败。固有能力无需写入 manifest；
 该静态诊断不做控制流可达性证明，也不替代 Permission Broker 的运行时强制。
-`check/inspect` 的失败已共用版本化自动化契约：固定 `schemaVersion/status/severity/code/detail/phases/warnings`
-字段，命令只可向 `detail` 写入有界脱敏描述；其余作者命令将在 PP-M4 后续切片逐个接入同一契约。
+`new/build/test/install/check/inspect` 已共用版本化自动化契约：固定
+`schemaVersion/status/severity/code/detail/phases/warnings` 基础字段，命令只可向 `detail` 写入有界
+脱敏描述；参数错误使用 exit 2，行为失败使用 exit 1，自动化 flags 不会被误解析为项目或包路径。
+`dev/preview/run` 将在真实宿主纵向切片中接入同一契约。
 Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快照，仓库测试要求二者逐字节一致；
 干净目录测试从 `floatile-sdk`、`floatile-sdk-macros` 与 `floatile-ui-schema` 的独立 Cargo 包快照解析
 模板依赖，不使用仓库内部 path。许可 ADR 通过前这些包只用于仓库内可发布性验证，不授权上传 registry。

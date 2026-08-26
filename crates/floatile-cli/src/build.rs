@@ -4,6 +4,7 @@
 //! → `cargo run --bin build_ftui --features build-host`（宿主生成 widget.ftui）
 //! → `floatile.toml` 生成 manifest → zip 打包 → 自校验。
 
+use std::borrow::Cow;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,6 +40,18 @@ impl BuildError {
             Self::BuildFtui(_) => "FBUILD_FTUI",
             Self::Package(_) => "FBUILD_PACKAGE",
             Self::Io(_) => "FBUILD_IO",
+        }
+    }
+
+    /// Agent/CI 可见的有界描述，不包含 cargo stderr 或宿主路径。
+    pub fn public_detail(&self) -> Cow<'static, str> {
+        match self {
+            Self::Project(_) => Cow::Borrowed("项目配置无效"),
+            Self::CargoMetadata(_) => Cow::Borrowed("Cargo 项目元数据检查失败"),
+            Self::WasmBuild(_) => Cow::Borrowed("WASM Component 构建失败"),
+            Self::BuildFtui(_) => Cow::Borrowed("Floatile UI 生成失败"),
+            Self::Package(_) => Cow::Borrowed("生成包未通过安全校验"),
+            Self::Io(_) => Cow::Borrowed("项目输入或构建产物 I/O 失败"),
         }
     }
 }

@@ -545,30 +545,46 @@ fn cmd_schema(args: &[String]) -> ExitCode {
 }
 
 fn cmd_new(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &[], 3) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FNEW_ARGUMENT", &detail, json, true),
+    };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let id = args
+    let id = positionals
         .get(1)
-        .cloned()
+        .map(|value| (*value).to_owned())
         .unwrap_or_else(|| "dev.example.widget".to_owned());
-    let name = args
+    let name = positionals
         .get(2)
-        .cloned()
+        .map(|value| (*value).to_owned())
         .unwrap_or_else(|| "My Widget".to_owned());
     match project::generate_template(&dir, &id, &name) {
         Ok(()) => {
-            println!("已生成项目模板于 {}", dir.display());
-            println!(
-                "注意: floatile-sdk 尚未发布（许可 ADR 未通过），模板需在 SDK 可用后才能独立构建；workspace 内成员可直接构建。"
-            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schemaVersion": 1,
+                        "status": "ok",
+                        "severity": "info",
+                        "code": "ok",
+                        "warnings": [],
+                        "project": { "id": id, "name": name },
+                    })
+                );
+            } else {
+                println!("已生成项目模板于 {}", dir.display());
+                println!(
+                    "注意: floatile-sdk 尚未发布（许可 ADR 未通过），模板需在 SDK 可用后才能独立构建；workspace 内成员可直接构建。"
+                );
+            }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("new 失败: {e}");
-            ExitCode::FAILURE
-        }
+        Err(_) => render_basic_error("FNEW_PROJECT", "无法生成项目模板", json, false),
     }
 }
 
@@ -621,32 +637,49 @@ fn cmd_dev(args: &[String]) -> ExitCode {
 }
 
 fn cmd_build(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &[], 2) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FBUILD_ARGUMENT", &detail, json, true),
+    };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let out = args
+    let out = positionals
         .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| dir.join("out").join("plugin.floatile"));
     match build::build_project(&dir, &out) {
         Ok(manifest) => {
-            println!("已构建 {} (id={})", out.display(), manifest.id.0);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schemaVersion": 1, "status": "ok", "severity": "info",
+                        "code": "ok", "warnings": [],
+                        "package": { "id": manifest.id.0, "version": manifest.version }
+                    })
+                );
+            } else {
+                println!("已构建 {} (id={})", out.display(), manifest.id.0);
+            }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("build 失败: code={} detail={e}", e.code());
-            ExitCode::FAILURE
-        }
+        Err(error) => render_basic_error(error.code(), error.public_detail().as_ref(), json, false),
     }
 }
 
 fn cmd_test(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|a| a == "--json");
+    let positionals = match author_positionals(args, &["--timeout"], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FTEST_ARGUMENT", &detail, json, true),
+    };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let json = args.iter().any(|a| a == "--json");
     let timeout_ms: u64 = args
         .windows(2)
         .find(|w| w[0] == "--timeout")
@@ -688,32 +721,28 @@ fn cmd_test(args: &[String]) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        Err(e) => {
-            eprintln!("test 失败: code={} detail={e}", e.code());
-            ExitCode::FAILURE
-        }
+        Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
     }
 }
 
 fn cmd_install(args: &[String]) -> ExitCode {
-    let Some(path) = args.first().map(PathBuf::from) else {
-        eprintln!("用法: floatile install <pkg.floatile> [--store PATH] [--json]");
-        return ExitCode::from(2);
+    let json = args.iter().any(|a| a == "--json");
+    let positionals = match author_positionals(args, &["--store"], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FINST_ARGUMENT", &detail, json, true),
+    };
+    let Some(path) = positionals.first().map(PathBuf::from) else {
+        return render_basic_error("FINST_ARGUMENT", "install 需要包路径", json, true);
     };
     let store = match opts_store(args) {
         Ok(store) => store,
         Err(msg) => {
-            eprintln!("{msg}");
-            return ExitCode::from(2);
+            return render_basic_error("FINST_ARGUMENT", &msg, json, true);
         }
     };
-    let json = args.iter().any(|a| a == "--json");
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
-        Err(e) => {
-            eprintln!("读取失败: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(_) => return render_basic_error("FINST_IO", "插件包读取失败", json, false),
     };
     let source = path
         .file_name()
@@ -725,11 +754,14 @@ fn cmd_install(args: &[String]) -> ExitCode {
                 println!(
                     "{}",
                     serde_json::json!({
-                        "status": "installed",
-                        "id": installed.manifest.id.0,
-                        "version": installed.meta.version,
-                        "dir": installed.dir.display().to_string(),
-                        "digest": installed.meta.digest,
+                        "schemaVersion": 1, "status": "ok", "severity": "info",
+                        "code": "ok", "warnings": [],
+                        "installation": {
+                            "id": installed.manifest.id.0,
+                            "version": installed.meta.version,
+                            "dir": installed.dir.display().to_string(),
+                            "digest": installed.meta.digest,
+                        }
                     })
                 );
             } else {
@@ -743,10 +775,53 @@ fn cmd_install(args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("install 失败: code={} detail={e}", e.code());
-            ExitCode::FAILURE
+        Err(error) => render_basic_error(error.code(), error.public_detail().as_ref(), json, false),
+    }
+}
+
+fn author_positionals<'a>(
+    args: &'a [String],
+    value_options: &[&str],
+    maximum: usize,
+) -> Result<Vec<&'a str>, String> {
+    let mut positionals = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        if matches!(argument, "--json" | "--no-interactive" | "--deny-warnings") {
+            index += 1;
+        } else if value_options.contains(&argument) {
+            if args
+                .get(index + 1)
+                .is_none_or(|value| value.starts_with('-'))
+            {
+                return Err(format!("{argument} 缺少值"));
+            }
+            index += 2;
+        } else if argument.starts_with('-') {
+            return Err(format!("未知选项 {argument}"));
+        } else {
+            positionals.push(argument);
+            index += 1;
         }
+    }
+    if positionals.len() > maximum {
+        return Err(format!("位置参数最多允许 {maximum} 个"));
+    }
+    Ok(positionals)
+}
+
+fn render_basic_error(code: &str, detail: &str, json: bool, argument_error: bool) -> ExitCode {
+    if json {
+        let report = CommandErrorReport::new(code, detail, serde_json::json!({}));
+        eprintln!("{}", serialize_json(&report));
+    } else {
+        eprintln!("命令失败: code={code} detail={detail}");
+    }
+    if argument_error {
+        ExitCode::from(2)
+    } else {
+        ExitCode::FAILURE
     }
 }
 

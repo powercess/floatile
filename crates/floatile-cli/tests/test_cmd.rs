@@ -34,6 +34,10 @@ fn test_project_runs_clock_smoke() {
     // 稳定 JSON 契约：可解析且字段稳定。
     let parsed: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["status"], "ok");
+    assert_eq!(parsed["severity"], "info");
+    assert_eq!(parsed["warnings"], serde_json::json!([]));
     assert_eq!(parsed["ok"], serde_json::json!(true));
     assert_eq!(parsed["code"], "ok");
     assert_eq!(parsed["phases"]["build"], serde_json::json!(true));

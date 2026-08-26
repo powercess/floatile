@@ -8,6 +8,7 @@
 //! 每文件 SHA-256 与覆盖全部规范文件集合的聚合 digest，供宿主 PluginManager 在
 //! 加载前做完整性校验。
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -45,6 +46,19 @@ impl InstallError {
             Self::StagingWrite(_) => "FINST_STAGING_WRITE",
             Self::Commit(_) => "FINST_COMMIT",
             Self::Io(_) => "FINST_IO",
+        }
+    }
+
+    pub fn public_detail(&self) -> Cow<'static, str> {
+        match self {
+            Self::Package(_) => Cow::Borrowed("插件包未通过安全校验"),
+            Self::StoreUnavailable(_) => Cow::Borrowed("插件存储不可用"),
+            Self::AlreadyInstalled { id, version } => {
+                Cow::Owned(format!("插件 {id} {version} 已安装"))
+            }
+            Self::StagingWrite(_) => Cow::Borrowed("无法写入安装暂存目录"),
+            Self::Commit(_) => Cow::Borrowed("无法原子提交安装"),
+            Self::Io(_) => Cow::Borrowed("插件包读取失败"),
         }
     }
 }
