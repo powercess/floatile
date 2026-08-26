@@ -4,20 +4,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use floatile_cli::{build, dev, inspect, install, instance, package, project, test};
+use floatile_cli::{build, check, dev, inspect, install, instance, package, project, test};
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|inspect|build|install|instance|dev|test|schema> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|schema> [参数]"
         );
         return ExitCode::from(2);
     }
     match args[1].as_str() {
         "new" => cmd_new(&args[2..]),
         "validate" => cmd_validate(&args[2..]),
+        "check" => cmd_check(&args[2..]),
         "inspect" => cmd_inspect(&args[2..]),
         "build" => cmd_build(&args[2..]),
         "install" => cmd_install(&args[2..]),
@@ -29,6 +30,108 @@ fn main() -> ExitCode {
             eprintln!("未知命令: {other}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn cmd_check(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let deny_warnings = args.iter().any(|argument| argument == "--deny-warnings");
+    let mut project_dir = None;
+    for argument in args {
+        match argument.as_str() {
+            "--json" | "--no-interactive" | "--deny-warnings" => {}
+            value if value.starts_with('-') => {
+                return render_check_error(
+                    "FCHECK_ARGUMENT",
+                    &format!("未知选项 {value}"),
+                    check::CheckPhases::default(),
+                    json,
+                    true,
+                );
+            }
+            value if project_dir.is_none() => project_dir = Some(PathBuf::from(value)),
+            _ => {
+                return render_check_error(
+                    "FCHECK_ARGUMENT",
+                    "check 只接受一个项目目录",
+                    check::CheckPhases::default(),
+                    json,
+                    true,
+                );
+            }
+        }
+    }
+    let project_dir = project_dir.unwrap_or_else(|| PathBuf::from("."));
+    match check::check_project(&project_dir) {
+        Ok(report) => {
+            if deny_warnings && !report.warnings.is_empty() {
+                return render_check_error(
+                    "FCHECK_WARNINGS_DENIED",
+                    "warning 已被 --deny-warnings 提升为失败",
+                    report.phases,
+                    json,
+                    false,
+                );
+            }
+            if json {
+                match serde_json::to_string(&report) {
+                    Ok(value) => println!("{value}"),
+                    Err(error) => {
+                        return render_check_error(
+                            "FCHECK_SERIALIZE",
+                            &error.to_string(),
+                            report.phases,
+                            true,
+                            false,
+                        );
+                    }
+                }
+            } else {
+                println!(
+                    "check: PASS {}@{}",
+                    report.inspection.package.id, report.inspection.package.version
+                );
+                println!("  metadata wasm ui manifest package: ok");
+                println!("  warnings={}", report.warnings.len());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => render_check_error(
+            error.code(),
+            error.public_detail(),
+            error.phases(),
+            json,
+            false,
+        ),
+    }
+}
+
+fn render_check_error(
+    code: &str,
+    detail: &str,
+    phases: check::CheckPhases,
+    json: bool,
+    argument_error: bool,
+) -> ExitCode {
+    if json {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "schemaVersion": 1,
+                "status": "error",
+                "code": code,
+                "detail": detail,
+                "phases": phases,
+                "warnings": [],
+            })
+        );
+    } else {
+        eprintln!("check: FAIL code={code} detail={detail}");
+    }
+    if argument_error {
+        ExitCode::from(2)
+    } else {
+        ExitCode::FAILURE
     }
 }
 

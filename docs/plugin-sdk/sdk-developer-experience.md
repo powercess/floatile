@@ -210,13 +210,17 @@ Detected capabilities:
 
 退出码与诊断 code 稳定；日志文本不是自动化接口。
 
-当前已落地：`new/validate/dev/build/install/test/inspect/instance`；`test` 用
+当前已落地：`new/validate/check/dev/build/install/test/inspect/instance`；`test` 用
 `floatile-runtime::harness` 对已构建包跑无头生命周期冒烟。`instance` 子命令提供单一
 JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`--store`、
 `--config`/`--config-file`与 `--no-interactive`。`inspect` 在输出前复用完整包安全校验，提供 manifest、
 版本轴、权限、归档/解压预算、规范文件 SHA-256 与聚合内容摘要；支持版本化 `--json`、
 `--no-interactive`、`--deny-warnings` 和稳定失败 code，JSON 失败诊断不回显输入包路径。
-`check/preview/migrate` 与其余命令的 JSON 契约统一待续。
+`check` 在自动清理的临时目录中复用正式 build + package validation + inspect 链，返回
+`metadata/wasm/ui/manifest/package` 五阶段、warning 数组和 inspection 结果；支持相同的三个自动化选项，
+JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路径/cargo stderr 的有界描述。
+静态比较“代码实际调用能力”与声明权限尚未实现，不能把当前空 warning 数组解释为该检查已完成。
+`preview/migrate` 与其余命令的 JSON 契约统一待续。
 
 ## 8. 诊断格式
 
