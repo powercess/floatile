@@ -75,6 +75,8 @@ pub enum OperationServiceError {
 pub enum OperationSubmitError {
     #[error("operation permission denied: {0:?}")]
     PermissionDenied(DenyReason),
+    #[error("operation input is invalid")]
+    InvalidInput,
     #[error("operation queue is full")]
     QueueFull,
     #[error("operation deadline is invalid")]
@@ -89,6 +91,7 @@ impl OperationSubmitError {
     pub const fn code(self) -> &'static str {
         match self {
             Self::PermissionDenied(_) => "permission-denied",
+            Self::InvalidInput => "invalid-input",
             Self::QueueFull => "queue-full",
             Self::InvalidDeadline => "invalid-deadline",
             Self::Unavailable => "unavailable",
@@ -214,6 +217,18 @@ pub struct OperationRegistry {
     shared: Arc<SharedState>,
 }
 
+/// completion relay 只持结果丢弃句柄，避免通过 submit sender 与 dispatcher 形成生命周期环。
+#[derive(Clone)]
+pub struct OperationResultDiscarder {
+    shared: Arc<SharedState>,
+}
+
+impl OperationResultDiscarder {
+    pub fn discard(&self, id: OperationId) -> bool {
+        lock(&self.shared.results).remove(&id).is_some()
+    }
+}
+
 impl std::fmt::Debug for OperationRegistry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -288,6 +303,12 @@ impl OperationRegistry {
         lock(&self.shared.results).remove(&id).is_some()
     }
 
+    pub fn result_discarder(&self) -> OperationResultDiscarder {
+        OperationResultDiscarder {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     pub fn cancel_all(&self) -> usize {
         let active = lock(&self.shared.active);
         for operation in active.values() {
@@ -359,6 +380,12 @@ impl OperationRegistry {
         }
         operation.cancellation.cancel();
         Ok(())
+    }
+
+    pub(crate) fn active_capability(&self, id: OperationId) -> Option<CapabilityId> {
+        lock(&self.shared.active)
+            .get(&id)
+            .map(|operation| operation.capability)
     }
 
     pub(crate) fn take<T: Any + Send + 'static>(

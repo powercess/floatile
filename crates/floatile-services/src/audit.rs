@@ -26,6 +26,7 @@ pub struct AuditEvent {
 pub type AuditListener = Arc<dyn Fn(&AuditEvent) + Send + Sync>;
 
 /// 审计目标标识。
+#[derive(Clone)]
 pub struct AuditSink {
     plugin: String,
     instance: u64,

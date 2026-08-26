@@ -27,7 +27,7 @@ impl FromWidgetEvent for WidgetEvent {
 ///   不得自行猜默认值）；默认空实现，读取镜像状态的插件可覆写
 /// - `view`：构建期定义 UI 组件树（host 侧编译为 widget.ftui）
 /// - `start`：实例启动，可 schedule 计时器、初始化
-/// - `event`：统一事件入口（UI / timer / mode / config / theme / suspend / resume）
+/// - `event`：统一事件入口（UI / timer / operation / mode / config / theme / suspend / resume）
 /// - `stop`：实例销毁前的通知（尽力而为，不能保证执行）
 ///
 /// `Default` 是导出宏 `impl_export_widget!` 构造实例所需的构造约束。

@@ -41,7 +41,7 @@ fn clock_wasm_bytes() -> Vec<u8> {
     std::fs::read(&wasm_path).expect("读取 clock-wasm 失败")
 }
 
-fn clock_grants() -> floatile_core::InstanceGrant {
+fn clock_grants(instance: u64) -> floatile_core::InstanceGrant {
     let plugin = Grants {
         plugin: PluginId("dev.floatile.clock".into()),
         trust: TrustLevel::Dev,
@@ -56,7 +56,7 @@ fn clock_grants() -> floatile_core::InstanceGrant {
     };
     narrow_instance(
         &plugin,
-        InstanceId(1),
+        InstanceId(instance),
         vec![Grant {
             capability: CapabilityId::TimerSchedule,
             params: Some(CapabilityParams::Timer {
@@ -95,7 +95,7 @@ fn spawn_clock() -> floatile_runtime::WidgetHandle {
         initial_state: json!({"time": "", "running": false}),
         state_schema: clock_state_schema(),
         config_json: "{}".into(),
-        grants: clock_grants(),
+        grants: clock_grants(1),
     };
     manager.spawn(config).expect("spawn 失败")
 }
@@ -220,7 +220,7 @@ async fn fuel_exhaustion_kills_instance_but_host_survives() {
         initial_state: json!({"time": "", "running": false}),
         state_schema: clock_state_schema(),
         config_json: "{}".into(),
-        grants: clock_grants(),
+        grants: clock_grants(3),
     };
     let handle = bad.spawn(config).expect("spawn 应成功（组件可解析）");
     let result = handle.start().await;
@@ -240,9 +240,12 @@ async fn fuel_exhaustion_kills_instance_but_host_survives() {
             initial_state: json!({"time": "", "running": false}),
             state_schema: clock_state_schema(),
             config_json: "{}".into(),
-            grants: clock_grants(),
+            grants: clock_grants(4),
         })
         .expect("新实例 spawn 成功");
-    handle2.start().await.expect("新实例 start 应成功");
+    if let Err(start_error) = handle2.start().await {
+        let actor_result = handle2.into_result().await;
+        panic!("新实例 start 应成功: {start_error}; actor={actor_result:?}");
+    }
     handle2.shutdown().await.expect("新实例 shutdown 正常");
 }

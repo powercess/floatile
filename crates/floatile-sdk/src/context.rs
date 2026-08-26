@@ -6,8 +6,11 @@
 
 use std::marker::PhantomData;
 
-use crate::{LogError, LogLevel, StorageError, ThemeError, TimerError, UiError};
-use crate::{host_clock, host_log, host_metrics, host_storage, host_theme, host_timer, host_ui};
+use crate::{LogError, LogLevel, OperationError, StorageError, ThemeError, TimerError, UiError};
+use crate::{
+    host_clock, host_log, host_metrics, host_operation, host_storage, host_theme, host_timer,
+    host_ui,
+};
 
 pub struct Context<W> {
     _widget: PhantomData<fn(&mut W)>,
@@ -56,6 +59,12 @@ impl<W> Context<W> {
 
     pub fn storage(&self) -> StorageCtx {
         StorageCtx
+    }
+
+    // ---- operation（宿主托管异步工作）----
+
+    pub fn operation(&self) -> OperationCtx {
+        OperationCtx
     }
 
     // ---- metrics（声明能力 system:cpu/memory）----
@@ -114,6 +123,25 @@ impl StorageCtx {
     }
     pub fn delete(&self, key: &str) -> Result<(), StorageError> {
         host_storage::delete(key)
+    }
+
+    /// 提交异步私有 KV 读取；完成后由 `WidgetEvent::OperationCompleted` 通知。
+    pub fn submit_get(&self, key: &str, timeout_ms: u64) -> Result<u64, OperationError> {
+        host_storage::submit_get(key, timeout_ms)
+    }
+
+    /// 一次性领取已成功完成的异步 KV 读取结果。
+    pub fn take_get_result(&self, id: u64) -> Result<Option<String>, OperationError> {
+        host_storage::take_get_result(id)
+    }
+}
+
+/// `ctx.operation()` — 通用 Operation 生命周期操作；payload 仍由 capability-specific API 持有。
+pub struct OperationCtx;
+
+impl OperationCtx {
+    pub fn cancel(&self, id: u64) -> Result<(), OperationError> {
+        host_operation::cancel(id)
     }
 }
 

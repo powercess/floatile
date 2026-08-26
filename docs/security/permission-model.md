@@ -127,8 +127,9 @@ P0/MVP 只实现固有能力与 L0。
 - `widget.ftui` 只描述 UI。它不能声明能力或创建第二条 host 调用路径；manifest permissions 才是
   安装授权上限。
 - ADR-0004 的 Operation submit 必须在一次 Broker 入口中完成 check→execute；cancel 与 typed
-  `take-result` 同样重新授权。当前宿主 spike 未改变 WIT；正式新增接口时必须联动 capability-specific
-  schema、SDK、版本、contract vectors 与恶意 fixture，禁止通用 JSON-RPC/capability bus。
+  `take-result` 同样重新授权。v1.1 已接入 `storage:read` 的 typed submit/take、通用 cancel 和元数据
+  completion；后续能力仍必须联动 schema、SDK、版本、contract vectors 与恶意 fixture，禁止通用
+  JSON-RPC/capability bus。
 
 ## 8. 未决问题
 

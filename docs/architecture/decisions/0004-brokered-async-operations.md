@@ -1,6 +1,6 @@
 # ADR-0004：长任务采用 Broker 化 Operation
 
-> 状态：Accepted（宿主模型已由 spike 验证；正式 WIT/SDK 契约待后续 PR）
+> 状态：Implemented（v1.1 首个 `storage:read` typed contract 已落地）
 > 日期：2026-08-26
 > 决策者：Floatile 项目
 
@@ -57,7 +57,7 @@ ABI 建立在该实现上。后续可在保持 Broker、owner、预算和审计�
    元数据，不记录请求或结果 payload。当前审计 schema 不新增 completion decision 类型；spike 暂以
    既有 allow/deny 记录终态及 `delivered | stale-generation | queue-full | actor-closed` 处置。
 
-正式 WIT 的下一条 PP-M2 切片应采用以下类型化形状，并通过 WIT 唯一源生成全部绑定：
+正式 WIT 已按以下类型化形状从唯一源生成全部绑定；v1.1 首个 capability 是 `storage:read`：
 
 ```text
 host-<capability>.submit(request) -> result<operation-id, error>
@@ -67,7 +67,7 @@ host-<capability>.take-result(operation-id) -> result<typed-result, error>
 ```
 
 `operation-completion` 只含 ID、capability 与终态元数据。不得把上述草图复制成第二份 WIT，也不得
-在正式 `wit/` 变更前暴露临时 host function。
+通过临时 host function 暴露第二条路径。
 
 ## 后果
 

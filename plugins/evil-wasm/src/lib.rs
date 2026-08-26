@@ -20,7 +20,8 @@
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
 use floatile_sdk::{
-    Context, FromWidgetEvent, LogLevel, State, Widget, WidgetEvent, view, view::View,
+    Context, FromWidgetEvent, LogLevel, OperationCapability, OperationTerminal, State, Widget,
+    WidgetEvent, view, view::View,
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,7 @@ pub struct EvilState {
 #[derive(Debug)]
 pub enum EvilEvent {
     Trigger,
+    OperationCompleted(u64),
     Unknown,
 }
 
@@ -43,6 +45,12 @@ impl FromWidgetEvent for EvilEvent {
             WidgetEvent::Ui(u) if u.name == "trigger" => Some(EvilEvent::Trigger),
             WidgetEvent::Ui(_) => Some(EvilEvent::Unknown),
             WidgetEvent::Timer(_) => Some(EvilEvent::Trigger),
+            WidgetEvent::OperationCompleted(completion)
+                if completion.capability == OperationCapability::StorageRead
+                    && completion.terminal == OperationTerminal::Succeeded =>
+            {
+                Some(EvilEvent::OperationCompleted(completion.id))
+            }
             _ => None,
         }
     }
@@ -77,6 +85,9 @@ impl Widget for Evil {
             "deny" => self.deny_call(ctx),
             "bad-patch" => self.bad_patch(ctx),
             "alloc" => self.alloc_memory(),
+            "operation" => {
+                let _ = ctx.storage().submit_get("settings", 1_000);
+            }
             mode => {
                 let _ = ctx.log(LogLevel::Info, &format!("start mode {mode}"));
             }
@@ -92,6 +103,11 @@ impl Widget for Evil {
                 _ => {}
             },
             EvilEvent::Unknown => {}
+            EvilEvent::OperationCompleted(id) => {
+                if ctx.storage().take_get_result(id).is_ok() {
+                    let _ = ctx.state().update(r#"{"mode":"operation-complete"}"#);
+                }
+            }
         }
     }
 }

@@ -1,23 +1,22 @@
 # WIT 插件 API v1
 
-> 状态：Proposed（ADR-0001 目标契约）；WIT、host/guest bindings 与 clock fixture 已迁移到目标形状并通过
-> `wasm-tools validate`，runtime adapter 与 contract tests 待实现
+> 状态：Implemented（自动化契约证据；跨平台运行证据仍按 P0 验收记录）
 > 唯一源：`wit/`；本文解释语义，不复制一套可独立修改的绑定
 > engine API：`floatile:widget@1.x`
 > 关联：ADR-0001、FR-PLUGIN-01、FR-PERM-01、F11、F12
 
 ## 0. 当前实现与迁移门
 
-`wit/floatile-widget.wit@1.0.0`、`floatile-sdk` guest bindings、`floatile-plugin-api` host async
+`wit/floatile-widget.wit@1.1.0`、`floatile-sdk` guest bindings、`floatile-plugin-api` host async
 bindings 与 `plugins/clock-wasm` 已迁移到 ADR-0001 目标契约形状：包含 `host-ui`/`host-clock`、canonical
 initial State、统一 `start/handle-event/stop` lifecycle 与稳定 `widget-error`。host/guest 均从 `wit/`
 单一源生成，engine version 一致，clock fixture 通过 `wasm-tools validate`，验证了 stable Rust、
 wit-bindgen、Wasmtime bindgen 与 Component 构建链路。
 
-项目尚未对外分发插件，现有 `1.0.0` 不是兼容承诺。`floatile-runtime` 已实现 Wasmtime adapter 并经
-`PermissionBroker` 接入全部七个接口，`clock-wasm` 集成测试（start/1Hz tick/update-state）通过；仍缺
-§9 的契约测试、恶意插件 fixture 与 CLI 包校验。这些落地前不得把 WIT/SDK 标记为 ADR-0001 契约
-已 Implemented，也不得接入 shell 制造第二套适配层。
+项目尚未对外分发插件，现有 `1.1.0` 不是发布兼容承诺。`floatile-runtime` 已实现 Wasmtime adapter，
+全部宿主能力经 `PermissionBroker`；clock/evil fixture 覆盖 lifecycle、State Patch、拒绝和宿主存活。
+v1.1 增加 `host-operation`、`storage.submit-get/take-get-result` 与 `operation-completed`，验证 typed
+one-shot result 从真实 guest 往返，且完成事件不携带 payload。
 
 ## 1. v1 目标
 
@@ -55,7 +54,7 @@ WIT 只负责 WASM plugin 与 host 的跨边界调用。UI 结构由 `widget.ftu
 bindings、runtime adapter、版本和 contract tests。
 
 ```wit
-package floatile:widget@1.0.0;
+package floatile:widget@1.1.0;
 
 interface host-ui {
     variant ui-error {
@@ -231,11 +230,11 @@ actor 等待当前回调完成或超时后才取下一个 event。任何 host im
 `host-ui` 写 runtime State 并异步投递 UI；不能直接调用 Slint。Storage、Timer、Metrics、Theme 由
 services 实现，adapter 只能持有 Broker/instance context，不能持有原生能力句柄。
 
-ADR-0004 已选择“capability-specific typed submit/take-result + 通用 Operation ID/cancel + 仅元数据
-completion signal”作为未来长任务合约，并由宿主 spike 验证队列、deadline、取消、generation 与
-过载语义。该合约**不属于当前 v1.0 WIT**：`wit/floatile-widget.wit`、bindings、SDK 与
-`engineApiVersion` 在本 spike 中均未变化。下一 PP-M2 切片必须先修改 WIT 唯一源并完成 §8 的全部
-联动；在此之前不得暴露临时 import 或把宿主 Rust API 描述为插件 API。
+ADR-0004 的合约已在 v1.1 首次正式暴露：`host-operation.cancel` 管理通用生命周期，
+`host-storage.submit-get/take-get-result` 是首个 capability-specific typed adapter，
+`widget-event.operation-completed` 只携带 ID、capability 与稳定终态。runtime actor 串行投递完成事件，
+generation 不匹配、队列过载或 actor 关闭时必须丢弃宿主结果。网络、Connection、凭证和持久 Operation
+仍不属于此切片。
 
 ## 8. 版本与兼容
 

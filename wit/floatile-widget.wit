@@ -1,4 +1,4 @@
-// Floatile Widget 插件契约 v1.0.0（唯一事实源）。
+// Floatile Widget 插件契约 v1.1.0（唯一事实源）。
 //
 // 宿主与 guest 绑定都由本文件生成；修改必须同步 floatile-plugin-api、
 // floatile-sdk、floatile-runtime 适配、engineApiVersion 与契约测试。
@@ -8,7 +8,7 @@
 // handle-event/stop）、canonical initial State、host-ui.update-state 与稳定
 // guest error。宿主能力即 interface，world 显式 import 才算获得；所有能力
 // 调用仍由 PermissionBroker 仲裁与审计。
-package floatile:widget@1.0.0;
+package floatile:widget@1.1.0;
 
 // ---------- 宿主能力（插件 import；能力即接口，world 显式 import 才算获得） ----------
 
@@ -72,7 +72,48 @@ interface host-timer {
     cancel: func(timer-id: timer-id) -> result<_, timer-error>;
 }
 
+interface host-operation {
+    type operation-id = u64;
+
+    enum operation-capability {
+        storage-read,
+    }
+
+    enum operation-terminal {
+        succeeded,
+        timeout,
+        cancelled,
+        unavailable,
+        internal,
+        result-dropped,
+    }
+
+    record operation-completion {
+        id: operation-id,
+        capability: operation-capability,
+        terminal: operation-terminal,
+    }
+
+    variant operation-error {
+        not-allowed,
+        invalid-input,
+        invalid-operation-id,
+        not-active,
+        queue-full,
+        invalid-deadline,
+        result-not-available,
+        capability-mismatch,
+        unavailable,
+        internal,
+    }
+
+    // 取消只接受宿主生成的 ID；宿主仍按 Operation 原 capability 重新授权。
+    cancel: func(id: operation-id) -> result<_, operation-error>;
+}
+
 interface host-storage {
+    use host-operation.{operation-error, operation-id};
+
     variant storage-error {
         not-allowed, // 无 storage:read/write 权限
         invalid-key,
@@ -84,6 +125,11 @@ interface host-storage {
     get: func(key: string) -> result<option<string>, storage-error>;
     set: func(key: string, value: string) -> result<_, storage-error>;
     delete: func(key: string) -> result<_, storage-error>;
+
+    // 异步读取采用宿主 Operation；deadline 包含排队时间。完成事件不携带值，
+    // guest 必须用同一 capability 的 typed take-get-result 一次性领取。
+    submit-get: func(key: string, timeout-ms: u64) -> result<operation-id, operation-error>;
+    take-get-result: func(id: operation-id) -> result<option<string>, operation-error>;
 }
 
 interface host-metrics {
@@ -121,6 +167,8 @@ interface host-theme {
 // ---------- 插件实现（宿主 import） ----------
 
 interface widget-contract {
+    use host-operation.{operation-completion};
+
     record widget-init {
         // manifest 校验后的 config JSON。
         config-json: string,
@@ -148,6 +196,7 @@ interface widget-contract {
         mode-changed(widget-mode),
         config-changed(string),
         theme-changed(string),
+        operation-completed(operation-completion),
         suspend,
         resume,
     }
@@ -180,6 +229,7 @@ world floatile-widget {
     import host-log;
     import host-clock;
     import host-timer;
+    import host-operation;
     import host-storage;
     import host-metrics;
     import host-theme;
