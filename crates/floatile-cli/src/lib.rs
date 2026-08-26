@@ -4,6 +4,7 @@
 //! 命令与 PluginManager 复用；不链接宿主 capability 实现来"顺便执行"插件。
 
 pub mod build;
+pub mod check;
 pub mod dev;
 pub mod inspect;
 pub mod install;
@@ -13,6 +14,7 @@ pub mod project;
 pub mod test;
 
 pub use build::{BuildError, build_project, package};
+pub use check::{CheckError, CheckPhases, CheckReport, CheckWarning, check_project};
 pub use dev::{BuildStatus, build_once, dev_loop, ensure_project};
 pub use inspect::{InspectError, InspectReport, inspect_package, inspect_package_bytes};
 pub use install::{InstallError, InstalledPackage, install_dir, install_package};
