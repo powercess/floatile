@@ -7,7 +7,8 @@
 // ---- 低层 WIT 绑定 ----
 wit_bindgen::generate!({
     world: "floatile-widget",
-    path: "../../wit/floatile-widget.wit",
+    // `wit/` 是根事实源生成的 crate 内发行快照；漂移测试禁止手工分叉。
+    path: "wit/floatile-widget.wit",
     default_bindings_module: "floatile_sdk",
     pub_export_macro: true,
     export_macro_name: "export_widget",

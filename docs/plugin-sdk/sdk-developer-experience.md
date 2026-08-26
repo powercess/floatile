@@ -225,6 +225,9 @@ JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路�
 该静态诊断不做控制流可达性证明，也不替代 Permission Broker 的运行时强制。
 `check/inspect` 的失败已共用版本化自动化契约：固定 `schemaVersion/status/severity/code/detail/phases/warnings`
 字段，命令只可向 `detail` 写入有界脱敏描述；其余作者命令将在 PP-M4 后续切片逐个接入同一契约。
+Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快照，仓库测试要求二者逐字节一致；
+干净目录测试从 `floatile-sdk`、`floatile-sdk-macros` 与 `floatile-ui-schema` 的独立 Cargo 包快照解析
+模板依赖，不使用仓库内部 path。许可 ADR 通过前这些包只用于仓库内可发布性验证，不授权上传 registry。
 `preview/migrate` 与其余命令的 JSON 契约统一待续。
 
 ## 8. 诊断格式

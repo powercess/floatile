@@ -197,8 +197,9 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   执行形态、WIT/SDK/CLI 与审计映射；manifest schema、CLI 和 Broker 已消费注册表并有 drift 测试；
 - PP-M4 已完成 `inspect` 与 `check` 纵向切片：包检查输出版本化 manifest/版本轴/权限/预算/entry digest；
   项目检查在自动清理的临时目录复用正式构建/校验链并输出五阶段稳定 JSON，并按组件实际导入的
-  WIT function 对照 Capability Registry 与 manifest 声明。真实窗口 `dev/preview`、其余命令统一诊断和
-  仓库外 SDK 获取仍待后续切片；
+  WIT function 对照 Capability Registry 与 manifest 声明。Rust SDK 已用根 WIT 的受 drift 测试约束发行
+  快照补齐 Cargo 包内容，生成模板已从独立 SDK 包快照通过干净目录 `wasm32-wasip2` 编译，不依赖仓库
+  私有 path；公开 registry 上传仍受许可 ADR 阻断。真实窗口 `dev/preview` 与其余命令统一诊断待后续切片；
 - 网络、Connection 与凭证托管尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。

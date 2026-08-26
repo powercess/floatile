@@ -233,6 +233,7 @@ pub struct MyState {
     pub message: String,
 }
 
+#[derive(Default)]
 struct MyWidget;
 
 impl Widget for MyWidget {
@@ -245,7 +246,7 @@ impl Widget for MyWidget {
 
     fn start(&mut self, _ctx: &mut Context<Self>) {}
 
-    fn event(&mut self, event: WidgetEvent, ctx: &mut Context<Self>) {
+    fn event(&mut self, _event: WidgetEvent, ctx: &mut Context<Self>) {
         let _ = ctx.log(LogLevel::Info, "event received");
     }
 }
