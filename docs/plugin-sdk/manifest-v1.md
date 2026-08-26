@@ -9,6 +9,8 @@ capability 参数解析（未知字段拒绝）与包路径规范化规则；`fl
 （预算、路径穿越/碰撞/symlink/zip-bomb、manifest/UI IR/WASM world 校验与正反例 corpus）与
 build 打包+自校验。原子安装已实现（`floatile-cli install`：staging/逐文件 fsync/digest/原子
 rename 到 `<插件存储>/<id>/<version>/`，写 `install.json`，同版本重复安装拒绝、失败零残留）；
+`floatile inspect` 在同一完整校验后输出 manifest、版本轴、权限、预算、规范文件 SHA-256 与聚合摘要，
+并提供版本化 JSON 成功/失败契约；
 `floatile-core::install` 为 InstallMeta 与内容 digest 的单一事实源，`floatile-shell::plugin_manager`
 按 digest 复核后加载已安装包。config.schema 结构/边界校验已落地（声明时引用文件必须是合法、有界、
 根为 object 的 JSON Schema，且 `$ref`/`$dynamicRef`/`$recursiveRef` 只能指向当前文档 fragment）。

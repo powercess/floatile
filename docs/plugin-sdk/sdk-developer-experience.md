@@ -210,10 +210,13 @@ Detected capabilities:
 
 退出码与诊断 code 稳定；日志文本不是自动化接口。
 
-当前已落地：`new/validate/dev/build/install/test/instance`；`test` 用
+当前已落地：`new/validate/dev/build/install/test/inspect/instance`；`test` 用
 `floatile-runtime::harness` 对已构建包跑无头生命周期冒烟。`instance` 子命令提供单一
 JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`--store`、
-`--config`/`--config-file`与 `--no-interactive`。`check/preview/inspect/migrate` 与其余命令的 JSON 契约统一待续。
+`--config`/`--config-file`与 `--no-interactive`。`inspect` 在输出前复用完整包安全校验，提供 manifest、
+版本轴、权限、归档/解压预算、规范文件 SHA-256 与聚合内容摘要；支持版本化 `--json`、
+`--no-interactive`、`--deny-warnings` 和稳定失败 code，JSON 失败诊断不回显输入包路径。
+`check/preview/migrate` 与其余命令的 JSON 契约统一待续。
 
 ## 8. 诊断格式
 

@@ -4,18 +4,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use floatile_cli::{build, dev, install, instance, package, project, test};
+use floatile_cli::{build, dev, inspect, install, instance, package, project, test};
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("用法: floatile <new|validate|build|install|instance|dev|test|schema> [参数]");
+        eprintln!(
+            "用法: floatile <new|validate|inspect|build|install|instance|dev|test|schema> [参数]"
+        );
         return ExitCode::from(2);
     }
     match args[1].as_str() {
         "new" => cmd_new(&args[2..]),
         "validate" => cmd_validate(&args[2..]),
+        "inspect" => cmd_inspect(&args[2..]),
         "build" => cmd_build(&args[2..]),
         "install" => cmd_install(&args[2..]),
         "instance" => cmd_instance(&args[2..]),
@@ -26,6 +29,98 @@ fn main() -> ExitCode {
             eprintln!("未知命令: {other}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn cmd_inspect(args: &[String]) -> ExitCode {
+    let mut path = None;
+    let json = args.iter().any(|arg| arg == "--json");
+    for arg in args {
+        match arg.as_str() {
+            "--json" => {}
+            "--no-interactive" | "--deny-warnings" => {}
+            value if value.starts_with('-') => {
+                return render_inspect_error(
+                    "FINSPECT_ARGUMENT",
+                    &format!("未知选项 {value}"),
+                    json,
+                );
+            }
+            value if path.is_none() => path = Some(PathBuf::from(value)),
+            _ => {
+                return render_inspect_error("FINSPECT_ARGUMENT", "inspect 只接受一个包路径", json);
+            }
+        }
+    }
+    let Some(path) = path else {
+        return render_inspect_error(
+            "FINSPECT_ARGUMENT",
+            "用法: floatile inspect <pkg.floatile> [--json] [--no-interactive] [--deny-warnings]",
+            json,
+        );
+    };
+    match inspect::inspect_package(&path, &package::PackageLimits::default()) {
+        Ok(report) => {
+            if json {
+                match serde_json::to_string(&report) {
+                    Ok(value) => println!("{value}"),
+                    Err(error) => {
+                        return render_inspect_error(
+                            "FINSPECT_SERIALIZE",
+                            &error.to_string(),
+                            true,
+                        );
+                    }
+                }
+            } else {
+                println!(
+                    "{} {} ({})",
+                    report.package.id, report.package.version, report.package.name
+                );
+                println!(
+                    "contract manifest={} engine={} ui={}",
+                    report.package.manifest_version,
+                    report.compatibility.engine_api_version,
+                    report.compatibility.ui_api_version
+                );
+                println!(
+                    "entries={} uncompressed={} archive={} digest={}",
+                    report.budget.entry_count,
+                    report.budget.uncompressed_bytes,
+                    report.budget.archive_bytes,
+                    report.digest
+                );
+                for permission in &report.permissions {
+                    println!("permission {}", permission.capability);
+                }
+                for entry in &report.entries {
+                    println!("entry {} {} {}", entry.bytes, entry.sha256, entry.path);
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => render_inspect_error(error.code(), &error.to_string(), json),
+    }
+}
+
+fn render_inspect_error(code: &str, detail: &str, json: bool) -> ExitCode {
+    if json {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "schemaVersion": 1,
+                "status": "error",
+                "code": code,
+                "detail": detail,
+            })
+        );
+    } else {
+        eprintln!("inspect 失败: code={code} detail={detail}");
+    }
+    if code == "FINSPECT_ARGUMENT" {
+        ExitCode::from(2)
+    } else {
+        ExitCode::FAILURE
     }
 }
 
