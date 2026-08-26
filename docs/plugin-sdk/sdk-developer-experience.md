@@ -229,7 +229,9 @@ JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路�
 `preview` 已通过 shell 所属的专用 preview-host 运行正式 renderer、Slint、Wasmtime 与 Broker；CLI 只负责
 构建、校验和原子临时安装，不链接宿主 capability 实现。`dev` 在文件签名变化后先准备新预览，只有新
 宿主进程成功派生才替换上一代，构建失败时保留旧预览；每次替换递增 generation 并输出版本化事件。
-`run` 将在持久实例切片中接入同一契约。
+`run` 构建并原子安装项目、创建固定到精确 Installation 的 desired-running 持久实例，再由 shell 宿主
+从 SQLite 重读实例、推进 generation、复验 digest/Config 后启动真实窗口。相同 id/version 仅在内容
+digest 一致时复用安装，不同内容必须提升版本；重复 `run` 创建彼此隔离的新实例。
 Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快照，仓库测试要求二者逐字节一致；
 干净目录测试从 `floatile-sdk`、`floatile-sdk-macros` 与 `floatile-ui-schema` 的独立 Cargo 包快照解析
 模板依赖，不使用仓库内部 path。许可 ADR 通过前这些包只用于仓库内可发布性验证，不授权上传 registry。

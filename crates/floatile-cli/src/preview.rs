@@ -135,7 +135,7 @@ struct HostOutcome {
     detail: String,
 }
 
-fn preview_host_path() -> Result<PathBuf, PreviewError> {
+pub(crate) fn preview_host_path() -> Result<PathBuf, PreviewError> {
     if let Some(path) = std::env::var_os("FLOATTILE_PREVIEW_HOST").filter(|value| !value.is_empty())
     {
         return Ok(PathBuf::from(path));

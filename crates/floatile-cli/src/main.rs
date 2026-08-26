@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use floatile_cli::{
     CommandErrorReport, build, check, dev, inspect, install, instance, package, preview, project,
-    test,
+    run, test,
 };
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
 
@@ -14,7 +14,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|preview|schema> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|preview|run|schema> [参数]"
         );
         return ExitCode::from(2);
     }
@@ -29,6 +29,7 @@ fn main() -> ExitCode {
         "dev" => cmd_dev(&args[2..]),
         "test" => cmd_test(&args[2..]),
         "preview" => cmd_preview(&args[2..]),
+        "run" => cmd_run(&args[2..]),
         "schema" => cmd_schema(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
@@ -822,6 +823,54 @@ fn cmd_preview(args: &[String]) -> ExitCode {
     }
 }
 
+fn cmd_run(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &["--duration-ms", "--db", "--store"], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FRUN_ARGUMENT", &detail, json, true),
+    };
+    let project = positionals
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let duration_ms = match option_u64(args, "--duration-ms", 24 * 60 * 60 * 1_000) {
+        Ok(value) if value > 0 => value,
+        Ok(_) => return render_basic_error("FRUN_ARGUMENT", "运行时限必须大于 0", json, true),
+        Err(detail) => return render_basic_error("FRUN_ARGUMENT", &detail, json, true),
+    };
+    let (default_database, default_store) = match run::default_run_paths() {
+        Ok(paths) => paths,
+        Err(error) => return render_basic_error(error.code(), error.public_detail(), json, false),
+    };
+    let database = option_path(args, "--db").unwrap_or(default_database);
+    let store = option_path(args, "--store").unwrap_or(default_store);
+    match run::run_project(
+        &project,
+        &database,
+        &store,
+        Duration::from_millis(duration_ms),
+    ) {
+        Ok(report) => {
+            if json {
+                println!("{}", serialize_json(&report));
+            } else if report.running {
+                println!(
+                    "run: PASS instance={} {}@{}",
+                    report.instance_id, report.plugin_id, report.version
+                );
+            } else {
+                eprintln!("run: FAIL code={}", report.code);
+            }
+            if report.running {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
+    }
+}
+
 fn author_positionals<'a>(
     args: &'a [String],
     value_options: &[&str],
@@ -862,6 +911,13 @@ fn option_u64(args: &[String], name: &str, default: u64) -> Result<u64, String> 
         .ok_or_else(|| format!("{name} 缺少值"))?
         .parse()
         .map_err(|_| format!("{name} 必须是整数"))
+}
+
+fn option_path(args: &[String], name: &str) -> Option<PathBuf> {
+    args.iter()
+        .position(|argument| argument == name)
+        .and_then(|index| args.get(index + 1))
+        .map(PathBuf::from)
 }
 
 fn render_basic_error(code: &str, detail: &str, json: bool, argument_error: bool) -> ExitCode {

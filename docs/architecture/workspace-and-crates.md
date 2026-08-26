@@ -167,6 +167,8 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - `preview/dev` 由 CLI 完成 build、包安全校验和原子临时安装，再派生 shell 所属的
   `floatile-preview-host` 子进程；子进程使用正式 renderer、Slint、Wasmtime 与 Permission Broker。
   两侧只通过稳定 JSON 和已验证 Installation 交接，保持 CLI 不链接宿主 capability 实现。
+- `run` 复用同一进程边界，但先在 SQLite 创建精确 InstallationRef 的持久实例；宿主从数据库重读并
+  推进 generation 后再通过 PluginManager 复验安装和 Config，不接受 CLI 直接传入的运行时对象。
 
 ### 3.12 `floatile-renderer`
 

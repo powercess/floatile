@@ -13,6 +13,7 @@ pub mod output;
 pub mod package;
 pub mod preview;
 pub mod project;
+pub mod run;
 pub mod test;
 
 pub use build::{BuildError, build_project, package};
@@ -30,4 +31,5 @@ pub use preview::{PreviewError, PreviewReport, PreviewSession, preview_project};
 pub use project::{
     ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,
 };
+pub use run::{RunError, RunReport, default_run_paths, run_project};
 pub use test::{TestError, TestPhases, TestStatus, test_project};
