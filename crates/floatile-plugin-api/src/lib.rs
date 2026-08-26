@@ -6,7 +6,7 @@
 //!
 //! `bindgen!` 生成：
 //! - `FloatileWidget`：组件加载/实例化入口
-//! - `HostLog` / `HostStorage` / `HostTimer` / `HostMetrics` / `HostTheme`：
+//! - `HostLog` / `HostStorage` / `HostTimer` / `HostOperation` / `HostMetrics` / `HostTheme`：
 //!   宿主能力 trait，由 `floatile-runtime` 经 PermissionBroker 实现
 
 wasmtime::component::bindgen!({
@@ -20,7 +20,7 @@ wasmtime::component::bindgen!({
 /// 宿主要求的引擎 API 版本；与 `floatile-sdk::ENGINE_API_VERSION` 一致，
 /// 二者都来自 `wit/floatile-widget.wit` 的 package 版本。宿主加载插件时校验
 /// 插件的 `engineApiVersion`：major 不匹配拒绝加载，minor 兼容时按能力降级。
-pub const ENGINE_API_VERSION: &str = "1.0.0";
+pub const ENGINE_API_VERSION: &str = "1.1.0";
 
 #[cfg(test)]
 mod tests {
@@ -30,6 +30,6 @@ mod tests {
     fn engine_api_version_matches_wit_package() {
         // 该值必须与 wit/floatile-widget.wit 的 package 版本同步；
         // 修改 WIT 时本测试与 SDK 常量一起更新（CI 校验两者一致）。
-        assert_eq!(ENGINE_API_VERSION, "1.0.0");
+        assert_eq!(ENGINE_API_VERSION, "1.1.0");
     }
 }

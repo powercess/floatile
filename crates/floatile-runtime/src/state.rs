@@ -1,18 +1,22 @@
 //! 实例宿主状态与 WIT host adapter 实现。
 //!
-//! `InstanceHostState` 是 Store 的数据类型，实现全部七个宿主 import trait。
+//! `InstanceHostState` 是 Store 的数据类型，实现全部宿主 import trait。
 //! 所有能力调用经 `Broker` 授权并审计；`host-ui` 的 State Patch 在这里原子
 //! 应用并把有界 `UiUpdate` 投递到 UI 通道。
 
 use std::time::Instant;
 
+use floatile_core::OperationId;
 use floatile_core::types::InstanceId;
 use floatile_plugin_api::floatile::widget::{
-    host_clock, host_log, host_metrics, host_storage, host_theme, host_timer, host_ui,
+    host_clock, host_log, host_metrics, host_operation, host_storage, host_theme, host_timer,
+    host_ui,
 };
 use floatile_services::broker::Broker;
 use floatile_services::errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
-use floatile_services::{LogLevel, MemorySnapshot};
+use floatile_services::{
+    LogLevel, MemorySnapshot, OperationCancelError, OperationSubmitError, OperationTakeError,
+};
 use floatile_ui_schema::schema::JsonSchema;
 use floatile_ui_schema::{
     MAX_PATCH_BYTES, MAX_STATE_BYTES, MAX_UPDATE_RATE_PER_SEC, merge_patch, validate_value,
@@ -234,6 +238,64 @@ impl host_storage::Host for InstanceHostState {
 
     async fn delete(&mut self, key: String) -> Result<(), host_storage::StorageError> {
         self.broker.storage_delete(&key).map_err(map_storage)
+    }
+
+    async fn submit_get(
+        &mut self,
+        key: String,
+        timeout_ms: u64,
+    ) -> Result<u64, host_operation::OperationError> {
+        self.broker
+            .submit_storage_get(&key, std::time::Duration::from_millis(timeout_ms))
+            .map(OperationId::get)
+            .map_err(map_operation_submit)
+    }
+
+    async fn take_get_result(
+        &mut self,
+        id: u64,
+    ) -> Result<Option<String>, host_operation::OperationError> {
+        let id = OperationId::new(id).ok_or(host_operation::OperationError::InvalidOperationId)?;
+        self.broker
+            .take_storage_get_result(id)
+            .map_err(map_operation_take)
+    }
+}
+
+fn map_operation_submit(error: OperationSubmitError) -> host_operation::OperationError {
+    match error {
+        OperationSubmitError::PermissionDenied(_) => host_operation::OperationError::NotAllowed,
+        OperationSubmitError::InvalidInput => host_operation::OperationError::InvalidInput,
+        OperationSubmitError::QueueFull => host_operation::OperationError::QueueFull,
+        OperationSubmitError::InvalidDeadline => host_operation::OperationError::InvalidDeadline,
+        OperationSubmitError::Unavailable => host_operation::OperationError::Unavailable,
+        OperationSubmitError::IdExhausted => host_operation::OperationError::Internal,
+    }
+}
+
+fn map_operation_take(error: OperationTakeError) -> host_operation::OperationError {
+    match error {
+        OperationTakeError::NotAvailable => host_operation::OperationError::ResultNotAvailable,
+        OperationTakeError::CapabilityMismatch | OperationTakeError::TypeMismatch => {
+            host_operation::OperationError::CapabilityMismatch
+        }
+        OperationTakeError::PermissionDenied(_) => host_operation::OperationError::NotAllowed,
+        OperationTakeError::Unavailable => host_operation::OperationError::Unavailable,
+    }
+}
+
+impl host_operation::Host for InstanceHostState {
+    async fn cancel(&mut self, id: u64) -> Result<(), host_operation::OperationError> {
+        let id = OperationId::new(id).ok_or(host_operation::OperationError::InvalidOperationId)?;
+        self.broker
+            .cancel_operation_by_id(id)
+            .map_err(|error| match error {
+                OperationCancelError::NotActive => host_operation::OperationError::NotActive,
+                OperationCancelError::PermissionDenied(_) => {
+                    host_operation::OperationError::NotAllowed
+                }
+                OperationCancelError::Unavailable => host_operation::OperationError::Unavailable,
+            })
     }
 }
 

@@ -64,7 +64,7 @@
   completion、实例重启、提交/结果/actor 队列过载和后续工作存活。FTUI 解析/校验/renderer 已移到
   准备线程。
 - 剩余：Slint 1.17 `ComponentDefinition` 含 `Rc`、不可跨线程，宿主生成的有界源码仍须在 UI executor
-  编译；Operation 正式 WIT/SDK/guest dispatch、动态撤权和宿主重启恢复仍未实现；需回填真实插件
+  编译；Operation v1.1 WIT/SDK/guest dispatch 已接入首个 `storage:read` typed adapter，动态撤权和宿主重启恢复仍未实现；需回填真实插件
   编译时延与三平台 UI heartbeat，超预算时再决策通用预编译 renderer。
 
 ### R12. Slint 字体/SVG 传递依赖停止维护 — 高（公开分发/第三方资源前）

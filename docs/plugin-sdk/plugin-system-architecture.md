@@ -179,9 +179,9 @@ manifest 的显式权限声明与最终用户 grant 仍是权威来源。
 匹配 `plugin + instance + generation` 的 actor 非阻塞投递终态元数据；typed payload 保留在宿主，
 由同一 capability 的 `take-result` 一次性领取。旧 generation、完成队列满或 actor 关闭均丢弃结果。
 
-当前只实现了 `core/services/runtime` 的宿主 spike 与 reference vectors；`wit/`、SDK 和真实 guest
-completion dispatch 尚未变化。正式接入必须从 WIT 唯一源生成，不得添加临时 host function、通用
-JSON payload 或无 Broker 的 service 执行入口。
+v1.1 已从 WIT 唯一源接入通用 cancel、元数据 completion 和首个 `storage:read` typed submit/take，
+并通过真实 guest fixture 验证往返。网络与 Connection 等后续能力仍必须增加各自的 typed adapter，
+不得添加临时 host function、通用 JSON payload 或无 Broker 的 service 执行入口。
 
 ## 8. Rust 与 TypeScript 执行
 

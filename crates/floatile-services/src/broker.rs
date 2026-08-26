@@ -250,6 +250,35 @@ impl Broker {
         self.storage.delete(key)
     }
 
+    /// 提交 typed `storage:read` Operation。key 在入队前校验，值只保留在宿主 registry。
+    pub fn submit_storage_get(
+        &self,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<OperationId, OperationSubmitError> {
+        StorageService::valid_key(key).map_err(|_| OperationSubmitError::InvalidInput)?;
+        let storage = self.storage.clone();
+        let key = key.to_owned();
+        self.submit_operation(
+            CapabilityId::StorageRead,
+            Some(&CapabilityParams::Storage {
+                keys: vec![key.clone()],
+                max_bytes: 0,
+            }),
+            timeout,
+            &format!("operation=storage-get key={}B", key.len()),
+            async move { storage.get(&key).map_err(|_| OperationFailure::Internal) },
+        )
+    }
+
+    /// 一次性领取 typed `storage:read` Operation 结果，并在领取时重新授权。
+    pub fn take_storage_get_result(
+        &self,
+        id: OperationId,
+    ) -> Result<Option<String>, OperationTakeError> {
+        self.take_operation_result(CapabilityId::StorageRead, id)
+    }
+
     pub fn metrics_cpu_percent(&mut self) -> Result<f64, MetricsError> {
         self.authorize(
             CapabilityId::SystemCpu,
@@ -306,7 +335,9 @@ impl Broker {
                 OperationSubmitError::QueueFull | OperationSubmitError::IdExhausted => {
                     DenyReason::QuotaExceeded
                 }
-                OperationSubmitError::InvalidDeadline => DenyReason::InvalidInput,
+                OperationSubmitError::InvalidInput | OperationSubmitError::InvalidDeadline => {
+                    DenyReason::InvalidInput
+                }
                 OperationSubmitError::Unavailable => DenyReason::EnvironmentUnavailable,
             };
             self.audit.record(
@@ -331,6 +362,18 @@ impl Broker {
             .as_ref()
             .ok_or(OperationCancelError::Unavailable)?
             .cancel(capability, id)
+    }
+
+    /// WIT 通用 cancel：capability 由当前实例 registry 中的宿主记录解析，guest 不能伪造。
+    pub fn cancel_operation_by_id(&self, id: OperationId) -> Result<(), OperationCancelError> {
+        let operations = self
+            .operations
+            .as_ref()
+            .ok_or(OperationCancelError::Unavailable)?;
+        let capability = operations
+            .active_capability(id)
+            .ok_or(OperationCancelError::NotActive)?;
+        self.cancel_operation(capability, id)
     }
 
     /// capability-specific adapter 一次性领取 typed result；领取时重新授权，支持未来动态撤权。
@@ -406,7 +449,8 @@ fn redact_size(value: &str) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use floatile_core::{CapabilityParams, Grants, InstanceId, narrow_instance};
+    use crate::operation::OperationLimits;
+    use floatile_core::{CapabilityParams, Grants, InstanceId, OperationOwner, narrow_instance};
     use std::sync::{Arc, Mutex};
 
     fn test_grants() -> InstanceGrant {
@@ -478,6 +522,44 @@ mod tests {
         Arc::new(move |id| {
             delivered.lock().unwrap().push(id);
         })
+    }
+
+    #[tokio::test]
+    async fn typed_storage_operation_is_scoped_and_one_shot() {
+        let owner = OperationOwner::new(PluginId("dev.floatile.clock".into()), InstanceId(7), 3);
+        let (registry, mut completions) =
+            OperationRegistry::new(owner, OperationLimits::default()).unwrap();
+        let mut broker = Broker::new(
+            PluginId("dev.floatile.clock".into()),
+            3,
+            test_grants(),
+            AuditSink::new("dev.floatile.clock", 7),
+            sink(),
+        )
+        .with_operations(registry)
+        .unwrap();
+        broker.storage_set("settings", "dark").unwrap();
+
+        let id = broker
+            .submit_storage_get("settings", Duration::from_secs(1))
+            .unwrap();
+        let completion = completions.recv().await.unwrap();
+        assert_eq!(completion.id, id);
+        assert_eq!(
+            broker.take_storage_get_result(id).unwrap().as_deref(),
+            Some("dark")
+        );
+        assert_eq!(
+            broker.take_storage_get_result(id),
+            Err(OperationTakeError::NotAvailable)
+        );
+
+        assert!(matches!(
+            broker.submit_storage_get("other", Duration::from_secs(1)),
+            Err(OperationSubmitError::PermissionDenied(
+                DenyReason::ScopeViolation
+            ))
+        ));
     }
 
     #[test]

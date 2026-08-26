@@ -16,7 +16,10 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-use floatile_core::capability::{Grants, InstanceGrant, TrustLevel, narrow_instance};
+use floatile_core::capability::{
+    CapabilityId, CapabilityParams, EffectiveGrant, Grant, Grants, InstanceGrant, TrustLevel,
+    narrow_instance,
+};
 use floatile_core::types::{InstanceId, PluginId};
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
 use floatile_runtime::{WidgetConfig, WidgetManager};
@@ -73,6 +76,23 @@ fn evil_grants_none(instance: u64) -> InstanceGrant {
         caps: vec![],
     };
     narrow_instance(&plugin, InstanceId(instance), vec![]).unwrap()
+}
+
+fn storage_read_grants(instance: u64) -> InstanceGrant {
+    let grant = Grant {
+        capability: CapabilityId::StorageRead,
+        params: Some(CapabilityParams::Storage {
+            keys: vec!["settings".into()],
+            max_bytes: 0,
+        }),
+        effective: EffectiveGrant::DerivedFromInstall,
+    };
+    let plugin = Grants {
+        plugin: PluginId("dev.floatile.evil".into()),
+        trust: TrustLevel::Dev,
+        caps: vec![grant.clone()],
+    };
+    narrow_instance(&plugin, InstanceId(instance), vec![grant]).unwrap()
 }
 
 fn spawn_evil(
@@ -150,6 +170,25 @@ async fn denied_capability_persists_audit_and_host_survives() {
     let handle2 = spawn_evil(&manager2, 9, evil_grants_none(9), json!({"mode": "deny"}));
     handle2.start().await.expect("新实例 start 应成功");
     handle2.shutdown().await.expect("新实例 shutdown 正常");
+}
+
+/// 正式 WIT Operation：guest submit → metadata completion → typed one-shot take → State 更新。
+#[tokio::test(flavor = "multi_thread")]
+async fn storage_operation_round_trips_through_guest_contract() {
+    let manager = WidgetManager::new().unwrap();
+    let mut handle = spawn_evil(
+        &manager,
+        71,
+        storage_read_grants(71),
+        json!({"mode":"operation"}),
+    );
+    handle.start().await.expect("operation fixture 应启动");
+    let update = tokio::time::timeout(Duration::from_secs(2), handle.ui_updates().recv())
+        .await
+        .expect("operation completion 应在预算内回到 guest")
+        .expect("应收到 operation 完成后的 State 更新");
+    assert_eq!(update.state["mode"], json!("operation-complete"));
+    handle.shutdown().await.expect("实例应正常停止");
 }
 
 /// 超限/类型错误/未知字段 State Patch → 被拒，宿主存活，状态不部分改写。

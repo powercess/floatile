@@ -130,8 +130,8 @@ Broker 实现，不以某个参考插件急需为理由绕过注册表。
 
 采用第 2 种：插件回调提交请求并获得 `operation-id` 后立即返回；宿主重新授权、执行和限流；只含
 元数据的有界 completion signal 回到原实例，插件再通过 capability-specific typed `take-result`
-一次性领取结果并更新 State。宿主模型已由 reference fixture 验证；正式 WIT/SDK 仍须在下一切片
-通过唯一源和双端 contract tests 落地，不能把本 spike 视为插件可用契约。
+一次性领取结果并更新 State。宿主模型已由 reference fixture 验证；v1.1 已通过 WIT 唯一源、Rust SDK
+和真实 guest contract test 落地首个 `storage:read` typed adapter。后续 capability 仍不得绕开该模型。
 
 Operation 基础设施必须统一处理：
 
@@ -168,7 +168,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 |---|---|---|---|---|---|
 | PP-M0 | 战略与事实源基线 | 进行中 | 本路线、P0 范围关系、稳定引用和 Agent 接手协议 | 事实源互链；不存在把规划写成已实现的表述 | `docs/` |
 | PP-M1 | 插件内核与真实多实例 | 已完成（Xvfb 验证） | Package/Installation/Instance 分离；实例 CRUD、生命周期、持久化和故障隔离 | 同包多实例可独立配置、启动、停止、恢复和删除；迁移及失败测试通过 | `core`、`store`、`runtime`、`shell`、CLI |
-| PP-M2 | Broker 化异步 Operation | 进行中（宿主 spike 完成） | ADR-0004；operation registry、队列、取消、deadline、generation 和 completion bridge 已验证；正式 WIT/SDK 待落地 | reference fixture 覆盖成功、拒绝、超时、取消、迟到结果、实例重启和过载；host/guest contract vectors 通过 | `core`、`runtime`、`services`、WIT、SDK |
+| PP-M2 | Broker 化异步 Operation | 已完成（自动化契约验证） | ADR-0004；operation registry、队列、取消、deadline、generation、v1.1 WIT/SDK、元数据 completion 与首个 `storage:read` typed adapter | reference fixture 覆盖成功、拒绝、超时、取消、迟到结果、实例重启和过载；host/guest contract vectors 通过 | `core`、`runtime`、`services`、WIT、SDK |
 | PP-M3 | Capability Registry 单源 | 规划中 | 统一 capability 元数据，生成/校验 manifest、Broker、SDK 文档与 contract vectors | 新增能力无需在多处手写语义；恶意插件和配额测试证明默认拒绝 | `core`、`services`、plugin API、SDK、CLI |
 | PP-M4 | Rust 作者闭环 | 规划中 | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
 | PP-M5 | 外部数据平台 | 规划中 | Connection、Credential Vault、HTTPS Broker、调度、缓存、重试、限流和连接健康状态 | AI 余额参考插件只使用通用能力，且 secret 不进入 guest、日志、State 或包 | `core`、`store`、`services`、shell、WIT、SDK |
@@ -191,8 +191,8 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
 
 - Windows、macOS、Wayland 与真实 Linux 桌面的控制面交互和动态多窗口仍缺实测；
 - 生成项目和 `dev` 流程尚不能证明仓库外作者可完成预览到运行闭环；
-- Broker 化 Operation 的宿主 registry、预算、取消、deadline、generation completion bridge 与失败
-  fixture 已完成，但生产 WIT/SDK/guest event 尚未接入，因此仍不是插件可用契约；
+- Broker 化 Operation 已通过 v1.1 WIT/SDK 暴露通用 cancel、元数据 completion 与首个
+  `storage:read` typed submit/take；更多 capability adapter、动态撤权与真实容量数据仍待后续切片；
 - 网络、Connection 与凭证托管尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。
@@ -207,8 +207,8 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
    observed starting/running/failed/stopped 状态、手动 retry、Config schema 表单和 Xvfb 动态双窗口恢复证据；
 6. `spike(runtime): validate brokered async operations`（PP-M2，本切片）：ADR-0004、宿主 Operation
    registry、Broker 单一入口、有界 completion bridge 与 reference failure vectors；正式 WIT 不变；
-7. `feat(runtime): expose typed brokered operations through WIT`（PP-M2，下一 PR）：从 `wit/` 单源增加
-   operation ID/cancel/completion metadata 与首个 capability-specific typed submit/take，联动 Rust SDK、
+7. `feat(runtime): expose typed brokered operations through WIT`（PP-M2，本切片）：从 `wit/` 单源增加
+   operation ID/cancel/completion metadata 与首个 `storage:read` typed submit/take，联动 Rust SDK、
    plugin API、runtime actor 和 host/guest contract fixture；
 8. `refactor(capabilities): establish single-source capability registry`（PP-M3）；
 9. `feat(cli): complete the Rust plugin author loop`（PP-M4）；

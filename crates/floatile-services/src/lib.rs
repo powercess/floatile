@@ -23,7 +23,7 @@ pub use log::{LogLevel, LogService};
 pub use metrics::{MemorySnapshot, MetricsService};
 pub use operation::{
     OperationCancelError, OperationCompletionReceiver, OperationLimits, OperationRegistry,
-    OperationServiceError, OperationSubmitError, OperationTakeError,
+    OperationResultDiscarder, OperationServiceError, OperationSubmitError, OperationTakeError,
 };
 pub use storage::StorageService;
 pub use theme::ThemeService;

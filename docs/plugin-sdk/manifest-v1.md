@@ -34,7 +34,7 @@ manifest 是安装与运行时的显式事实，不是开发者主要编辑界�
     "id": "dev.floatile",
     "name": "Floatile Labs"
   },
-  "engineApiVersion": "1.0.0",
+  "engineApiVersion": "1.1.0",
   "uiApiVersion": "1.0.0",
   "type": "widget",
   "entrypoints": {

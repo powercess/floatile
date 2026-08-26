@@ -16,11 +16,20 @@ use std::time::Duration;
 
 use floatile_core::capability::InstanceGrant;
 use floatile_core::types::{InstanceId, PluginId};
+use floatile_core::{
+    CapabilityId, OperationCompletion, OperationFailure, OperationOwner, OperationTerminal,
+};
 use floatile_plugin_api::FloatileWidget;
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{
-    WidgetEvent, WidgetInit, WidgetMode,
+    GuestWidgetInstance, WidgetEvent, WidgetInit, WidgetInstance, WidgetMode,
 };
-use floatile_services::{AuditListener, AuditSink, Broker, TimerSink};
+use floatile_plugin_api::floatile::widget::host_operation::{
+    OperationCapability, OperationCompletion as WitOperationCompletion,
+    OperationTerminal as WitOperationTerminal,
+};
+use floatile_services::{
+    AuditListener, AuditSink, Broker, OperationLimits, OperationRegistry, TimerSink,
+};
 use floatile_ui_schema::schema::JsonSchema;
 use floatile_ui_schema::validate_value;
 use serde_json::Value;
@@ -208,6 +217,7 @@ enum InstanceCommand {
     Start(oneshot::Sender<Result<(), InstanceError>>),
     Event(WidgetEvent, oneshot::Sender<Result<(), InstanceError>>),
     Timer(u32),
+    OperationCompleted(OperationCompletion),
     Shutdown,
 }
 
@@ -283,8 +293,9 @@ async fn run_actor(
 
     // Broker：所有宿主能力入口；计时器到期经 sink 送回 actor 队列。
     let sink_plugin = plugin_id.clone();
+    let timer_actor = actor_tx.clone();
     let sink: TimerSink = Arc::new(move |id| {
-        if actor_tx.try_send(InstanceCommand::Timer(id)).is_err() {
+        if timer_actor.try_send(InstanceCommand::Timer(id)).is_err() {
             tracing::warn!(
                 plugin_id = %sink_plugin,
                 instance_id = instance_id,
@@ -298,13 +309,58 @@ async fn run_actor(
     if let Some(listener) = &audit_listener {
         audit = audit.with_listener(Arc::clone(listener));
     }
+    let owner = OperationOwner::new(config.plugin.clone(), config.instance, config.generation);
+    let (operations, mut operation_completions) =
+        OperationRegistry::new(owner, OperationLimits::default()).map_err(|error| {
+            RuntimeError::InstanceFailed(format!("初始化 Operation registry 失败: {error}"))
+        })?;
+    let operation_actor = actor_tx.clone();
+    let completion_audit = audit.clone();
+    let completion_results = operations.result_discarder();
     let broker = Broker::new(
         config.plugin.clone(),
         config.generation,
         config.grants,
         audit,
         sink,
-    );
+    )
+    .with_operations(operations)
+    .map_err(|error| {
+        RuntimeError::InstanceFailed(format!("绑定 Operation registry 失败: {error}"))
+    })?;
+    tokio::spawn(async move {
+        while let Some(completion) = operation_completions.recv().await {
+            let capability = completion.capability;
+            let id = completion.id;
+            let terminal = completion.terminal;
+            let disposition =
+                match operation_actor.try_send(InstanceCommand::OperationCompleted(completion)) {
+                    Ok(()) => floatile_core::OperationCompletionDisposition::Delivered,
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        completion_results.discard(id);
+                        floatile_core::OperationCompletionDisposition::QueueFull
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        completion_results.discard(id);
+                        floatile_core::OperationCompletionDisposition::ActorClosed
+                    }
+                };
+            completion_audit.record(
+                capability,
+                true,
+                None,
+                &format!(
+                    "operation={} terminal={} delivery={}",
+                    id.get(),
+                    terminal.code(),
+                    disposition.code()
+                ),
+            );
+            if disposition == floatile_core::OperationCompletionDisposition::ActorClosed {
+                break;
+            }
+        }
+    });
 
     let initial_state_json = serde_json::to_string(&config.initial_state)
         .map_err(|e| RuntimeError::InstanceFailed(format!("initial state 序列化失败: {e}")))?;
@@ -406,6 +462,21 @@ async fn run_actor(
                     store.data_mut().timer_complete(id);
                 }
             }
+            InstanceCommand::OperationCompleted(completion) => {
+                if handle_operation_completion(
+                    &mut store,
+                    &widget,
+                    resource,
+                    completion,
+                    fuel_per_call,
+                    call_timeout,
+                )
+                .await
+                .is_err()
+                {
+                    failed = true;
+                }
+            }
             InstanceCommand::Shutdown => {
                 stopped = true;
                 break;
@@ -428,6 +499,50 @@ async fn run_actor(
         Err(RuntimeError::InstanceFailed(
             "actor 因 trap/超时/终止退出".to_owned(),
         ))
+    }
+}
+
+async fn handle_operation_completion(
+    store: &mut Store<state::InstanceHostState>,
+    widget: &GuestWidgetInstance<'_>,
+    resource: WidgetInstance,
+    completion: OperationCompletion,
+    fuel_per_call: u64,
+    call_timeout: Duration,
+) -> Result<(), InstanceError> {
+    let capability = match completion.capability {
+        CapabilityId::StorageRead => OperationCapability::StorageRead,
+        _ => {
+            store.data().broker.discard_operation_result(completion.id);
+            return Ok(());
+        }
+    };
+    let terminal = match completion.terminal {
+        OperationTerminal::Succeeded => WitOperationTerminal::Succeeded,
+        OperationTerminal::Failed(OperationFailure::Timeout) => WitOperationTerminal::Timeout,
+        OperationTerminal::Failed(OperationFailure::Cancelled) => WitOperationTerminal::Cancelled,
+        OperationTerminal::Failed(OperationFailure::Unavailable) => {
+            WitOperationTerminal::Unavailable
+        }
+        OperationTerminal::Failed(OperationFailure::Internal) => WitOperationTerminal::Internal,
+        OperationTerminal::Failed(OperationFailure::ResultDropped) => {
+            WitOperationTerminal::ResultDropped
+        }
+    };
+    let event = WidgetEvent::OperationCompleted(WitOperationCompletion {
+        id: completion.id.get(),
+        capability,
+        terminal,
+    });
+    reset_call_budget(store, fuel_per_call, call_timeout)?;
+    match widget.call_handle_event(store, resource, &event).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(guest_err)) => Err(InstanceError::Rejected(format!("{guest_err:?}"))),
+        Err(wasm_err) => Err(instance_call_error(
+            "operation-completed",
+            call_timeout,
+            wasm_err,
+        )),
     }
 }
 
@@ -494,7 +609,9 @@ fn drain_pending(cmd_rx: &mut mpsc::Receiver<InstanceCommand>, message: &str) {
             InstanceCommand::Start(tx) | InstanceCommand::Event(_, tx) => {
                 let _ = tx.send(Err(InstanceError::Failed(message.to_owned())));
             }
-            _ => {}
+            InstanceCommand::Timer(_)
+            | InstanceCommand::OperationCompleted(_)
+            | InstanceCommand::Shutdown => {}
         }
     }
 }

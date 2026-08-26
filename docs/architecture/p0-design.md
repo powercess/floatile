@@ -78,7 +78,7 @@ plugin package
 - runtime 每实例 bounded queue 严格串行；timeout/cancel 后才能处理下一事件。
 - 跨回调长任务由宿主 Operation worker 托管；提交、完成、并发和 retained result 分别有界。完成信号
   不携带 payload，runtime 仅向相同 instance generation 非阻塞投递；旧代、满队列和关闭 actor 的结果
-  立即丢弃。当前是 ADR-0004 宿主 spike，正式 WIT/SDK 尚未接入。
+  立即丢弃。v1.1 已从 WIT 单源接入通用 cancel、元数据 completion 与首个 `storage:read` typed adapter。
 - State Patch 在 worker 上解析、原子应用和 schema 校验，runtime State 为权威；SDK mirror 只在 host
   确认后提交，主线程只应用已验证 snapshot/diff。
 - worker 每轮最多转发 8 个 UI event，再让出 State 投影机会；queue full、UI 拥塞、shutdown 和
