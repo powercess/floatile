@@ -8,9 +8,10 @@ pub mod operation;
 pub mod types;
 
 pub use capability::{
-    CapabilityError, CapabilityId, CapabilityParams, DenyReason, EffectiveGrant, Grant, Grants,
-    InstanceGrant, PermissionDecision, TrustLevel, decide, narrow_instance,
-    parse_capability_params,
+    CAPABILITY_REGISTRY, CapabilityDefinition, CapabilityError, CapabilityExecution,
+    CapabilityExposure, CapabilityId, CapabilityParamKind, CapabilityParams, CapabilityRisk,
+    DenyReason, EffectiveGrant, Grant, Grants, InstanceGrant, PermissionDecision, TrustLevel,
+    decide, narrow_instance, parse_capability_params,
 };
 pub use instance::{
     InstallationDigest, InstallationRef, InstanceConfig, InstanceDesiredState, InstanceModelError,

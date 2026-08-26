@@ -10,7 +10,10 @@ use std::fmt;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::capability::{CapabilityId, parse_capability_params};
+use crate::capability::{
+    CAPABILITY_REGISTRY, CapabilityExposure, CapabilityId, CapabilityParamKind,
+    parse_capability_params,
+};
 use crate::constants::{ENGINE_API_VERSION, MANIFEST_VERSION};
 use crate::types::{LogicalSize, PluginId};
 
@@ -392,6 +395,13 @@ fn validate_package_path(path: &str) -> Result<(), ManifestError> {
 pub fn manifest_json_schema() -> serde_json::Value {
     let mut root = schemars::schema_for!(Manifest).to_value();
     if let Some(obj) = root.as_object_mut() {
+        if let Some(permission) = obj
+            .get_mut("$defs")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|definitions| definitions.get_mut("PermissionDecl"))
+        {
+            *permission = permission_schema_from_registry();
+        }
         obj.insert(
             "$schema".into(),
             serde_json::json!("http://json-schema.org/draft-07/schema#"),
@@ -417,6 +427,54 @@ pub fn manifest_json_schema() -> serde_json::Value {
         obj.insert("title".into(), serde_json::json!("Floatile manifest v1"));
     }
     root
+}
+
+fn permission_schema_from_registry() -> serde_json::Value {
+    let alternatives: Vec<_> = CAPABILITY_REGISTRY
+        .iter()
+        .filter(|definition| definition.exposure == CapabilityExposure::Declared)
+        .map(|definition| {
+            let params = match definition.params {
+                CapabilityParamKind::None => serde_json::Value::Bool(false),
+                CapabilityParamKind::Storage => serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "keys": { "type": "array", "items": { "type": "string" } },
+                        "maxBytes": { "type": "integer", "minimum": 0 }
+                    }
+                }),
+                CapabilityParamKind::Timer => serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "maxPerMinute": { "type": "integer", "minimum": 0, "maximum": u32::MAX },
+                        "maxActive": { "type": "integer", "minimum": 0, "maximum": u32::MAX }
+                    }
+                }),
+                CapabilityParamKind::Metrics => serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "sampleRateHz": { "type": "integer", "minimum": 0, "maximum": u32::MAX }
+                    }
+                }),
+            };
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["capability"],
+                "properties": {
+                    "capability": { "const": definition.name },
+                    "params": params
+                }
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "description": "声明能力（由 Capability Registry 生成）",
+        "oneOf": alternatives
+    })
 }
 
 /// 用生成的独立 JSON Schema 校验一个 manifest JSON（结构无 drift 的落地校验）。
@@ -509,6 +567,41 @@ mod tests {
             validate_manifest_json_with_schema(&value).is_err(),
             "manifest schema 应拒绝未知字段"
         );
+    }
+
+    #[test]
+    fn manifest_permission_schema_is_generated_from_declared_registry() {
+        let schema = manifest_json_schema();
+        let alternatives = schema["$defs"]["PermissionDecl"]["oneOf"]
+            .as_array()
+            .unwrap();
+        let actual: std::collections::BTreeSet<_> = alternatives
+            .iter()
+            .map(|alternative| {
+                alternative["properties"]["capability"]["const"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect();
+        let expected: std::collections::BTreeSet<_> = CAPABILITY_REGISTRY
+            .iter()
+            .filter(|definition| definition.exposure == CapabilityExposure::Declared)
+            .map(|definition| definition.name)
+            .collect();
+        assert_eq!(actual, expected);
+
+        for invalid in ["unknown:capability", "clock:read"] {
+            let mut value = serde_json::to_value(valid_manifest()).unwrap();
+            value["permissions"][0]["capability"] = json!(invalid);
+            value["permissions"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("params");
+            assert!(
+                validate_manifest_json_with_schema(&value).is_err(),
+                "schema 不应接受 {invalid}"
+            );
+        }
     }
 
     #[test]

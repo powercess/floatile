@@ -13,6 +13,7 @@ use floatile_core::manifest::{
     validate_manifest,
 };
 use floatile_core::types::LogicalSize;
+use floatile_core::{CAPABILITY_REGISTRY, CapabilityDefinition, CapabilityParamKind};
 use floatile_ui_schema::UI_API_VERSION;
 use serde::Deserialize;
 
@@ -74,14 +75,12 @@ pub struct PermissionCfg {
 
 /// `floatile.toml` 的权限段短名 → 完整 capability 名（manifest-v1 §3）。
 /// 未知段名返回 `None`，由调用方拒绝（不能静默忽略作者声明的能力）。
-fn section_to_capabilities(section: &str) -> Option<&'static [&'static str]> {
-    match section {
-        "timer" => Some(&["timer:schedule"]),
-        "theme" => Some(&["theme:subscribe"]),
-        "storage" => Some(&["storage:read", "storage:write"]),
-        "metrics" => Some(&["system:cpu", "system:memory"]),
-        _ => None,
-    }
+fn section_to_capabilities(section: &str) -> Option<Vec<&'static CapabilityDefinition>> {
+    let capabilities: Vec<_> = CAPABILITY_REGISTRY
+        .iter()
+        .filter(|definition| definition.author_section == Some(section))
+        .collect();
+    (!capabilities.is_empty()).then_some(capabilities)
 }
 
 /// 解析 `floatile.toml`。
@@ -100,31 +99,40 @@ pub fn generate_manifest(config: &ProjectConfig) -> Result<Manifest, ProjectErro
             .ok_or_else(|| ProjectError::UnknownCapability(section.clone()))?;
         for capability in capabilities {
             let mut params = serde_json::Map::new();
-            if !cfg.keys.is_empty() {
-                params.insert(
-                    "keys".into(),
-                    serde_json::Value::Array(
-                        cfg.keys
-                            .iter()
-                            .map(|k| serde_json::Value::String(k.clone()))
-                            .collect(),
-                    ),
-                );
-            }
-            if let Some(v) = cfg.max_bytes {
-                params.insert("maxBytes".into(), serde_json::json!(v));
-            }
-            if let Some(v) = cfg.max_per_minute {
-                params.insert("maxPerMinute".into(), serde_json::json!(v));
-            }
-            if let Some(v) = cfg.max_active {
-                params.insert("maxActive".into(), serde_json::json!(v));
-            }
-            if let Some(v) = cfg.sample_rate_hz {
-                params.insert("sampleRateHz".into(), serde_json::json!(v));
+            match capability.params {
+                CapabilityParamKind::None => {}
+                CapabilityParamKind::Storage => {
+                    if !cfg.keys.is_empty() {
+                        params.insert(
+                            "keys".into(),
+                            serde_json::Value::Array(
+                                cfg.keys
+                                    .iter()
+                                    .map(|k| serde_json::Value::String(k.clone()))
+                                    .collect(),
+                            ),
+                        );
+                    }
+                    if let Some(v) = cfg.max_bytes {
+                        params.insert("maxBytes".into(), serde_json::json!(v));
+                    }
+                }
+                CapabilityParamKind::Timer => {
+                    if let Some(v) = cfg.max_per_minute {
+                        params.insert("maxPerMinute".into(), serde_json::json!(v));
+                    }
+                    if let Some(v) = cfg.max_active {
+                        params.insert("maxActive".into(), serde_json::json!(v));
+                    }
+                }
+                CapabilityParamKind::Metrics => {
+                    if let Some(v) = cfg.sample_rate_hz {
+                        params.insert("sampleRateHz".into(), serde_json::json!(v));
+                    }
+                }
             }
             permissions.push(PermissionDecl {
-                capability: capability.to_string(),
+                capability: capability.name.to_owned(),
                 params: if params.is_empty() {
                     None
                 } else {
@@ -325,6 +333,51 @@ version = "0.1.0"
             generate_manifest(&config),
             Err(ProjectError::UnknownCapability(_))
         ));
+    }
+
+    #[test]
+    fn every_author_section_generates_registry_capabilities() {
+        let toml = r#"[plugin]
+id = "dev.floatile.all-capabilities"
+name = "All Capabilities"
+version = "0.1.0"
+
+[permissions.storage]
+keys = ["settings"]
+max_bytes = 1024
+
+[permissions.timer]
+max_per_minute = 60
+max_active = 2
+
+[permissions.theme]
+
+[permissions.metrics]
+sample_rate_hz = 2
+"#;
+        let config = parse_floatile_toml(toml).unwrap();
+        let manifest = generate_manifest(&config).unwrap();
+        let actual: std::collections::BTreeSet<_> = manifest
+            .permissions
+            .iter()
+            .map(|permission| permission.capability.as_str())
+            .collect();
+        let expected: std::collections::BTreeSet<_> = CAPABILITY_REGISTRY
+            .iter()
+            .filter(|definition| definition.author_section.is_some())
+            .map(|definition| definition.name)
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            manifest
+                .permissions
+                .iter()
+                .find(|permission| permission.capability == "system:memory")
+                .unwrap()
+                .params,
+            None,
+            "无参数能力不得继承同一作者段中其他能力的参数"
+        );
     }
 
     #[test]
