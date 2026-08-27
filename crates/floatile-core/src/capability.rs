@@ -23,6 +23,7 @@ pub enum CapabilityId {
     ThemeSubscribe,
     SystemCpu,
     SystemMemory,
+    NetworkHttps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -39,12 +40,14 @@ pub enum CapabilityParamKind {
     Storage,
     Timer,
     Metrics,
+    Network,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CapabilityRisk {
     Inherent,
     L0,
+    L2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -190,6 +193,19 @@ pub const CAPABILITY_REGISTRY: &[CapabilityDefinition] = &[
         author_section: Some("metrics"),
         audit_redaction: "result-bucket-only",
     },
+    CapabilityDefinition {
+        id: CapabilityId::NetworkHttps,
+        name: "network:https",
+        exposure: CapabilityExposure::Declared,
+        params: CapabilityParamKind::Network,
+        risk: CapabilityRisk::L2,
+        execution: CapabilityExecution::SyncAndOperation,
+        wit_interface: "host-http",
+        wit_functions: &["submit", "take-result"],
+        sdk_surface: "ctx.http",
+        author_section: Some("httpTemplates"),
+        audit_redaction: "template-origin-status-and-size-only",
+    },
 ];
 
 impl CapabilityId {
@@ -248,6 +264,13 @@ pub enum CapabilityParams {
     },
     /// system:cpu：采样频率上限（Hz）。
     Metrics { sample_rate_hz: u32 },
+    /// network:https：精确 HTTPS origin 白名单与宿主执行预算。
+    Network {
+        origins: Vec<String>,
+        max_requests_per_minute: u32,
+        max_response_bytes: u64,
+        max_timeout_ms: u64,
+    },
 }
 
 /// 授权来源（permission-model §2）。
@@ -450,6 +473,73 @@ pub fn parse_capability_params(
             }
             CapabilityParams::Metrics { sample_rate_hz }
         }
+        CapabilityParamKind::Network => {
+            let mut origins = Vec::new();
+            let mut max_requests_per_minute = 30;
+            let mut max_response_bytes = 256 * 1024;
+            let mut max_timeout_ms = 10_000;
+            for (k, v) in obj {
+                match k.as_str() {
+                    "origins" => {
+                        let values =
+                            v.as_array().ok_or_else(|| CapabilityError::InvalidParams {
+                                capability: capability.name(),
+                                detail: "`origins` 必须是字符串数组".to_owned(),
+                            })?;
+                        if values.is_empty() || values.len() > 16 {
+                            return Err(CapabilityError::InvalidParams {
+                                capability: capability.name(),
+                                detail: "`origins` 必须包含 1..=16 项".to_owned(),
+                            });
+                        }
+                        for value in values {
+                            let origin =
+                                value
+                                    .as_str()
+                                    .ok_or_else(|| CapabilityError::InvalidParams {
+                                        capability: capability.name(),
+                                        detail: "`origins` 元素必须是字符串".to_owned(),
+                                    })?;
+                            validate_https_origin(origin)?;
+                            if origins.iter().any(|item| item == origin) {
+                                return Err(CapabilityError::InvalidParams {
+                                    capability: capability.name(),
+                                    detail: format!("重复 origin `{origin}`"),
+                                });
+                            }
+                            origins.push(origin.to_owned());
+                        }
+                    }
+                    "maxRequestsPerMinute" => {
+                        max_requests_per_minute = bounded_u32(v, capability, k, 1, 600)?;
+                    }
+                    "maxResponseBytes" => {
+                        max_response_bytes = bounded_u64(v, capability, k, 1, 1024 * 1024)?;
+                    }
+                    "maxTimeoutMs" => {
+                        max_timeout_ms = bounded_u64(v, capability, k, 100, 30_000)?;
+                    }
+                    other => {
+                        return Err(CapabilityError::InvalidParams {
+                            capability: capability.name(),
+                            detail: format!("未知字段 `{other}`"),
+                        });
+                    }
+                }
+            }
+            if origins.is_empty() {
+                return Err(CapabilityError::InvalidParams {
+                    capability: capability.name(),
+                    detail: "`origins` 不得省略".to_owned(),
+                });
+            }
+            CapabilityParams::Network {
+                origins,
+                max_requests_per_minute,
+                max_response_bytes,
+                max_timeout_ms,
+            }
+        }
         // 无参数能力：任何 params 都拒绝。
         CapabilityParamKind::None => {
             return Err(CapabilityError::InvalidParams {
@@ -472,8 +562,77 @@ fn default_params(capability: CapabilityId) -> Result<Option<CapabilityParams>, 
             max_active: 8,
         },
         CapabilityParamKind::Metrics => CapabilityParams::Metrics { sample_rate_hz: 1 },
+        CapabilityParamKind::Network => {
+            return Err(CapabilityError::InvalidParams {
+                capability: capability.name(),
+                detail: "`origins` 不得省略".to_owned(),
+            });
+        }
         CapabilityParamKind::None => return Ok(None),
     }))
+}
+
+fn bounded_u32(
+    value: &serde_json::Value,
+    capability: CapabilityId,
+    field: &str,
+    min: u32,
+    max: u32,
+) -> Result<u32, CapabilityError> {
+    let value = value
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| CapabilityError::InvalidParams {
+            capability: capability.name(),
+            detail: format!("`{field}` 必须是 32 位整数"),
+        })?;
+    if !(min..=max).contains(&value) {
+        return Err(CapabilityError::InvalidParams {
+            capability: capability.name(),
+            detail: format!("`{field}` 必须在 {min}..={max}"),
+        });
+    }
+    Ok(value)
+}
+
+fn bounded_u64(
+    value: &serde_json::Value,
+    capability: CapabilityId,
+    field: &str,
+    min: u64,
+    max: u64,
+) -> Result<u64, CapabilityError> {
+    let value = value
+        .as_u64()
+        .ok_or_else(|| CapabilityError::InvalidParams {
+            capability: capability.name(),
+            detail: format!("`{field}` 必须是非负整数"),
+        })?;
+    if !(min..=max).contains(&value) {
+        return Err(CapabilityError::InvalidParams {
+            capability: capability.name(),
+            detail: format!("`{field}` 必须在 {min}..={max}"),
+        });
+    }
+    Ok(value)
+}
+
+fn validate_https_origin(origin: &str) -> Result<(), CapabilityError> {
+    let invalid = !origin.starts_with("https://")
+        || origin.len() > 255
+        || origin[8..].is_empty()
+        || origin[8..].contains('/')
+        || origin.contains('@')
+        || origin.contains('?')
+        || origin.contains('#')
+        || origin.chars().any(char::is_whitespace);
+    if invalid {
+        return Err(CapabilityError::InvalidParams {
+            capability: "network:https",
+            detail: format!("`{origin}` 不是精确 HTTPS origin"),
+        });
+    }
+    Ok(())
 }
 
 fn validate_storage_key(key: &str) -> Result<(), CapabilityError> {
@@ -563,6 +722,38 @@ pub fn decide(grant: Option<&Grant>, request: Option<&CapabilityParams>) -> Perm
             }
             PermissionDecision::Allowed
         }
+        (
+            CapabilityParams::Network {
+                origins,
+                max_requests_per_minute,
+                max_response_bytes,
+                max_timeout_ms,
+            },
+            CapabilityParams::Network {
+                origins: requested_origins,
+                max_requests_per_minute: requested_rate,
+                max_response_bytes: requested_bytes,
+                max_timeout_ms: requested_timeout,
+            },
+        ) => {
+            if !requested_origins
+                .iter()
+                .all(|origin| origins.contains(origin))
+            {
+                return PermissionDecision::Denied {
+                    reason: DenyReason::ScopeViolation,
+                };
+            }
+            if requested_rate > max_requests_per_minute
+                || requested_bytes > max_response_bytes
+                || requested_timeout > max_timeout_ms
+            {
+                return PermissionDecision::Denied {
+                    reason: DenyReason::QuotaExceeded,
+                };
+            }
+            PermissionDecision::Allowed
+        }
         _ => PermissionDecision::Denied {
             reason: DenyReason::InvalidInput,
         },
@@ -619,6 +810,27 @@ fn params_within(plugin: Option<&CapabilityParams>, instance: Option<&Capability
                 CapabilityParams::Metrics { sample_rate_hz },
                 CapabilityParams::Metrics { sample_rate_hz: ir },
             ) => ir <= sample_rate_hz,
+            (
+                CapabilityParams::Network {
+                    origins,
+                    max_requests_per_minute,
+                    max_response_bytes,
+                    max_timeout_ms,
+                },
+                CapabilityParams::Network {
+                    origins: instance_origins,
+                    max_requests_per_minute: instance_rate,
+                    max_response_bytes: instance_bytes,
+                    max_timeout_ms: instance_timeout,
+                },
+            ) => {
+                instance_origins
+                    .iter()
+                    .all(|origin| origins.contains(origin))
+                    && instance_rate <= max_requests_per_minute
+                    && instance_bytes <= max_response_bytes
+                    && instance_timeout <= max_timeout_ms
+            }
             _ => false,
         },
     }
@@ -906,5 +1118,36 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn network_scope_requires_exact_https_origins_and_bounded_budgets() {
+        let params = parse_capability_params(
+            CapabilityId::NetworkHttps,
+            Some(&json!({
+                "origins": ["https://api.example.com"],
+                "maxRequestsPerMinute": 12,
+                "maxResponseBytes": 4096,
+                "maxTimeoutMs": 2000
+            })),
+        )
+        .unwrap();
+        assert!(matches!(params, Some(CapabilityParams::Network { .. })));
+        for origin in [
+            "http://api.example.com",
+            "https://user@example.com",
+            "https://api.example.com/path",
+            "https://api.example.com?token=x",
+        ] {
+            assert!(
+                parse_capability_params(
+                    CapabilityId::NetworkHttps,
+                    Some(&json!({ "origins": [origin] })),
+                )
+                .is_err(),
+                "应拒绝 {origin}"
+            );
+        }
+        assert!(parse_capability_params(CapabilityId::NetworkHttps, None).is_err());
     }
 }

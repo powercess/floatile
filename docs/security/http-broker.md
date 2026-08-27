@@ -1,8 +1,7 @@
 # HTTP Broker 设计
 
-> 状态：Proposed
-> 阶段：V1 实现目标。P0/MVP 不实现网络能力（WIT 中无对应接口 = 无攻击面）。
-> 本设计先行冻结，确保 V1 不会因“便利”绕过安全约束。
+> 状态：Accepted（ADR-0005；初始 V1 禁用自动 redirect）
+> 阶段：PP-M5 已实现首个 HTTPS GET 纵向切片；WebSocket、redirect 和 localhost 仍不实现。
 
 ## 1. 目标
 
@@ -13,6 +12,10 @@
 - 全链路审计（脱敏）。
 
 ## 2. 请求模板（Request Template）
+
+规范性契约由 ADR-0005 冻结：模板进入 manifest v1 的可选 `httpTemplates`，调用时由已授权
+`connection-id` 选择宿主 CredentialRef。本文示例中的 `fromCredential` 是早期设计草图，不再表示
+插件包可指定宿主凭证路径；实现与测试以 ADR-0005 为准。
 
 插件不是「自由填 URL」，而是**注册模板**，宿主校验后绑定到 `network:` 权限：
 
@@ -53,7 +56,7 @@ request(template_id, params)
 
 ## 4. 域名白名单
 
-- 权限声明形式：`network:https://api.example.com/*`、`network:https://*.example.com/*`、`network:websocket:wss://stream.example.com/*`。
+- 当前权限声明为 `network:https`，参数使用精确 HTTPS origin 数组；不接受通配域和裸 IP。
 - 匹配规则：
   - 精确 host 或单层通配 `*.`；
   - **禁止**裸 IP、`localhost`（需单独 `network:localhost` 授权）、公共后缀通配；
@@ -87,6 +90,10 @@ request(template_id, params)
 - 模板引用 `fromCredential` 时，Broker 注入；插件拿到的永远是「已注入的请求」，读不到原始值。
 - Keyring 不可用（如 Linux 无 Secret Service）→ 降级为宿主管理的加密文件凭证库（显式 opt-in），或拒绝网络能力。
 
+当前 PP-M5 基线已实现宿主 `CredentialVault` 接口与不落盘的会话 vault，用于 Broker 组合和确定性
+安全测试。它不支持跨宿主重启：平台 Keyring 未接入时，重启后的 Connection 必须显式报告
+`unavailable`，不得从 Config、State、环境变量或普通 SQLite 表恢复 secret。
+
 ## 9. 审计（脱敏）
 
 - 记录：时间、plugin_id、instance_id、template_id、method、origin（域名级）、status、bytes、duration、decision。
@@ -98,8 +105,9 @@ request(template_id, params)
 - 模板注册本身也是一次授权操作（审计 + 可在权限中心查看/撤销）。
 - 撤销权限 → 已注册模板失效，无需插件配合。
 
-## 11. 未决问题
+## 11. 当前实现边界
 
 1. 是否允许插件自定义非敏感 header 的**值**（模板内固定 vs 运行时可传）。倾向：非敏感且白名单内 header 允许运行时传值，敏感 header 只允许 fromCredential。
 2. WebSocket 心跳/重连的归属（宿主负责，插件只订阅事件）。
-3. 缓存响应是否引入（倾向：V1 不做服务端缓存，减少攻击面）。
+3. PP-M5 已加入有界 generation-scoped cache、stale-if-error 和仅瞬时错误 retry；缓存不含 secret，
+   credential generation 轮换会自然隔离旧条目。

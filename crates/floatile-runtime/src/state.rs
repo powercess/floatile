@@ -9,8 +9,8 @@ use std::time::Instant;
 use floatile_core::OperationId;
 use floatile_core::types::InstanceId;
 use floatile_plugin_api::floatile::widget::{
-    host_clock, host_log, host_metrics, host_operation, host_storage, host_theme, host_timer,
-    host_ui,
+    host_clock, host_http, host_log, host_metrics, host_operation, host_storage, host_theme,
+    host_timer, host_ui,
 };
 use floatile_services::broker::Broker;
 use floatile_services::errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
@@ -258,6 +258,44 @@ impl host_storage::Host for InstanceHostState {
         let id = OperationId::new(id).ok_or(host_operation::OperationError::InvalidOperationId)?;
         self.broker
             .take_storage_get_result(id)
+            .map_err(map_operation_take)
+    }
+}
+
+impl host_http::Host for InstanceHostState {
+    async fn submit(
+        &mut self,
+        template_id: String,
+        connection_id: u64,
+        query: Vec<host_http::QueryParam>,
+    ) -> Result<u64, host_operation::OperationError> {
+        self.broker
+            .submit_https(
+                &template_id,
+                floatile_core::ConnectionId(connection_id),
+                query
+                    .into_iter()
+                    .map(|param| floatile_services::QueryParam {
+                        name: param.name,
+                        value: param.value,
+                    })
+                    .collect(),
+            )
+            .map(OperationId::get)
+            .map_err(map_operation_submit)
+    }
+
+    async fn take_result(
+        &mut self,
+        id: u64,
+    ) -> Result<host_http::HttpResponse, host_operation::OperationError> {
+        let id = OperationId::new(id).ok_or(host_operation::OperationError::InvalidOperationId)?;
+        self.broker
+            .take_https_result(id)
+            .map(|response| host_http::HttpResponse {
+                status: response.status,
+                body: response.body,
+            })
             .map_err(map_operation_take)
     }
 }

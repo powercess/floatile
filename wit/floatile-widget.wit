@@ -1,4 +1,4 @@
-// Floatile Widget 插件契约 v1.1.0（唯一事实源）。
+// Floatile Widget 插件契约 v1.2.0（唯一事实源）。
 //
 // 宿主与 guest 绑定都由本文件生成；修改必须同步 floatile-plugin-api、
 // floatile-sdk、floatile-runtime 适配、engineApiVersion 与契约测试。
@@ -8,7 +8,7 @@
 // handle-event/stop）、canonical initial State、host-ui.update-state 与稳定
 // guest error。宿主能力即 interface，world 显式 import 才算获得；所有能力
 // 调用仍由 PermissionBroker 仲裁与审计。
-package floatile:widget@1.1.0;
+package floatile:widget@1.2.0;
 
 // ---------- 宿主能力（插件 import；能力即接口，world 显式 import 才算获得） ----------
 
@@ -77,6 +77,7 @@ interface host-operation {
 
     enum operation-capability {
         storage-read,
+        https-request,
     }
 
     enum operation-terminal {
@@ -109,6 +110,24 @@ interface host-operation {
 
     // 取消只接受宿主生成的 ID；宿主仍按 Operation 原 capability 重新授权。
     cancel: func(id: operation-id) -> result<_, operation-error>;
+}
+
+interface host-http {
+    use host-operation.{operation-error, operation-id};
+
+    record query-param {
+        name: string,
+        value: string,
+    }
+
+    record http-response {
+        status: u16,
+        body: list<u8>,
+    }
+
+    // 模板、Connection grant、origin、预算与 credential 注入均由宿主验证。
+    submit: func(template-id: string, connection-id: u64, query: list<query-param>) -> result<operation-id, operation-error>;
+    take-result: func(id: operation-id) -> result<http-response, operation-error>;
 }
 
 interface host-storage {
@@ -231,6 +250,7 @@ world floatile-widget {
     import host-timer;
     import host-operation;
     import host-storage;
+    import host-http;
     import host-metrics;
     import host-theme;
 

@@ -392,7 +392,9 @@ use floatile_core::manifest::Manifest;
 use floatile_core::types::{InstanceId, PluginId};
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
 use floatile_runtime::{WidgetConfig, WidgetManager};
-use floatile_services::{AuditEvent, AuditListener};
+use floatile_services::{
+    AuditEvent, AuditListener, CredentialVault, HttpsService, ReqwestHttpTransport,
+};
 
 use crate::plugin_manager::InstalledPlugin;
 
@@ -617,6 +619,46 @@ pub async fn spawn_runtime_ui(
     caps: PlatformCapabilities,
     audit_listener: Option<AuditListener>,
 ) -> Result<RuntimeUiSession, RuntimeUiError> {
+    spawn_runtime_ui_with_https(plugin, instance, caps, audit_listener, None).await
+}
+
+/// Compose only the Connections explicitly granted to this instance. The caller owns the vault;
+/// no secret is read from SQLite or copied into plugin config/state.
+pub fn compose_instance_https(
+    store: &floatile_store::Store,
+    instance: InstanceId,
+    manifest: &Manifest,
+    vault: Arc<dyn CredentialVault>,
+) -> Result<HttpsService, RuntimeUiError> {
+    let connection_store = store.connections();
+    let grants = connection_store
+        .grants_for_instance(instance)
+        .map_err(|error| {
+            RuntimeUiError::Runtime(format!("读取 Connection grants 失败: {error}"))
+        })?;
+    let mut connections = Vec::with_capacity(grants.len());
+    for grant in grants {
+        let connection = connection_store
+            .get(grant.connection_id)
+            .map_err(|error| RuntimeUiError::Runtime(format!("读取 Connection 失败: {error}")))?
+            .ok_or_else(|| RuntimeUiError::Runtime("Connection grant 引用不存在".to_owned()))?;
+        connections.push(connection);
+    }
+    Ok(HttpsService::new(
+        manifest.http_templates.clone(),
+        connections,
+        vault,
+        Arc::new(ReqwestHttpTransport),
+    ))
+}
+
+pub async fn spawn_runtime_ui_with_https(
+    plugin: InstalledPlugin,
+    instance: PluginInstance,
+    caps: PlatformCapabilities,
+    audit_listener: Option<AuditListener>,
+    https: Option<HttpsService>,
+) -> Result<RuntimeUiSession, RuntimeUiError> {
     let id = plugin.manifest.id.clone();
     let (instance_id, generation, config_json) = validate_runtime_instance(&plugin, &instance)?;
     // 1. 后台解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
@@ -690,7 +732,7 @@ pub async fn spawn_runtime_ui(
                     config_json,
                     grants,
                 };
-                let mut handle = match manager.spawn(config) {
+                let mut handle = match manager.spawn_with_https(config, https) {
                     Ok(h) => h,
                     Err(error) => {
                         tracing::warn!(%error, "failed to spawn runtime widget");

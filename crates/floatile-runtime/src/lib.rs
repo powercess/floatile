@@ -28,12 +28,12 @@ use floatile_plugin_api::floatile::widget::host_operation::{
     OperationTerminal as WitOperationTerminal,
 };
 use floatile_services::{
-    AuditListener, AuditSink, Broker, OperationLimits, OperationRegistry, TimerSink,
+    AuditListener, AuditSink, Broker, HttpsService, OperationLimits, OperationRegistry, TimerSink,
 };
 use floatile_ui_schema::schema::JsonSchema;
 use floatile_ui_schema::validate_value;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Store};
 
@@ -134,6 +134,15 @@ impl WidgetManager {
 
     /// 派生一个插件实例（加载组件 + 启动串行 actor）。
     pub fn spawn(&self, config: WidgetConfig) -> Result<WidgetHandle, RuntimeError> {
+        self.spawn_with_https(config, None)
+    }
+
+    /// Spawn with the host-owned PP-M5 HTTPS service for this exact instance generation.
+    pub fn spawn_with_https(
+        &self,
+        config: WidgetConfig,
+        https: Option<HttpsService>,
+    ) -> Result<WidgetHandle, RuntimeError> {
         let (cmd_tx, cmd_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (ui_tx, ui_rx) = mpsc::channel(QUEUE_CAPACITY);
 
@@ -144,23 +153,38 @@ impl WidgetManager {
         let call_timeout = self.call_timeout;
         let epoch_ticker = Arc::clone(&self.epoch_ticker);
         let audit_listener = self.audit_listener.clone();
-        let join = tokio::spawn(run_actor(
-            engine,
-            config,
-            max_memory,
-            fuel_per_call,
-            call_timeout,
-            epoch_ticker,
-            audit_listener,
-            ui_tx,
-            cmd_rx,
-            actor_tx,
-        ));
+        let (failure_tx, actor_failure) = watch::channel(None);
+        let join = tokio::spawn(async move {
+            let actor = tokio::spawn(run_actor(
+                engine,
+                config,
+                https,
+                max_memory,
+                fuel_per_call,
+                call_timeout,
+                epoch_ticker,
+                audit_listener,
+                ui_tx,
+                cmd_rx,
+                actor_tx,
+            ));
+            let result = match actor.await {
+                Ok(result) => result,
+                Err(error) => Err(RuntimeError::InstanceFailed(format!(
+                    "actor 任务异常终止: {error}"
+                ))),
+            };
+            if let Err(error) = &result {
+                failure_tx.send_replace(Some(error.to_string()));
+            }
+            result
+        });
 
         Ok(WidgetHandle {
             cmd: cmd_tx,
             ui: ui_rx,
             join,
+            actor_failure,
         })
     }
 }
@@ -211,6 +235,7 @@ pub struct WidgetHandle {
     cmd: mpsc::Sender<InstanceCommand>,
     ui: mpsc::Receiver<UiUpdate>,
     join: tokio::task::JoinHandle<Result<(), RuntimeError>>,
+    actor_failure: watch::Receiver<Option<String>>,
 }
 
 enum InstanceCommand {
@@ -225,16 +250,20 @@ impl WidgetHandle {
     pub async fn start(&self) -> Result<(), InstanceError> {
         let (tx, rx) = oneshot::channel();
         self.send(InstanceCommand::Start(tx)).await?;
-        rx.await
-            .map_err(|_| InstanceError::Failed("actor 未返回调用结果".to_owned()))?
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(self.actor_stopped_error().await),
+        }
     }
 
     /// 投递一个统一事件（UI/timer/mode/config/theme/suspend/resume）。
     pub async fn handle_event(&self, event: WidgetEvent) -> Result<(), InstanceError> {
         let (tx, rx) = oneshot::channel();
         self.send(InstanceCommand::Event(event, tx)).await?;
-        rx.await
-            .map_err(|_| InstanceError::Failed("actor 未返回调用结果".to_owned()))?
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(self.actor_stopped_error().await),
+        }
     }
 
     /// 展示模式切换通知。
@@ -270,12 +299,27 @@ impl WidgetHandle {
             .await
             .map_err(|_| InstanceError::Failed("实例已终止（命令通道关闭）".to_owned()))
     }
+
+    async fn actor_stopped_error(&self) -> InstanceError {
+        // Dropping the command receiver can wake the caller before the actor wrapper observes
+        // its task result. Wait for that publication instead of relying on scheduler timing.
+        let mut failure = self.actor_failure.clone();
+        match failure.wait_for(Option::is_some).await {
+            Ok(detail) => InstanceError::Failed(
+                detail
+                    .clone()
+                    .unwrap_or_else(|| "actor 未返回调用结果".to_owned()),
+            ),
+            Err(_) => InstanceError::Failed("actor 未返回调用结果".to_owned()),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_actor(
     engine: wasmtime::Engine,
     config: WidgetConfig,
+    https: Option<HttpsService>,
     max_memory: usize,
     fuel_per_call: u64,
     call_timeout: Duration,
@@ -317,7 +361,7 @@ async fn run_actor(
     let operation_actor = actor_tx.clone();
     let completion_audit = audit.clone();
     let completion_results = operations.result_discarder();
-    let broker = Broker::new(
+    let mut broker = Broker::new(
         config.plugin.clone(),
         config.generation,
         config.grants,
@@ -328,6 +372,9 @@ async fn run_actor(
     .map_err(|error| {
         RuntimeError::InstanceFailed(format!("绑定 Operation registry 失败: {error}"))
     })?;
+    if let Some(https) = https {
+        broker = broker.with_https(https);
+    }
     tokio::spawn(async move {
         while let Some(completion) = operation_completions.recv().await {
             let capability = completion.capability;
@@ -512,6 +559,7 @@ async fn handle_operation_completion(
 ) -> Result<(), InstanceError> {
     let capability = match completion.capability {
         CapabilityId::StorageRead => OperationCapability::StorageRead,
+        CapabilityId::NetworkHttps => OperationCapability::HttpsRequest,
         _ => {
             store.data().broker.discard_operation_result(completion.id);
             return Ok(());
@@ -577,9 +625,9 @@ fn timeout_epoch_ticks(timeout: Duration) -> u64 {
 
 fn setup_call_error(operation: &str, timeout: Duration, error: wasmtime::Error) -> RuntimeError {
     if is_epoch_interrupt(&error) {
-        RuntimeError::InstanceFailed(format!("{operation} 超过墙钟预算 {timeout:?}: {error}"))
+        RuntimeError::InstanceFailed(format!("{operation} 超过墙钟预算 {timeout:?}: {error:#}"))
     } else {
-        RuntimeError::InstanceFailed(format!("{operation} trap: {error}"))
+        RuntimeError::InstanceFailed(format!("{operation} trap: {error:#}"))
     }
 }
 
@@ -589,9 +637,9 @@ fn instance_call_error(
     error: wasmtime::Error,
 ) -> InstanceError {
     if is_epoch_interrupt(&error) {
-        InstanceError::Failed(format!("{operation} 超过墙钟预算 {timeout:?}: {error}"))
+        InstanceError::Failed(format!("{operation} 超过墙钟预算 {timeout:?}: {error:#}"))
     } else {
-        InstanceError::Failed(error.to_string())
+        InstanceError::Failed(format!("{error:#}"))
     }
 }
 

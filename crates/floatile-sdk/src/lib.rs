@@ -14,13 +14,14 @@ wit_bindgen::generate!({
     export_macro_name: "export_widget",
 });
 
-pub const ENGINE_API_VERSION: &str = "1.1.0";
+pub const ENGINE_API_VERSION: &str = "1.2.0";
 
 // 供 `impl_export_widget!` 在 guest 侧解析宿主下发的 canonical initial State。
 pub use serde_json;
 
 // ---- 低层 WIT host modules ----
 pub use floatile::widget::host_clock;
+pub use floatile::widget::host_http;
 pub use floatile::widget::host_log;
 pub use floatile::widget::host_metrics;
 pub use floatile::widget::host_operation;

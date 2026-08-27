@@ -8,8 +8,8 @@ use std::marker::PhantomData;
 
 use crate::{LogError, LogLevel, OperationError, StorageError, ThemeError, TimerError, UiError};
 use crate::{
-    host_clock, host_log, host_metrics, host_operation, host_storage, host_theme, host_timer,
-    host_ui,
+    host_clock, host_http, host_log, host_metrics, host_operation, host_storage, host_theme,
+    host_timer, host_ui,
 };
 
 pub struct Context<W> {
@@ -61,6 +61,12 @@ impl<W> Context<W> {
         StorageCtx
     }
 
+    // ---- HTTPS（声明能力 network:https + instance Connection grant）----
+
+    pub fn http(&self) -> HttpCtx {
+        HttpCtx
+    }
+
     // ---- operation（宿主托管异步工作）----
 
     pub fn operation(&self) -> OperationCtx {
@@ -77,6 +83,24 @@ impl<W> Context<W> {
 
     pub fn theme(&self) -> ThemeCtx {
         ThemeCtx
+    }
+}
+
+/// `ctx.http()` — static-template, Connection-bound HTTPS operations.
+pub struct HttpCtx;
+
+impl HttpCtx {
+    pub fn submit(
+        &self,
+        template_id: &str,
+        connection_id: u64,
+        query: &[host_http::QueryParam],
+    ) -> Result<u64, OperationError> {
+        host_http::submit(template_id, connection_id, query)
+    }
+
+    pub fn take_result(&self, id: u64) -> Result<host_http::HttpResponse, OperationError> {
+        host_http::take_result(id)
     }
 }
 

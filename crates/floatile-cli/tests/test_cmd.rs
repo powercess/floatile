@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 fn workspace_root() -> PathBuf {
@@ -12,8 +13,19 @@ fn workspace_root() -> PathBuf {
         .join("..")
 }
 
+/// Both cases invoke Cargo for the same project and consume the same release artifact. Keep that
+/// producer/consumer sequence exclusive: Windows cannot safely replace/read the artifact across
+/// the two concurrent test threads, while each individual author flow remains fully exercised.
+fn author_build_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn test_project_runs_clock_smoke() {
+    let _build_guard = author_build_lock();
     let project_dir = workspace_root().join("plugins/clock-wasm");
     let out =
         std::env::temp_dir().join(format!("floatile-test-e2e-{}.floatile", std::process::id()));
@@ -51,6 +63,7 @@ fn test_project_runs_clock_smoke() {
 
 #[test]
 fn test_scenario_injects_event_and_exercises_broker_denial() {
+    let _build_guard = author_build_lock();
     let project_dir = workspace_root().join("plugins/clock-wasm");
     let out = std::env::temp_dir().join(format!(
         "floatile-test-scenario-{}.floatile",

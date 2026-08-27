@@ -1,0 +1,33 @@
+[plugin]
+id = "dev.floatile.ai-balance"
+name = "AI Balance Monitor"
+version = "0.1.0"
+
+[widget]
+default_size = [280, 140]
+min_size = [220, 100]
+max_size = [600, 300]
+
+[permissions.timer]
+max_per_minute = 6
+max_active = 1
+
+[permissions.httpTemplates]
+origins = ["https://api.example.com"]
+max_requests_per_minute = 6
+max_response_bytes = 16384
+max_timeout_ms = 5000
+
+[[httpTemplates]]
+id = "balance"
+method = "GET"
+url = "https://api.example.com/v1/balance"
+queryParams = []
+credentialHeader = "authorization"
+allowedStatuses = [200]
+maxResponseBytes = 16384
+timeoutMs = 5000
+cacheTtlMs = 60000
+staleIfErrorMs = 300000
+maxRetries = 2
+retryBaseDelayMs = 250

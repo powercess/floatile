@@ -121,6 +121,9 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - Timer/Storage/Metrics/Theme/Clock/Log capability 的实现。
 - 固有能力和声明能力使用同一 Broker 入口；固有能力只是固定 grant/scope。
 - 后续 Notification/Keyring/HTTP 仍必须经 Broker；P0 不留可调用 stub 假装实现。
+- PP-M5 已建立 `CredentialVault` 宿主接口和有界进程内会话实现：secret 不可序列化、Debug、Clone 或
+  枚举，只能在宿主闭包内短暂借用，替换/删除时清零内存；平台持久 Keyring 尚未接入，不得把会话
+  vault 表述为跨重启凭证存储。
 - ADR-0004 Operation registry 拥有有界提交/完成队列、并发许可、deadline、取消和 typed one-shot
   result；原始 submit/cancel/take 仅 Broker 可见，避免 runtime 或 adapter 分离 authorize/execute。
 - S5b 已实现：Broker 决策/配额/脱敏审计（target `floatile::audit`）与七个能力服务；
@@ -129,7 +132,8 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 ### 3.8 `floatile-store`
 
 - SQLite open/migration/transaction。
-- 当前 v4 持久化 layout、plugin instance 和 audit_log；plugin private KV 尚未接入 SQLite。
+- 当前 v5 持久化 layout、plugin instance、audit_log、宿主 Connection 元数据和实例级 Connection grant；
+  SQLite 只保存不透明 `CredentialRef`，不保存 secret；plugin private KV 尚未接入 SQLite。
 - 实例 CRUD 负责不复用 ID、Config/时间戳复验和删除实例所有的布局；Installation 内容仍由
   原子安装目录与 `install.json` digest 管理。
 - 不做 permission 决策，不向 plugin 暴露连接/SQL/path。

@@ -6,7 +6,8 @@
 
 use std::any::Any;
 use std::future::Future;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use floatile_core::types::PluginId;
 use floatile_core::{
@@ -18,6 +19,7 @@ use floatile_core::{
 use crate::audit::AuditSink;
 use crate::clock::{Clock, ClockSnapshot};
 use crate::errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
+use crate::http::{HttpResponse, HttpsService, QueryParam};
 use crate::log::{LogLevel, LogService};
 use crate::metrics::{MemorySnapshot, MetricsService};
 use crate::operation::{
@@ -41,6 +43,14 @@ pub struct Broker {
     metrics: MetricsService,
     theme: ThemeService,
     operations: Option<OperationRegistry>,
+    https: Option<HttpsService>,
+    https_rate_max: u32,
+    https_rate: Mutex<RateWindow>,
+}
+
+struct RateWindow {
+    started: Instant,
+    used: u32,
 }
 
 impl Broker {
@@ -73,6 +83,7 @@ impl Broker {
         let mut storage_max_bytes = 64 * 1024;
         let mut timer_quota = None;
         let mut metrics_rate = 1;
+        let mut https_rate_max = 0;
         for grant in &grants.caps {
             match (&grant.capability, &grant.params) {
                 (CapabilityId::StorageWrite, Some(CapabilityParams::Storage { max_bytes, .. })) => {
@@ -90,6 +101,13 @@ impl Broker {
                 (CapabilityId::SystemCpu, Some(CapabilityParams::Metrics { sample_rate_hz })) => {
                     metrics_rate = *sample_rate_hz;
                 }
+                (
+                    CapabilityId::NetworkHttps,
+                    Some(CapabilityParams::Network {
+                        max_requests_per_minute,
+                        ..
+                    }),
+                ) => https_rate_max = *max_requests_per_minute,
                 _ => {}
             }
         }
@@ -113,6 +131,12 @@ impl Broker {
             metrics: MetricsService::new(metrics_rate),
             theme: ThemeService::new(),
             operations: None,
+            https: None,
+            https_rate_max,
+            https_rate: Mutex::new(RateWindow {
+                started: Instant::now(),
+                used: 0,
+            }),
         }
     }
 
@@ -130,6 +154,12 @@ impl Broker {
         }
         self.operations = Some(operations);
         Ok(self)
+    }
+
+    /// Bind manifest templates, instance-scoped Connection grants, vault, and transport.
+    pub fn with_https(mut self, https: HttpsService) -> Self {
+        self.https = Some(https);
+        self
     }
 
     /// 纯授权检查（用于 UI State 等由 runtime 执行、Broker 只裁决的能力）。
@@ -275,6 +305,87 @@ impl Broker {
         self.take_operation_result(CapabilityId::StorageRead, id)
     }
 
+    /// HTTPS 服务尚未为本实例绑定模板/Connection 时的安全降级路径。
+    /// 仍通过 Broker 记录授权与环境不可用，WIT adapter 不直接作权限判断。
+    pub fn submit_https(
+        &self,
+        template_id: &str,
+        connection_id: floatile_core::ConnectionId,
+        query: Vec<QueryParam>,
+    ) -> Result<OperationId, OperationSubmitError> {
+        let Some(https) = &self.https else {
+            self.authorize_existing_grant(
+                CapabilityId::NetworkHttps,
+                &format!("https template={}B service=unconfigured", template_id.len()),
+            )
+            .map_err(OperationSubmitError::PermissionDenied)?;
+            self.audit.record(
+                CapabilityId::NetworkHttps,
+                false,
+                Some(DenyReason::EnvironmentUnavailable),
+                "https service=unconfigured",
+            );
+            return Err(OperationSubmitError::Unavailable);
+        };
+        let prepared =
+            https
+                .prepare(template_id, connection_id, query)
+                .map_err(|error| match error {
+                    crate::http::HttpServiceError::InvalidInput
+                    | crate::http::HttpServiceError::TemplateUnavailable
+                    | crate::http::HttpServiceError::ConnectionNotGranted => {
+                        OperationSubmitError::InvalidInput
+                    }
+                    _ => OperationSubmitError::Unavailable,
+                })?;
+        let detail = format!(
+            "operation=https template={}B connection={}",
+            template_id.len(),
+            connection_id.0
+        );
+        self.authorize(
+            CapabilityId::NetworkHttps,
+            Some(&prepared.request_params),
+            &detail,
+        )
+        .map_err(OperationSubmitError::PermissionDenied)?;
+        if !self.reserve_https_rate() {
+            self.audit.record(
+                CapabilityId::NetworkHttps,
+                false,
+                Some(DenyReason::QuotaExceeded),
+                "https rate-limit",
+            );
+            return Err(OperationSubmitError::PermissionDenied(
+                DenyReason::QuotaExceeded,
+            ));
+        }
+        self.submit_authorized_operation(
+            CapabilityId::NetworkHttps,
+            prepared.timeout,
+            prepared.work,
+        )
+    }
+
+    pub fn take_https_result(&self, id: OperationId) -> Result<HttpResponse, OperationTakeError> {
+        self.take_operation_result(CapabilityId::NetworkHttps, id)
+    }
+
+    fn reserve_https_rate(&self) -> bool {
+        let Ok(mut window) = self.https_rate.lock() else {
+            return false;
+        };
+        if window.started.elapsed() >= Duration::from_secs(60) {
+            window.started = Instant::now();
+            window.used = 0;
+        }
+        if window.used >= self.https_rate_max {
+            return false;
+        }
+        window.used += 1;
+        true
+    }
+
     pub fn metrics_cpu_percent(&mut self) -> Result<f64, MetricsError> {
         self.authorize(
             CapabilityId::SystemCpu,
@@ -321,6 +432,19 @@ impl Broker {
     {
         self.authorize(capability, request, audit_detail)
             .map_err(OperationSubmitError::PermissionDenied)?;
+        self.submit_authorized_operation(capability, timeout, work)
+    }
+
+    fn submit_authorized_operation<T, F>(
+        &self,
+        capability: CapabilityId,
+        timeout: Duration,
+        work: F,
+    ) -> Result<OperationId, OperationSubmitError>
+    where
+        T: Any + Send + 'static,
+        F: Future<Output = Result<T, OperationFailure>> + Send + 'static,
+    {
         let result = match &self.operations {
             Some(operations) => operations.submit(capability, timeout, work),
             None => Err(OperationSubmitError::Unavailable),
@@ -478,6 +602,16 @@ mod tests {
                     }),
                     effective: EffectiveGrant::DerivedFromInstall,
                 },
+                Grant {
+                    capability: CapabilityId::NetworkHttps,
+                    params: Some(CapabilityParams::Network {
+                        origins: vec!["https://api.example.com".into()],
+                        max_requests_per_minute: 1,
+                        max_response_bytes: 4096,
+                        max_timeout_ms: 2000,
+                    }),
+                    effective: EffectiveGrant::DerivedFromInstall,
+                },
             ],
         };
         narrow_instance(
@@ -508,9 +642,32 @@ mod tests {
                     }),
                     effective: EffectiveGrant::DerivedFromInstall,
                 },
+                Grant {
+                    capability: CapabilityId::NetworkHttps,
+                    params: Some(CapabilityParams::Network {
+                        origins: vec!["https://api.example.com".into()],
+                        max_requests_per_minute: 1,
+                        max_response_bytes: 4096,
+                        max_timeout_ms: 2000,
+                    }),
+                    effective: EffectiveGrant::DerivedFromInstall,
+                },
             ],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn https_rate_budget_is_instance_scoped_and_bounded() {
+        let broker = Broker::new(
+            PluginId("dev.floatile.clock".into()),
+            0,
+            test_grants(),
+            AuditSink::new("dev.floatile.clock", 7),
+            sink(),
+        );
+        assert!(broker.reserve_https_rate());
+        assert!(!broker.reserve_https_rate());
     }
 
     fn sink() -> TimerSink {

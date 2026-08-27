@@ -9,8 +9,8 @@ use std::path::Path;
 
 use floatile_core::constants::{ENGINE_API_VERSION, MANIFEST_VERSION};
 use floatile_core::manifest::{
-    BuildMeta, Entrypoints, Manifest, PackagePath, PermissionDecl, PluginKind, Publisher, Sizes,
-    validate_manifest,
+    BuildMeta, Entrypoints, HttpTemplateDecl, Manifest, PackagePath, PermissionDecl, PluginKind,
+    Publisher, Sizes, validate_manifest,
 };
 use floatile_core::types::LogicalSize;
 use floatile_core::{CAPABILITY_REGISTRY, CapabilityDefinition, CapabilityParamKind};
@@ -25,6 +25,8 @@ pub struct ProjectConfig {
     pub widget: WidgetCfg,
     #[serde(default)]
     pub permissions: BTreeMap<String, PermissionCfg>,
+    #[serde(default, rename = "httpTemplates")]
+    pub http_templates: Vec<HttpTemplateDecl>,
     #[serde(default)]
     pub publisher: Option<PublisherCfg>,
 }
@@ -71,6 +73,14 @@ pub struct PermissionCfg {
     pub max_active: Option<u32>,
     #[serde(default)]
     pub sample_rate_hz: Option<u32>,
+    #[serde(default)]
+    pub origins: Vec<String>,
+    #[serde(default)]
+    pub max_requests_per_minute: Option<u32>,
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
+    #[serde(default)]
+    pub max_timeout_ms: Option<u64>,
 }
 
 /// `floatile.toml` 的权限段短名 → 完整 capability 名（manifest-v1 §3）。
@@ -130,6 +140,20 @@ pub fn generate_manifest(config: &ProjectConfig) -> Result<Manifest, ProjectErro
                         params.insert("sampleRateHz".into(), serde_json::json!(v));
                     }
                 }
+                CapabilityParamKind::Network => {
+                    if !cfg.origins.is_empty() {
+                        params.insert("origins".into(), serde_json::json!(cfg.origins));
+                    }
+                    if let Some(v) = cfg.max_requests_per_minute {
+                        params.insert("maxRequestsPerMinute".into(), serde_json::json!(v));
+                    }
+                    if let Some(v) = cfg.max_response_bytes {
+                        params.insert("maxResponseBytes".into(), serde_json::json!(v));
+                    }
+                    if let Some(v) = cfg.max_timeout_ms {
+                        params.insert("maxTimeoutMs".into(), serde_json::json!(v));
+                    }
+                }
             }
             permissions.push(PermissionDecl {
                 capability: capability.name.to_owned(),
@@ -180,6 +204,7 @@ pub fn generate_manifest(config: &ProjectConfig) -> Result<Manifest, ProjectErro
             resizable: config.widget.resizable,
         },
         permissions,
+        http_templates: config.http_templates.clone(),
         config: None,
         storage: None,
         build: Some(BuildMeta {
@@ -380,6 +405,12 @@ max_active = 2
 
 [permissions.metrics]
 sample_rate_hz = 2
+
+[permissions.httpTemplates]
+origins = ["https://api.example.com"]
+max_requests_per_minute = 30
+max_response_bytes = 4096
+max_timeout_ms = 2000
 "#;
         let config = parse_floatile_toml(toml).unwrap();
         let manifest = generate_manifest(&config).unwrap();

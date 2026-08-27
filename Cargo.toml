@@ -14,6 +14,7 @@ members = [
     "crates/floatile-ui-schema",
     "crates/floatile-cli",
     "plugins/clock-wasm",
+    "plugins/ai-balance-wasm",
     "plugins/evil-wasm",
 ]
 
@@ -45,7 +46,10 @@ thiserror = "2"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "sync", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+url = "2"
+futures-util = "0.3"
 slint = { version = "1.17", features = ["backend-winit", "unstable-winit-030"] }
 winit = "0.30"
 x11rb = { version = "0.13", default-features = false, features = ["randr", "shape"] }
