@@ -85,5 +85,11 @@ unwrap_used = "warn"
 lto = true
 strip = true
 
+# Temporary PP-M5 Windows constructor-trap evidence. Remove after the failing guest frame is
+# mapped to source; production plugin packages remain stripped by the release profile above.
+[profile.release.package.floatile-clock-wasm]
+debug = 2
+strip = false
+
 [profile.dev]
 opt-level = 1
