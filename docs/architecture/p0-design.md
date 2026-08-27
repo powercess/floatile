@@ -136,7 +136,7 @@ plugin package
 ## 9. Runtime 与安全
 
 - Wasmtime 启用 component model、async、fuel/epoch interruption、memory/table/resource limits；fuel 在
-  constructor/lifecycle/event/timer/cleanup 每次调用前独立补充，默认墙钟预算 2 s，由共享 Engine 的
+  constructor/lifecycle/event/timer/cleanup 每次调用前独立补充，默认墙钟预算 5 s，由共享 Engine 的
   10 ms epoch ticker 驱动相对 deadline。
 - 对 manifest/archive/UI/WASM/config/State/event/assets 先限字节/数量/深度，再解析和语义校验。
 - 插件 trap、超时、超内存、恶意 patch/事件洪泛只终止/暂停当前实例，宿主和其他实例存活。
