@@ -625,9 +625,9 @@ fn timeout_epoch_ticks(timeout: Duration) -> u64 {
 
 fn setup_call_error(operation: &str, timeout: Duration, error: wasmtime::Error) -> RuntimeError {
     if is_epoch_interrupt(&error) {
-        RuntimeError::InstanceFailed(format!("{operation} 超过墙钟预算 {timeout:?}: {error}"))
+        RuntimeError::InstanceFailed(format!("{operation} 超过墙钟预算 {timeout:?}: {error:#}"))
     } else {
-        RuntimeError::InstanceFailed(format!("{operation} trap: {error}"))
+        RuntimeError::InstanceFailed(format!("{operation} trap: {error:#}"))
     }
 }
 
@@ -637,9 +637,9 @@ fn instance_call_error(
     error: wasmtime::Error,
 ) -> InstanceError {
     if is_epoch_interrupt(&error) {
-        InstanceError::Failed(format!("{operation} 超过墙钟预算 {timeout:?}: {error}"))
+        InstanceError::Failed(format!("{operation} 超过墙钟预算 {timeout:?}: {error:#}"))
     } else {
-        InstanceError::Failed(error.to_string())
+        InstanceError::Failed(format!("{error:#}"))
     }
 }
 
