@@ -7,6 +7,7 @@ use floatile_core::manifest::{PermissionDecl, PluginKind};
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::output::{CommandWarning, OUTPUT_SCHEMA_VERSION};
 use crate::package::{PackageError, PackageLimits, validate_package};
 
 /// `floatile inspect --json` 的版本化成功结果。
@@ -15,6 +16,8 @@ use crate::package::{PackageError, PackageLimits, validate_package};
 pub struct InspectReport {
     pub schema_version: u32,
     pub status: &'static str,
+    pub code: &'static str,
+    pub warnings: Vec<CommandWarning>,
     pub package: PackageSummary,
     pub compatibility: CompatibilitySummary,
     pub permissions: Vec<PermissionDecl>,
@@ -112,8 +115,10 @@ pub fn inspect_package_bytes(
     }
 
     Ok(InspectReport {
-        schema_version: 1,
+        schema_version: OUTPUT_SCHEMA_VERSION,
         status: "ok",
+        code: "ok",
+        warnings: Vec::new(),
         package: PackageSummary {
             id: manifest.id.0.clone(),
             name: manifest.name.clone(),

@@ -4,6 +4,7 @@
 //! → `cargo run --bin build_ftui --features build-host`（宿主生成 widget.ftui）
 //! → `floatile.toml` 生成 manifest → zip 打包 → 自校验。
 
+use std::borrow::Cow;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,6 +42,18 @@ impl BuildError {
             Self::Io(_) => "FBUILD_IO",
         }
     }
+
+    /// Agent/CI 可见的有界描述，不包含 cargo stderr 或宿主路径。
+    pub fn public_detail(&self) -> Cow<'static, str> {
+        match self {
+            Self::Project(_) => Cow::Borrowed("项目配置无效"),
+            Self::CargoMetadata(_) => Cow::Borrowed("Cargo 项目元数据检查失败"),
+            Self::WasmBuild(_) => Cow::Borrowed("WASM Component 构建失败"),
+            Self::BuildFtui(_) => Cow::Borrowed("Floatile UI 生成失败"),
+            Self::Package(_) => Cow::Borrowed("生成包未通过安全校验"),
+            Self::Io(_) => Cow::Borrowed("项目输入或构建产物 I/O 失败"),
+        }
+    }
 }
 
 /// cargo metadata 的关键字段。
@@ -50,7 +63,9 @@ struct CargoMeta {
 }
 
 fn cargo_metadata(manifest: &Path) -> Result<CargoMeta, BuildError> {
+    let project_dir = manifest.parent().unwrap_or_else(|| Path::new("."));
     let output = Command::new("cargo")
+        .current_dir(project_dir)
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .arg("--manifest-path")
         .arg(manifest)
@@ -114,6 +129,7 @@ pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildEr
 
     // 1. 编译 wasm 组件。
     let wasm_build = Command::new("cargo")
+        .current_dir(project_dir)
         .args(["build", "--release", "--target", "wasm32-wasip2"])
         .arg("--manifest-path")
         .arg(&manifest_path)
@@ -133,6 +149,7 @@ pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildEr
 
     // 2. 宿主运行 build_ftui 生成 widget.ftui。
     let ftui_output = Command::new("cargo")
+        .current_dir(project_dir)
         .args([
             "run",
             "--quiet",

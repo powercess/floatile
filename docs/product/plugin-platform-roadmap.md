@@ -170,7 +170,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 | PP-M1 | 插件内核与真实多实例 | 已完成（Xvfb 验证） | Package/Installation/Instance 分离；实例 CRUD、生命周期、持久化和故障隔离 | 同包多实例可独立配置、启动、停止、恢复和删除；迁移及失败测试通过 | `core`、`store`、`runtime`、`shell`、CLI |
 | PP-M2 | Broker 化异步 Operation | 已完成（自动化契约验证） | ADR-0004；operation registry、队列、取消、deadline、generation、v1.1 WIT/SDK、元数据 completion 与首个 `storage:read` typed adapter | reference fixture 覆盖成功、拒绝、超时、取消、迟到结果、实例重启和过载；host/guest contract vectors 通过 | `core`、`runtime`、`services`、WIT、SDK |
 | PP-M3 | Capability Registry 单源 | 已完成（自动化契约验证） | 统一 capability 元数据，生成/校验 manifest、Broker、SDK 映射与 contract vectors | 注册表/WIT/manifest/CLI/Broker 动态覆盖测试；恶意插件和配额测试证明默认拒绝 | `core`、`services`、plugin API、SDK、CLI |
-| PP-M4 | Rust 作者闭环 | 规划中 | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
+| PP-M4 | Rust 作者闭环 | 已完成（自动化契约与 Xvfb 验证；公开发布受许可门阻断） | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
 | PP-M5 | 外部数据平台 | 规划中 | Connection、Credential Vault、HTTPS Broker、调度、缓存、重试、限流和连接健康状态 | AI 余额参考插件只使用通用能力，且 secret 不进入 guest、日志、State 或包 | `core`、`store`、`services`、shell、WIT、SDK |
 | PP-M6 | UI 平台 | 规划中 | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
 | PP-M7 | SDK 与语言生态 | 规划中 | Rust API 稳定化；在工具链可行后接入 TypeScript；生成文档、迁移指南和 conformance kit | 双语言通过相同 contract vectors、恶意输入和端到端示例；不存在宿主语义分叉 | SDK、plugin API、CLI、CI |
@@ -190,15 +190,23 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
 但仓库还不是完整的插件作者平台：
 
 - Windows、macOS、Wayland 与真实 Linux 桌面的控制面交互和动态多窗口仍缺实测；
-- 生成项目和 `dev` 流程尚不能证明仓库外作者可完成预览到运行闭环；
+- PP-M4 已用独立 SDK Cargo 包快照在自动清理的仓库外目录跑通 Rust 作者闭环；公开 registry 上传仍由
+  NFR-LEGAL-01 和许可 ADR 阻断，不影响仓库内作者契约完成状态；
 - Broker 化 Operation 已通过 v1.1 WIT/SDK 暴露通用 cancel、元数据 completion 与首个
   `storage:read` typed submit/take；更多 capability adapter、动态撤权与真实容量数据仍待后续切片；
 - PP-M3 已由 `floatile-core` 的机器可读 Capability Registry 统一稳定名称、暴露方式、参数族、风险、
   执行形态、WIT/SDK/CLI 与审计映射；manifest schema、CLI 和 Broker 已消费注册表并有 drift 测试；
 - PP-M4 已完成 `inspect` 与 `check` 纵向切片：包检查输出版本化 manifest/版本轴/权限/预算/entry digest；
   项目检查在自动清理的临时目录复用正式构建/校验链并输出五阶段稳定 JSON，并按组件实际导入的
-  WIT function 对照 Capability Registry 与 manifest 声明。真实窗口 `dev/preview`、其余命令统一诊断和
-  仓库外 SDK 获取仍待后续切片；
+  WIT function 对照 Capability Registry 与 manifest 声明。Rust SDK 已用根 WIT 的受 drift 测试约束发行
+  快照补齐 Cargo 包内容，生成模板已从独立 SDK 包快照通过干净目录 `wasm32-wasip2` 编译，不依赖仓库
+  私有 path；公开 registry 上传仍受许可 ADR 阻断。`preview` 已通过 shell 专用子进程复用正式
+  renderer/Slint/Wasmtime/Broker，Xvfb 验证 guest start 后进入 running；`dev` 已接入保留上一代的预览
+  generation 替换。作者级 `run` 已打通 build、原子安装、持久实例创建、generation 推进和真实宿主
+  running，并拒绝同版本不同 digest；无头 `test` 可注入 UI event、短时推进和 deny-all Broker 场景，
+  输出 State/audit 计数。自动化验收已在同一干净目录串行通过
+  `new → check → test → dev --once → preview → build → install → run → inspect`，全部自动化输出为
+  schema v1，三个窗口阶段使用 Xvfb 真实宿主；
 - 网络、Connection 与凭证托管尚未成为可用契约；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。

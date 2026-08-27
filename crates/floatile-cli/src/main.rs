@@ -4,14 +4,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use floatile_cli::{build, check, dev, inspect, install, instance, package, project, test};
+use floatile_cli::{
+    CommandErrorReport, build, check, dev, inspect, install, instance, package, preview, project,
+    run, test,
+};
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|schema> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|preview|run|schema> [参数]"
         );
         return ExitCode::from(2);
     }
@@ -25,6 +28,8 @@ fn main() -> ExitCode {
         "instance" => cmd_instance(&args[2..]),
         "dev" => cmd_dev(&args[2..]),
         "test" => cmd_test(&args[2..]),
+        "preview" => cmd_preview(&args[2..]),
+        "run" => cmd_run(&args[2..]),
         "schema" => cmd_schema(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
@@ -117,17 +122,8 @@ fn render_check_error(
     argument_error: bool,
 ) -> ExitCode {
     if json {
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "schemaVersion": 1,
-                "status": "error",
-                "code": code,
-                "detail": detail,
-                "phases": phases,
-                "warnings": [],
-            })
-        );
+        let report = CommandErrorReport::new(code, detail, phases);
+        eprintln!("{}", serialize_json(&report));
     } else {
         eprintln!("check: FAIL code={code} detail={detail}");
     }
@@ -211,15 +207,8 @@ fn cmd_inspect(args: &[String]) -> ExitCode {
 
 fn render_inspect_error(code: &str, detail: &str, json: bool) -> ExitCode {
     if json {
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "schemaVersion": 1,
-                "status": "error",
-                "code": code,
-                "detail": detail,
-            })
-        );
+        let report = CommandErrorReport::new(code, detail, serde_json::json!({}));
+        eprintln!("{}", serialize_json(&report));
     } else {
         eprintln!("inspect 失败: code={code} detail={detail}");
     }
@@ -228,6 +217,12 @@ fn render_inspect_error(code: &str, detail: &str, json: bool) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn serialize_json(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| {
+        r#"{"schemaVersion":1,"status":"error","severity":"error","code":"FCLI_SERIALIZE","detail":"自动化结果序列化失败","phases":{},"warnings":[]}"#.to_owned()
+    })
 }
 
 fn cmd_instance(args: &[String]) -> ExitCode {
@@ -553,30 +548,46 @@ fn cmd_schema(args: &[String]) -> ExitCode {
 }
 
 fn cmd_new(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &[], &[], 3) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FNEW_ARGUMENT", &detail, json, true),
+    };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let id = args
+    let id = positionals
         .get(1)
-        .cloned()
+        .map(|value| (*value).to_owned())
         .unwrap_or_else(|| "dev.example.widget".to_owned());
-    let name = args
+    let name = positionals
         .get(2)
-        .cloned()
+        .map(|value| (*value).to_owned())
         .unwrap_or_else(|| "My Widget".to_owned());
     match project::generate_template(&dir, &id, &name) {
         Ok(()) => {
-            println!("已生成项目模板于 {}", dir.display());
-            println!(
-                "注意: floatile-sdk 尚未发布（许可 ADR 未通过），模板需在 SDK 可用后才能独立构建；workspace 内成员可直接构建。"
-            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schemaVersion": 1,
+                        "status": "ok",
+                        "severity": "info",
+                        "code": "ok",
+                        "warnings": [],
+                        "project": { "id": id, "name": name },
+                    })
+                );
+            } else {
+                println!("已生成项目模板于 {}", dir.display());
+                println!(
+                    "注意: floatile-sdk 尚未发布（许可 ADR 未通过），模板需在 SDK 可用后才能独立构建；workspace 内成员可直接构建。"
+                );
+            }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("new 失败: {e}");
-            ExitCode::FAILURE
-        }
+        Err(_) => render_basic_error("FNEW_PROJECT", "无法生成项目模板", json, false),
     }
 }
 
@@ -610,58 +621,135 @@ fn cmd_validate(args: &[String]) -> ExitCode {
 }
 
 fn cmd_dev(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|a| a == "--json");
+    let positionals =
+        match author_positionals(args, &["--interval", "--duration-ms"], &["--once"], 1) {
+            Ok(positionals) => positionals,
+            Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
+        };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let json = args.iter().any(|a| a == "--json");
-    let interval: u64 = args
-        .windows(2)
-        .find(|w| w[0] == "--interval")
-        .and_then(|w| w[1].parse().ok())
-        .unwrap_or(500);
-    if let Err(e) = dev::ensure_project(&dir) {
-        eprintln!("dev 失败: {e}");
-        return ExitCode::FAILURE;
+    let interval = match option_u64(args, "--interval", 500) {
+        Ok(value) if value >= 50 => value,
+        Ok(_) => {
+            return render_basic_error("FDEV_ARGUMENT", "--interval 不得小于 50ms", json, true);
+        }
+        Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
+    };
+    if let Err(error) = dev::ensure_project(&dir) {
+        return render_basic_error(error.code(), error.public_detail().as_ref(), json, false);
+    }
+    if args.iter().any(|argument| argument == "--once") {
+        let duration_ms = match option_u64(args, "--duration-ms", 800) {
+            Ok(value) if value > 0 => value,
+            Ok(_) => return render_basic_error("FDEV_ARGUMENT", "运行时限必须大于 0", json, true),
+            Err(detail) => return render_basic_error("FDEV_ARGUMENT", &detail, json, true),
+        };
+        return match preview::preview_project(&dir, Duration::from_millis(duration_ms)) {
+            Ok(report) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "schemaVersion": 1,
+                            "status": report.status,
+                            "severity": report.severity,
+                            "code": report.code,
+                            "warnings": report.warnings,
+                            "event": "preview_started",
+                            "generation": 1,
+                            "running": report.running,
+                        })
+                    );
+                } else {
+                    println!("[ok] preview generation 1 reached running");
+                }
+                if report.running {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
+        };
     }
     let out = dir.join("out").join("plugin.floatile");
     dev::dev_loop(&dir, &out, interval, json);
 }
 
 fn cmd_build(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &[], &[], 2) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FBUILD_ARGUMENT", &detail, json, true),
+    };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let out = args
+    let out = positionals
         .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| dir.join("out").join("plugin.floatile"));
     match build::build_project(&dir, &out) {
         Ok(manifest) => {
-            println!("已构建 {} (id={})", out.display(), manifest.id.0);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schemaVersion": 1, "status": "ok", "severity": "info",
+                        "code": "ok", "warnings": [],
+                        "package": { "id": manifest.id.0, "version": manifest.version }
+                    })
+                );
+            } else {
+                println!("已构建 {} (id={})", out.display(), manifest.id.0);
+            }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("build 失败: code={} detail={e}", e.code());
-            ExitCode::FAILURE
-        }
+        Err(error) => render_basic_error(error.code(), error.public_detail().as_ref(), json, false),
     }
 }
 
 fn cmd_test(args: &[String]) -> ExitCode {
-    let dir = args
+    let json = args.iter().any(|a| a == "--json");
+    let positionals = match author_positionals(
+        args,
+        &["--timeout", "--event", "--payload", "--advance-ms"],
+        &["--deny-all"],
+        1,
+    ) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FTEST_ARGUMENT", &detail, json, true),
+    };
+    let dir = positionals
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let json = args.iter().any(|a| a == "--json");
     let timeout_ms: u64 = args
         .windows(2)
         .find(|w| w[0] == "--timeout")
         .and_then(|w| w[1].parse().ok())
         .unwrap_or(4000);
+    let advance_ms = match option_u64(args, "--advance-ms", 0) {
+        Ok(value) => value,
+        Err(detail) => return render_basic_error("FTEST_ARGUMENT", &detail, json, true),
+    };
+    let event = option_string(args, "--event");
+    let payload = option_string(args, "--payload").unwrap_or_else(|| "{}".to_owned());
+    if serde_json::from_str::<serde_json::Value>(&payload).is_err() {
+        return render_basic_error("FTEST_ARGUMENT", "--payload 必须是有效 JSON", json, true);
+    }
+    let scenario = test::TestScenario {
+        ui_events: event.map(|name| vec![(name, payload)]).unwrap_or_default(),
+        deny_all: args.iter().any(|argument| argument == "--deny-all"),
+        advance_time: Duration::from_millis(advance_ms),
+    };
     let out = dir.join("out").join("plugin.floatile");
-    match test::test_project(&dir, &out, Duration::from_millis(timeout_ms)) {
+    match test::test_project_with_scenario(&dir, &out, Duration::from_millis(timeout_ms), scenario)
+    {
         Ok(status) => {
             if json {
                 println!(
@@ -696,32 +784,28 @@ fn cmd_test(args: &[String]) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        Err(e) => {
-            eprintln!("test 失败: code={} detail={e}", e.code());
-            ExitCode::FAILURE
-        }
+        Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
     }
 }
 
 fn cmd_install(args: &[String]) -> ExitCode {
-    let Some(path) = args.first().map(PathBuf::from) else {
-        eprintln!("用法: floatile install <pkg.floatile> [--store PATH] [--json]");
-        return ExitCode::from(2);
+    let json = args.iter().any(|a| a == "--json");
+    let positionals = match author_positionals(args, &["--store"], &[], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FINST_ARGUMENT", &detail, json, true),
+    };
+    let Some(path) = positionals.first().map(PathBuf::from) else {
+        return render_basic_error("FINST_ARGUMENT", "install 需要包路径", json, true);
     };
     let store = match opts_store(args) {
         Ok(store) => store,
         Err(msg) => {
-            eprintln!("{msg}");
-            return ExitCode::from(2);
+            return render_basic_error("FINST_ARGUMENT", &msg, json, true);
         }
     };
-    let json = args.iter().any(|a| a == "--json");
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
-        Err(e) => {
-            eprintln!("读取失败: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(_) => return render_basic_error("FINST_IO", "插件包读取失败", json, false),
     };
     let source = path
         .file_name()
@@ -733,11 +817,14 @@ fn cmd_install(args: &[String]) -> ExitCode {
                 println!(
                     "{}",
                     serde_json::json!({
-                        "status": "installed",
-                        "id": installed.manifest.id.0,
-                        "version": installed.meta.version,
-                        "dir": installed.dir.display().to_string(),
-                        "digest": installed.meta.digest,
+                        "schemaVersion": 1, "status": "ok", "severity": "info",
+                        "code": "ok", "warnings": [],
+                        "installation": {
+                            "id": installed.manifest.id.0,
+                            "version": installed.meta.version,
+                            "dir": installed.dir.display().to_string(),
+                            "digest": installed.meta.digest,
+                        }
                     })
                 );
             } else {
@@ -751,10 +838,165 @@ fn cmd_install(args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("install 失败: code={} detail={e}", e.code());
-            ExitCode::FAILURE
+        Err(error) => render_basic_error(error.code(), error.public_detail().as_ref(), json, false),
+    }
+}
+
+fn cmd_preview(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &["--duration-ms"], &[], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FPREVIEW_ARGUMENT", &detail, json, true),
+    };
+    let project = positionals
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let duration_ms = match option_u64(args, "--duration-ms", 5_000) {
+        Ok(value) if value > 0 => value,
+        Ok(_) => {
+            return render_basic_error("FPREVIEW_ARGUMENT", "--duration-ms 必须大于 0", json, true);
         }
+        Err(detail) => return render_basic_error("FPREVIEW_ARGUMENT", &detail, json, true),
+    };
+    match preview::preview_project(&project, Duration::from_millis(duration_ms)) {
+        Ok(report) => {
+            if json {
+                println!("{}", serialize_json(&report));
+            } else if report.running {
+                println!("preview: PASS，真实宿主窗口已进入 running");
+            } else {
+                eprintln!("preview: FAIL code={}", report.code);
+            }
+            if report.running {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
+    }
+}
+
+fn cmd_run(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &["--duration-ms", "--db", "--store"], &[], 1)
+    {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FRUN_ARGUMENT", &detail, json, true),
+    };
+    let project = positionals
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let duration_ms = match option_u64(args, "--duration-ms", 24 * 60 * 60 * 1_000) {
+        Ok(value) if value > 0 => value,
+        Ok(_) => return render_basic_error("FRUN_ARGUMENT", "运行时限必须大于 0", json, true),
+        Err(detail) => return render_basic_error("FRUN_ARGUMENT", &detail, json, true),
+    };
+    let (default_database, default_store) = match run::default_run_paths() {
+        Ok(paths) => paths,
+        Err(error) => return render_basic_error(error.code(), error.public_detail(), json, false),
+    };
+    let database = option_path(args, "--db").unwrap_or(default_database);
+    let store = option_path(args, "--store").unwrap_or(default_store);
+    match run::run_project(
+        &project,
+        &database,
+        &store,
+        Duration::from_millis(duration_ms),
+    ) {
+        Ok(report) => {
+            if json {
+                println!("{}", serialize_json(&report));
+            } else if report.running {
+                println!(
+                    "run: PASS instance={} {}@{}",
+                    report.instance_id, report.plugin_id, report.version
+                );
+            } else {
+                eprintln!("run: FAIL code={}", report.code);
+            }
+            if report.running {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => render_basic_error(error.code(), error.public_detail(), json, false),
+    }
+}
+
+fn author_positionals<'a>(
+    args: &'a [String],
+    value_options: &[&str],
+    boolean_options: &[&str],
+    maximum: usize,
+) -> Result<Vec<&'a str>, String> {
+    let mut positionals = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        if matches!(argument, "--json" | "--no-interactive" | "--deny-warnings")
+            || boolean_options.contains(&argument)
+        {
+            index += 1;
+        } else if value_options.contains(&argument) {
+            if args
+                .get(index + 1)
+                .is_none_or(|value| value.starts_with('-'))
+            {
+                return Err(format!("{argument} 缺少值"));
+            }
+            index += 2;
+        } else if argument.starts_with('-') {
+            return Err(format!("未知选项 {argument}"));
+        } else {
+            positionals.push(argument);
+            index += 1;
+        }
+    }
+    if positionals.len() > maximum {
+        return Err(format!("位置参数最多允许 {maximum} 个"));
+    }
+    Ok(positionals)
+}
+
+fn option_u64(args: &[String], name: &str, default: u64) -> Result<u64, String> {
+    let Some(index) = args.iter().position(|argument| argument == name) else {
+        return Ok(default);
+    };
+    args.get(index + 1)
+        .ok_or_else(|| format!("{name} 缺少值"))?
+        .parse()
+        .map_err(|_| format!("{name} 必须是整数"))
+}
+
+fn option_path(args: &[String], name: &str) -> Option<PathBuf> {
+    args.iter()
+        .position(|argument| argument == name)
+        .and_then(|index| args.get(index + 1))
+        .map(PathBuf::from)
+}
+
+fn option_string(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|argument| argument == name)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
+}
+
+fn render_basic_error(code: &str, detail: &str, json: bool, argument_error: bool) -> ExitCode {
+    if json {
+        let report = CommandErrorReport::new(code, detail, serde_json::json!({}));
+        eprintln!("{}", serialize_json(&report));
+    } else {
+        eprintln!("命令失败: code={code} detail={detail}");
+    }
+    if argument_error {
+        ExitCode::from(2)
+    } else {
+        ExitCode::FAILURE
     }
 }
 

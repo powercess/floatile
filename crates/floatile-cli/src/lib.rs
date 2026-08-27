@@ -9,8 +9,11 @@ pub mod dev;
 pub mod inspect;
 pub mod install;
 pub mod instance;
+pub mod output;
 pub mod package;
+pub mod preview;
 pub mod project;
+pub mod run;
 pub mod test;
 
 pub use build::{BuildError, build_project, package};
@@ -22,8 +25,13 @@ pub use instance::{
     InstanceCommandError, InstanceView, configure_instance, create_instance, delete_instance,
     get_instance, list_instances, set_instance_desired_state,
 };
+pub use output::{CommandErrorReport, CommandWarning, OUTPUT_SCHEMA_VERSION};
 pub use package::{PackageError, PackageLimits, ValidatedPackage, validate_package};
+pub use preview::{PreviewError, PreviewReport, PreviewSession, preview_project};
 pub use project::{
     ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,
 };
-pub use test::{TestError, TestPhases, TestStatus, test_project};
+pub use run::{RunError, RunReport, default_run_paths, run_project};
+pub use test::{
+    TestError, TestPhases, TestScenario, TestStatus, test_project, test_project_with_scenario,
+};

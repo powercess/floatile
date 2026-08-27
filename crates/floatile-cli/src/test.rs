@@ -18,6 +18,7 @@ use zip::ZipArchive;
 
 use crate::build::{BuildError, build_project};
 use crate::dev::ensure_project;
+use crate::output::{CommandWarning, OUTPUT_SCHEMA_VERSION};
 
 /// 测试错误（稳定 code `FTEST_*`）。
 #[derive(Debug, thiserror::Error)]
@@ -44,15 +45,30 @@ impl TestError {
             Self::Runtime(_) => "FTEST_RUNTIME",
         }
     }
+
+    pub fn public_detail(&self) -> &'static str {
+        match self {
+            Self::Build(_) => "测试项目构建失败",
+            Self::Zip(_) => "测试包读取失败",
+            Self::Manifest(_) => "测试包 manifest 无效",
+            Self::Ftui(_) => "测试包 UI IR 无效",
+            Self::Runtime(_) => "插件测试运行时失败",
+        }
+    }
 }
 
 /// 无头测试各阶段结果（稳定 JSON 结构）。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TestStatus {
+    pub schema_version: u32,
+    pub status: &'static str,
+    pub severity: &'static str,
     pub ok: bool,
     pub code: String,
     pub detail: String,
     pub phases: TestPhases,
+    pub warnings: Vec<CommandWarning>,
 }
 
 /// 生命周期冒烟各阶段。
@@ -63,6 +79,15 @@ pub struct TestPhases {
     pub start: bool,
     pub state_updates: usize,
     pub shutdown: bool,
+    pub events: usize,
+    pub audit_denials: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TestScenario {
+    pub ui_events: Vec<(String, String)>,
+    pub deny_all: bool,
+    pub advance_time: Duration,
 }
 
 /// 从 `.floatile` zip 读取一个条目。
@@ -84,6 +109,15 @@ pub fn test_project(
     project_dir: &Path,
     out: &Path,
     state_timeout: Duration,
+) -> Result<TestStatus, TestError> {
+    test_project_with_scenario(project_dir, out, state_timeout, TestScenario::default())
+}
+
+pub fn test_project_with_scenario(
+    project_dir: &Path,
+    out: &Path,
+    state_timeout: Duration,
+    scenario: TestScenario,
 ) -> Result<TestStatus, TestError> {
     ensure_project(project_dir)?;
     if let Some(parent) = out.parent() {
@@ -120,6 +154,11 @@ pub fn test_project(
         })
         .collect::<Vec<_>>();
 
+    let grants = if scenario.deny_all {
+        Vec::new()
+    } else {
+        grants
+    };
     let harness = WidgetHarness::new(pkg.id.clone(), wasm)
         .initial_state(doc.state.initial)
         .state_schema(doc.state.schema)
@@ -131,10 +170,14 @@ pub fn test_project(
         .enable_all()
         .build()
         .map_err(|e| TestError::Runtime(format!("创建运行时: {e}")))?;
-    rt.block_on(run_smoke(harness, state_timeout))
+    rt.block_on(run_smoke(harness, state_timeout, scenario))
 }
 
-async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStatus, TestError> {
+async fn run_smoke(
+    harness: WidgetHarness,
+    timeout: Duration,
+    scenario: TestScenario,
+) -> Result<TestStatus, TestError> {
     let instance = harness
         .build()
         .map_err(|e| TestError::Runtime(e.to_string()))?;
@@ -143,6 +186,9 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
     if let Err(e) = start {
         // start 失败（构造/trap）：实例已终止，无法再驱动。
         return Ok(TestStatus {
+            schema_version: OUTPUT_SCHEMA_VERSION,
+            status: "error",
+            severity: "error",
             ok: false,
             code: "FTEST_START".into(),
             detail: e.to_string(),
@@ -152,17 +198,39 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
                 start: false,
                 state_updates: 0,
                 shutdown: false,
+                events: 0,
+                audit_denials: 0,
             },
+            warnings: Vec::new(),
         });
     }
 
     let mut instance = instance;
+    let mut emitted = 0usize;
+    for (name, payload) in &scenario.ui_events {
+        instance
+            .emit_ui(name, payload)
+            .await
+            .map_err(|error| TestError::Runtime(error.to_string()))?;
+        emitted += 1;
+    }
+    if !scenario.advance_time.is_zero() {
+        instance.advance_time(scenario.advance_time).await;
+    }
     let state_updates = instance.count_state_updates(timeout).await;
+    let audit_denials = instance
+        .audit()
+        .iter()
+        .filter(|event| event.decision == "deny")
+        .count();
     let shutdown = instance.shutdown().await;
     let shutdown_ok = shutdown.is_ok();
     let ok = shutdown_ok;
 
     Ok(TestStatus {
+        schema_version: OUTPUT_SCHEMA_VERSION,
+        status: if ok { "ok" } else { "error" },
+        severity: if ok { "info" } else { "error" },
         ok,
         code: if ok {
             "ok".into()
@@ -180,6 +248,9 @@ async fn run_smoke(harness: WidgetHarness, timeout: Duration) -> Result<TestStat
             start: true,
             state_updates,
             shutdown: shutdown_ok,
+            events: emitted,
+            audit_denials,
         },
+        warnings: Vec::new(),
     })
 }

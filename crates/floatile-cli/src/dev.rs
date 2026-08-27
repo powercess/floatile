@@ -1,13 +1,14 @@
 //! `dev`：watch 项目变更并自动 rebuild/validate。
 //!
-//! P0 最小实现：轮询项目目录 mtime 签名（floatile.toml + src/），变更触发
-//! `build_project`，输出人类可读或 `--json` 结构化诊断。真实预览依赖
-//! renderer spike，未接入。
+//! 轮询项目目录 mtime 签名（floatile.toml + src/），变更后先完整构建、校验和
+//! 临时安装；只有新 preview-host 成功派生后才替换上一代真实宿主预览。构建失败时
+//! 旧预览保持运行，避免作者工作流因半成品编辑中断。
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use crate::build::{BuildError, build_project};
+use crate::preview::PreviewSession;
 
 /// 单次构建状态（结构化诊断，`--json` 输出）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -71,19 +72,58 @@ fn watch_signature(project_dir: &Path) -> std::io::Result<Option<(SystemTime, us
 }
 
 /// 轮询循环：初始构建一次，随后在签名变化时重建。
-pub fn dev_loop(project_dir: &Path, out: &Path, interval_ms: u64, json: bool) -> ! {
+pub fn dev_loop(project_dir: &Path, _out: &Path, interval_ms: u64, json: bool) -> ! {
     let mut last_sig = None;
+    let mut preview = None::<PreviewSession>;
+    let mut generation = 0u64;
     loop {
         match watch_signature(project_dir) {
             Ok(Some(sig)) => {
                 if last_sig != Some(sig) {
-                    let status = build_once(project_dir, out);
-                    if json {
-                        println!("{}", status.to_json());
-                    } else if status.ok {
-                        println!("[ok] {}", status.out);
-                    } else {
-                        println!("[fail] code={} detail={}", status.code, status.detail);
+                    match PreviewSession::start(project_dir, Duration::from_secs(24 * 60 * 60)) {
+                        Ok(next) => {
+                            generation = generation.saturating_add(1);
+                            preview = Some(next);
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "schemaVersion": crate::OUTPUT_SCHEMA_VERSION,
+                                        "status": "ok",
+                                        "severity": "info",
+                                        "code": "ok",
+                                        "warnings": [],
+                                        "event": "preview_started",
+                                        "generation": generation,
+                                    })
+                                );
+                            } else {
+                                println!("[ok] preview generation {generation} started");
+                            }
+                        }
+                        Err(error) => {
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "schemaVersion": crate::OUTPUT_SCHEMA_VERSION,
+                                        "status": "error",
+                                        "severity": "error",
+                                        "code": error.code(),
+                                        "detail": error.public_detail(),
+                                        "warnings": [],
+                                        "event": "preview_rejected",
+                                        "generation": generation,
+                                    })
+                                );
+                            } else {
+                                println!(
+                                    "[fail] code={} detail={}（保留上一代预览）",
+                                    error.code(),
+                                    error.public_detail()
+                                );
+                            }
+                        }
                     }
                     last_sig = Some(sig);
                 }
@@ -92,6 +132,8 @@ pub fn dev_loop(project_dir: &Path, out: &Path, interval_ms: u64, json: bool) ->
             Err(e) => eprintln!("watch 错误（继续轮询）: {e}"),
         }
         std::thread::sleep(Duration::from_millis(interval_ms));
+        // 明确保持当前会话存活；赋新值时旧会话 Drop 并终止其宿主进程。
+        let _ = preview.as_ref();
     }
 }
 
