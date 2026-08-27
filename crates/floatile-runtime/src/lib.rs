@@ -246,14 +246,20 @@ impl WidgetHandle {
     pub async fn start(&self) -> Result<(), InstanceError> {
         let (tx, rx) = oneshot::channel();
         self.send(InstanceCommand::Start(tx)).await?;
-        rx.await.map_err(|_| self.actor_stopped_error())?
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(self.actor_stopped_error().await),
+        }
     }
 
     /// 投递一个统一事件（UI/timer/mode/config/theme/suspend/resume）。
     pub async fn handle_event(&self, event: WidgetEvent) -> Result<(), InstanceError> {
         let (tx, rx) = oneshot::channel();
         self.send(InstanceCommand::Event(event, tx)).await?;
-        rx.await.map_err(|_| self.actor_stopped_error())?
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(self.actor_stopped_error().await),
+        }
     }
 
     /// 展示模式切换通知。
@@ -290,13 +296,17 @@ impl WidgetHandle {
             .map_err(|_| InstanceError::Failed("实例已终止（命令通道关闭）".to_owned()))
     }
 
-    fn actor_stopped_error(&self) -> InstanceError {
-        let detail = self
-            .actor_failure
-            .lock()
-            .clone()
-            .unwrap_or_else(|| "actor 未返回调用结果".to_owned());
-        InstanceError::Failed(detail)
+    async fn actor_stopped_error(&self) -> InstanceError {
+        // Dropping the command receiver wakes the caller before the actor task's wrapper
+        // necessarily records `run_actor`'s result. Give that wrapper a bounded chance to
+        // publish the setup/call error so cross-platform failures retain their root cause.
+        for _ in 0..4 {
+            if let Some(detail) = self.actor_failure.lock().clone() {
+                return InstanceError::Failed(detail);
+            }
+            tokio::task::yield_now().await;
+        }
+        InstanceError::Failed("actor 未返回调用结果".to_owned())
     }
 }
 
