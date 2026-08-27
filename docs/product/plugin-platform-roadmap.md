@@ -172,7 +172,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 | PP-M3 | Capability Registry 单源 | 已完成（自动化契约验证） | 统一 capability 元数据，生成/校验 manifest、Broker、SDK 映射与 contract vectors | 注册表/WIT/manifest/CLI/Broker 动态覆盖测试；恶意插件和配额测试证明默认拒绝 | `core`、`services`、plugin API、SDK、CLI |
 | PP-M4 | Rust 作者闭环 | 已完成（自动化契约与 Xvfb 验证；公开发布受许可门阻断） | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
 | PP-M5 | 外部数据平台 | 已完成（自动化契约验证） | Connection、Credential Vault、HTTPS Broker、调度、缓存、重试、限流和连接健康状态 | AI 余额参考插件只使用通用能力，且 secret 不进入 guest、日志、State 或包 | `core`、`store`、`services`、shell、WIT、SDK |
-| PP-M6 | UI 平台 | 规划中 | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
+| PP-M6 | UI 平台 | 进行中 | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
 | PP-M7 | SDK 与语言生态 | 规划中 | Rust API 稳定化；在工具链可行后接入 TypeScript；生成文档、迁移指南和 conformance kit | 双语言通过相同 contract vectors、恶意输入和端到端示例；不存在宿主语义分叉 | SDK、plugin API、CLI、CI |
 | PP-M8 | 分发与信任 | 规划中 | publisher/signing、来源与信任、权限 diff、兼容性解析、更新/回滚和可恢复安装 | 安装与升级能解释权限变化和失败原因；篡改/降级/回滚路径有测试 | CLI、core、store、shell、distribution |
 | PP-M9 | 组合与自动化 | 规划中 | 宿主事件、定时/系统触发、受控 pub/sub、工作流和通知 | 插件间不直接持有句柄；事件有 schema、scope、背压、循环检测和审计 | core、runtime、services、WIT、SDK |

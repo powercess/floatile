@@ -19,13 +19,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use floatile_platform::{PlatformCapabilities, set_always_on_top};
-use floatile_renderer::{BindingSlot, EventSlot, RenderedComponent, render_component};
+use floatile_renderer::{
+    BindingSlot, BindingValueType, EventSlot, RenderedComponent, render_component,
+};
+use floatile_ui_schema::path::PathSegments;
 use floatile_ui_schema::{MAX_IR_BYTES, UiDocument, validate_document};
 use serde_json::Value;
 use slint::winit_030::WinitWindowAccessor;
 use slint_interpreter::{Compiler, ComponentDefinition, ComponentInstance, Value as UiValue};
-
-use crate::{PluginBinding, resolve_binding_string};
 
 /// renderer 声明的宿主组件名（单一事实源，随 renderer 命名演进）。
 pub const PLUGIN_COMPONENT_NAME: &str = "ClockPluginUI";
@@ -181,14 +182,9 @@ impl RuntimePluginWindow {
     /// runtime 的权威 State（NFR-SEC-01）。
     pub fn project_state(&self, state: &Value) -> Result<(), RuntimeUiError> {
         for slot in &self.bindings {
-            let binding = PluginBinding {
-                path: slot.path.clone(),
-                prop: slot.prop.clone(),
-            };
-            let text = resolve_binding_string(&binding, state)
-                .map_err(|e| RuntimeUiError::Projection(format!("{}: {e}", slot.prop)))?;
+            let value = project_binding_value(slot, state)?.into_ui_value();
             self.instance
-                .set_property(&slot.prop, UiValue::String(text.into()))
+                .set_property(&slot.prop, value)
                 .map_err(|e| RuntimeUiError::Projection(format!("{}: {e}", slot.prop)))?;
         }
         Ok(())
@@ -229,6 +225,51 @@ impl RuntimePluginWindow {
     /// 底层 interpreter 实例句柄（宿主内部；用于投影校验与事件触发，不暴露给插件）。
     pub fn instance(&self) -> &ComponentInstance {
         &self.instance
+    }
+}
+
+#[derive(Debug)]
+enum ProjectedValue {
+    String(String),
+    Boolean(bool),
+    Number(f64),
+}
+
+impl ProjectedValue {
+    fn into_ui_value(self) -> UiValue {
+        match self {
+            Self::String(value) => UiValue::String(value.into()),
+            Self::Boolean(value) => UiValue::Bool(value),
+            Self::Number(value) => UiValue::Number(value),
+        }
+    }
+}
+
+fn project_binding_value(
+    slot: &BindingSlot,
+    state: &Value,
+) -> Result<ProjectedValue, RuntimeUiError> {
+    let segments = PathSegments::parse(&slot.path)
+        .map_err(|error| RuntimeUiError::Projection(format!("{}: {error}", slot.prop)))?;
+    let mut current = state;
+    for segment in segments.segments() {
+        current = current.get(segment).ok_or_else(|| {
+            RuntimeUiError::Projection(format!("{}: State 字段 `{segment}` 缺失", slot.prop))
+        })?;
+    }
+    match slot.value_type {
+        BindingValueType::String => current
+            .as_str()
+            .map(|value| ProjectedValue::String(value.to_owned()))
+            .ok_or_else(|| RuntimeUiError::Projection(format!("{}: 期望 string", slot.prop))),
+        BindingValueType::Boolean => current
+            .as_bool()
+            .map(ProjectedValue::Boolean)
+            .ok_or_else(|| RuntimeUiError::Projection(format!("{}: 期望 boolean", slot.prop))),
+        BindingValueType::Number => current
+            .as_f64()
+            .map(ProjectedValue::Number)
+            .ok_or_else(|| RuntimeUiError::Projection(format!("{}: 期望 number", slot.prop))),
     }
 }
 
@@ -360,10 +401,90 @@ mod tests {
     }
 
     #[test]
+    fn typed_projection_preserves_boolean_and_number_values() {
+        let state = serde_json::json!({"loading": true, "percent": 42.5});
+        let boolean = BindingSlot {
+            path: "$.loading".into(),
+            prop: "prop_loading".into(),
+            value_type: BindingValueType::Boolean,
+        };
+        let number = BindingSlot {
+            path: "$.percent".into(),
+            prop: "prop_percent".into(),
+            value_type: BindingValueType::Number,
+        };
+        assert!(matches!(
+            project_binding_value(&boolean, &state).unwrap(),
+            ProjectedValue::Boolean(true)
+        ));
+        assert!(matches!(
+            project_binding_value(&number, &state).unwrap(),
+            ProjectedValue::Number(value) if value == 42.5
+        ));
+    }
+
+    #[test]
     fn compile_component_succeeds_without_display() {
         // ADR-0002 核心断言：纯编译不需要窗口 backend，无头 CI 可直接跑。
         let rendered = render_ftui(&ftui_bytes(&clock_ftui())).unwrap();
-        let definition = compile_component(&rendered).unwrap();
+        let definition = compile_component(&rendered)
+            .unwrap_or_else(|error| panic!("{error}\n{}", rendered.source));
+        assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
+    }
+
+    #[test]
+    fn compile_typed_page_state_and_metrics_without_display() {
+        let mut document = clock_ftui();
+        document.state.initial = serde_json::json!({
+            "time": "ok",
+            "running": true,
+            "percent": 42.5
+        });
+        if let JsonSchema::Object { properties, .. } = &mut document.state.schema {
+            properties.insert("percent".into(), JsonSchema::Number);
+        }
+        document.root = Component {
+            kind: "Column".into(),
+            children: vec![
+                Component {
+                    kind: "If".into(),
+                    when: Some(floatile_ui_schema::ir::Binding::State {
+                        bind: "$.running".into(),
+                    }),
+                    then: Some(Box::new(Component {
+                        kind: "Badge".into(),
+                        props: BTreeMap::from([
+                            (
+                                "label".into(),
+                                PropValue::Binding(floatile_ui_schema::ir::Binding::State {
+                                    bind: "$.time".into(),
+                                }),
+                            ),
+                            (
+                                "tone".into(),
+                                PropValue::Literal(serde_json::json!("success")),
+                            ),
+                        ]),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                Component {
+                    kind: "Progress".into(),
+                    props: BTreeMap::from([(
+                        "value".into(),
+                        PropValue::Binding(floatile_ui_schema::ir::Binding::State {
+                            bind: "$.percent".into(),
+                        }),
+                    )]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let rendered = render_ftui(&ftui_bytes(&document)).unwrap();
+        let definition = compile_component(&rendered)
+            .unwrap_or_else(|error| panic!("{error}\n{}", rendered.source));
         assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
     }
 
@@ -802,15 +923,11 @@ pub async fn spawn_runtime_ui_with_https(
                         ));
                         break;
                     };
-                    // 沿 renderer binding 槽位解析为 (prop, text)，在 UI 线程投影。
+                    // 沿 renderer binding 槽位解析为类型化值，在 UI 线程投影。
                     let mut projections = Vec::new();
                     for slot in &bindings {
-                        let binding = PluginBinding {
-                            path: slot.path.clone(),
-                            prop: slot.prop.clone(),
-                        };
-                        match resolve_binding_string(&binding, &update.state) {
-                            Ok(text) => projections.push((slot.prop.clone(), text)),
+                        match project_binding_value(slot, &update.state) {
+                            Ok(value) => projections.push((slot.prop.clone(), value)),
                             Err(error) => tracing::warn!(
                                 seq = update.seq,
                                 %error,
@@ -823,8 +940,8 @@ pub async fn spawn_runtime_ui_with_https(
                     }
                     let weak = weak.clone();
                     if let Err(error) = weak.upgrade_in_event_loop(move |instance| {
-                        for (prop, text) in projections {
-                            let _ = instance.set_property(&prop, UiValue::String(text.into()));
+                        for (prop, value) in projections {
+                            let _ = instance.set_property(&prop, value.into_ui_value());
                         }
                     }) {
                         tracing::debug!(%error, "event loop delivery failed; stopping bridge");

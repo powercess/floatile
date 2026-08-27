@@ -2,7 +2,7 @@
 
 > 状态：Proposed（renderer spike、schema 实现和正反例通过后冻结）
 > 文件：`ui/widget.ftui`
-> 版本：`uiApiVersion = 1.0.0`
+> 版本：`uiApiVersion = 1.1.0`
 > 关联：ADR-0001、FR-PLUGIN-01、F11
 
 `floatile-ui-schema` 已实现 IR 类型、组件 registry v1、State/Event JSON Schema 校验、JSONPath 绑定
@@ -27,7 +27,7 @@ P0 可以使用 canonical JSON 编码，后续可换二进制编码，但 v1 语
 
 ```json
 {
-  "uiApiVersion": "1.0.0",
+  "uiApiVersion": "1.1.0",
   "state": {
     "initial": {
       "time": "--:--:--",
@@ -161,7 +161,7 @@ P0 candidate：
 Layout:       Row Column Stack Grid Scroll
 Content:      Text Icon Image
 Interaction:  Button Toggle
-Data:         Progress Gauge List
+Data:         Badge Progress Gauge List
 Control:      If ForEach
 Extension:    Canvas Path（通过 renderer spike 后再启用）
 ```
@@ -245,7 +245,7 @@ P0 比较：
 - 输出是纯文本：所有字符串字面量经结构化转义，组件名/属性名/回调名由 renderer 生成，
   插件不能定义标识符，杜绝把 IR 原始文本拼进 Slint 语法位置。
 - 组件映射（v1 子集）：Column→`VerticalLayout`、Row→`HorizontalLayout`、Stack/Grid→布局容器；
-  Text/Button/Toggle/Progress/Gauge→宿主基础元素；If→`if` 结构、ForEach→`for` 循环（模板内 item
+  Text/Button/Toggle/Badge/Progress/Gauge→宿主基础元素；If→`if` 结构、ForEach→`for` 循环（模板内 item
   绑定进入独立命名空间）。公共样式 prop（padding/gap/color/opacity 等）映射为受限 Slint 属性。
   Canvas/Path 等未映射组件稳定拒绝（`RNDR_UNSUPPORTED_COMPONENT`）。
 - 输出 `component ClockPluginUI`（非 Window 内容组件，遵循 renderer 中立）+ binding/event 槽位：
@@ -253,6 +253,17 @@ P0 比较：
   （声明事件→生成回调名）供未来 shell renderer 把输入事件转发回 runtime。
 - 恶意 IR（超节点/深度/绑定、未知组件、病态字面量）在 renderer 层拒绝并以固定码
   （`RNDR_*`）返回，不泄漏宿主内部。
+
+### 12.2 UI API 1.1 状态与指标切片
+
+- renderer binding slot 携带 `string`、`boolean` 或 `number` 类型；shell 必须按槽位类型投影权威
+  State，不得把 boolean/number 转成自由文本后交给 Slint 猜测。
+- `Badge` 使用宿主语义 tone：`neutral`、`info`、`success`、`warning`、`danger`；插件不得提供颜色
+  源码。未知 tone 在 schema/CLI/runtime 复验阶段拒绝。
+- `Progress.value` 是 0..100 的 number 语义；renderer 将数值映射为百分比长度，插件不能注入长度
+  表达式。
+- Rust SDK 的 `page_state` 用嵌套 `If` 组合 loading/error/empty/content，固定优先级为
+  loading → error → empty → content；三个判定路径都必须绑定 boolean State。
 
 ## 13. Contract tests
 

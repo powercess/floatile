@@ -79,6 +79,79 @@ pub fn button(label: &str) -> View {
     }
 }
 
+/// Badge 组件：标签绑定 State 路径，tone 只能使用宿主定义的语义值。
+pub fn badge_bind(path: &str, tone: &str) -> View {
+    let mut props = std::collections::BTreeMap::new();
+    props.insert(
+        "label".into(),
+        PropValue::Binding(Binding::State {
+            bind: path.to_owned(),
+        }),
+    );
+    props.insert(
+        "tone".into(),
+        PropValue::Literal(serde_json::Value::String(tone.to_owned())),
+    );
+    View {
+        kind: "Badge".into(),
+        props,
+        ..Default::default()
+    }
+}
+
+/// Progress 组件：绑定 0..=100 的数值 State 路径。
+pub fn progress_bind(path: &str) -> View {
+    let mut props = std::collections::BTreeMap::new();
+    props.insert(
+        "value".into(),
+        PropValue::Binding(Binding::State {
+            bind: path.to_owned(),
+        }),
+    );
+    View {
+        kind: "Progress".into(),
+        props,
+        ..Default::default()
+    }
+}
+
+/// If 控制节点：按 boolean State 绑定选择 then/else 分支。
+pub fn if_bind(path: &str, then_view: View, else_view: Option<View>) -> View {
+    View {
+        kind: "If".into(),
+        when: Some(Binding::State {
+            bind: path.to_owned(),
+        }),
+        then: Some(Box::new(then_view)),
+        else_: else_view.map(Box::new),
+        ..Default::default()
+    }
+}
+
+/// 标准 loading/empty/error/content 四态页面。
+///
+/// 优先级固定为 loading → error → empty → content，避免多个状态同时为真时
+/// 呈现不确定结果。三个路径都必须绑定 boolean State 字段。
+pub fn page_state(
+    loading_path: &str,
+    error_path: &str,
+    empty_path: &str,
+    loading: View,
+    error: View,
+    empty: View,
+    content: View,
+) -> View {
+    if_bind(
+        loading_path,
+        loading,
+        Some(if_bind(
+            error_path,
+            error,
+            Some(if_bind(empty_path, empty, Some(content))),
+        )),
+    )
+}
+
 /// 设置布局 props（padding、gap 等）。
 pub fn with_props(
     mut view: View,
@@ -105,5 +178,53 @@ pub fn into_document(
         },
         events,
         root,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_state_has_deterministic_priority() {
+        let view = page_state(
+            "$.loading",
+            "$.error",
+            "$.empty",
+            text_literal("loading"),
+            text_literal("error"),
+            text_literal("empty"),
+            text_literal("content"),
+        );
+        assert_eq!(view.kind, "If");
+        assert_eq!(
+            view.when,
+            Some(Binding::State {
+                bind: "$.loading".into()
+            })
+        );
+        let error_branch = view.else_.expect("page state 必须包含 error 分支");
+        assert_eq!(
+            error_branch.when,
+            Some(Binding::State {
+                bind: "$.error".into()
+            })
+        );
+        let empty_branch = error_branch.else_.expect("page state 必须包含 empty 分支");
+        assert_eq!(
+            empty_branch.when,
+            Some(Binding::State {
+                bind: "$.empty".into()
+            })
+        );
+    }
+
+    #[test]
+    fn badge_and_progress_builders_emit_registry_components() {
+        let badge = badge_bind("$.status", "success");
+        assert_eq!(badge.kind, "Badge");
+        let progress = progress_bind("$.percent");
+        assert_eq!(progress.kind, "Progress");
     }
 }

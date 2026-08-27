@@ -80,6 +80,8 @@ pub enum ComponentKind {
 #[derive(Debug, Clone)]
 pub struct ComponentSpec {
     pub name: &'static str,
+    /// 首次引入该组件的 UI API 1.x minor。
+    pub introduced_minor: u64,
     pub props: Vec<PropSchema>,
     pub input_events: &'static [&'static str],
     pub children: ChildrenPolicy,
@@ -278,6 +280,27 @@ fn build_registry() -> Vec<ComponentSpec> {
         }],
         &[],
     );
+    element_since(
+        &mut specs,
+        "Badge",
+        1,
+        ChildrenPolicy::Forbidden,
+        &[
+            PropSchema {
+                name: "label",
+                types: &[JsonType::String],
+                allow_binding: true,
+                optional: false,
+            },
+            PropSchema {
+                name: "tone",
+                types: &[JsonType::String],
+                allow_binding: false,
+                optional: true,
+            },
+        ],
+        &[],
+    );
     element(
         &mut specs,
         "Gauge",
@@ -295,6 +318,7 @@ fn build_registry() -> Vec<ComponentSpec> {
     // 控制组件（Canvas/Path 在 renderer spike 通过前不启用）。
     specs.push(ComponentSpec {
         name: "If",
+        introduced_minor: 0,
         props: Vec::new(),
         input_events: &[],
         children: ChildrenPolicy::Forbidden,
@@ -302,6 +326,7 @@ fn build_registry() -> Vec<ComponentSpec> {
     });
     specs.push(ComponentSpec {
         name: "ForEach",
+        introduced_minor: 0,
         props: Vec::new(),
         input_events: &[],
         children: ChildrenPolicy::Forbidden,
@@ -317,11 +342,23 @@ fn element(
     props: &[PropSchema],
     events: &'static [&'static str],
 ) {
+    element_since(out, name, 0, children, props, events);
+}
+
+fn element_since(
+    out: &mut Vec<ComponentSpec>,
+    name: &'static str,
+    introduced_minor: u64,
+    children: ChildrenPolicy,
+    props: &[PropSchema],
+    events: &'static [&'static str],
+) {
     let mut all = Vec::with_capacity(COMMON_ELEMENT_PROPS.len() + props.len());
     all.extend_from_slice(COMMON_ELEMENT_PROPS);
     all.extend_from_slice(props);
     out.push(ComponentSpec {
         name,
+        introduced_minor,
         props: all,
         input_events: events,
         children,
@@ -354,6 +391,16 @@ pub fn validate_literal(
             expected,
         });
     }
+    if spec.name == "Badge"
+        && prop.name == "tone"
+        && let Some(value) = json.as_str()
+        && !["neutral", "info", "success", "warning", "danger"].contains(&value)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Badge.tone".to_owned(),
+            expected: vec!["neutral|info|success|warning|danger".to_owned()],
+        });
+    }
     Ok(())
 }
 
@@ -366,7 +413,7 @@ mod tests {
     fn registry_has_expected_v1_components() {
         for name in [
             "Row", "Column", "Stack", "Grid", "Scroll", "Text", "Icon", "Image", "Button",
-            "Toggle", "Progress", "Gauge", "List", "If", "ForEach",
+            "Toggle", "Progress", "Badge", "Gauge", "List", "If", "ForEach",
         ] {
             assert!(find(name).is_ok(), "missing component {name}");
         }

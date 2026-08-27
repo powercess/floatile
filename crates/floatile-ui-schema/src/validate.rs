@@ -17,7 +17,7 @@ use crate::{
 
 /// 校验一个完整的 `widget.ftui` 文档。
 pub fn validate_document(doc: &UiDocument) -> Result<(), UiSchemaError> {
-    check_api_version(&doc.ui_api_version)?;
+    let ui_minor = check_api_version(&doc.ui_api_version)?;
     check_ir_size(doc)?;
 
     if doc.events.len() > MAX_EVENT_DECLS {
@@ -40,17 +40,22 @@ pub fn validate_document(doc: &UiDocument) -> Result<(), UiSchemaError> {
         nodes: 0,
         bindings: 0,
         asset_refs: 0,
+        ui_minor,
     };
     validate_component(&doc.root, &doc.state.schema, None, &mut ctx, 1)
 }
 
 /// 校验 uiApiVersion：只接受 major 1（`1` 或 `1.x.y`）。
-fn check_api_version(version: &str) -> Result<(), UiSchemaError> {
-    let major = version.split('.').next().unwrap_or("");
-    if major == "1" {
-        Ok(())
-    } else {
-        Err(UiSchemaError::UnsupportedApiVersion(version.to_owned()))
+fn check_api_version(version: &str) -> Result<u64, UiSchemaError> {
+    let mut parts = version.split('.');
+    if parts.next() != Some("1") {
+        return Err(UiSchemaError::UnsupportedApiVersion(version.to_owned()));
+    }
+    match parts.next() {
+        None => Ok(0),
+        Some(minor) => minor
+            .parse::<u64>()
+            .map_err(|_| UiSchemaError::UnsupportedApiVersion(version.to_owned())),
     }
 }
 
@@ -100,6 +105,7 @@ struct Ctx<'a> {
     nodes: usize,
     bindings: usize,
     asset_refs: usize,
+    ui_minor: u64,
 }
 
 fn validate_component(
@@ -122,6 +128,12 @@ fn validate_component(
         )));
     }
     let spec = registry::find(&comp.kind)?;
+    if spec.introduced_minor > ctx.ui_minor {
+        return Err(UiSchemaError::UnsupportedApiVersion(format!(
+            "{} requires 1.{}.0",
+            comp.kind, spec.introduced_minor
+        )));
+    }
     match spec.kind {
         ComponentKind::If => validate_if(comp, state_schema, ctx, depth),
         ComponentKind::ForEach => validate_foreach(comp, state_schema, ctx, depth),
@@ -410,7 +422,7 @@ mod tests {
 
     fn valid_doc() -> UiDocument {
         UiDocument {
-            ui_api_version: "1.0.0".into(),
+            ui_api_version: crate::UI_API_VERSION.into(),
             state: StateSchema {
                 initial: json!({"time": "--:--:--", "running": false, "zones": []}),
                 schema: clock_schema(),
@@ -735,10 +747,28 @@ mod tests {
     }
 
     #[test]
+    fn contract_vector_component_minor_gate() {
+        let badge = Component {
+            kind: "Badge".into(),
+            props: BTreeMap::from([("label".into(), PropValue::Literal(json!("ok")))]),
+            ..Default::default()
+        };
+        let mut old = with_single(badge.clone());
+        old.ui_api_version = "1.0.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+        let mut current = with_single(badge);
+        current.ui_api_version = "1.1.0".into();
+        assert!(validate_document(&current).is_ok());
+    }
+
+    #[test]
     fn contract_vector_positive_components() {
         // 正例:registry 元素组件结构合法。
         for kind in [
-            "Text", "Button", "Toggle", "Progress", "Gauge", "Icon", "Image",
+            "Text", "Button", "Toggle", "Progress", "Badge", "Gauge", "Icon", "Image",
         ] {
             let root = Component {
                 kind: kind.into(),

@@ -20,6 +20,17 @@ pub struct BindingSlot {
     pub path: String,
     /// 生成的宿主属性名(如 `prop_time`)。
     pub prop: String,
+    /// Slint 投影值类型；运行时必须按此类型转换权威 State。
+    pub value_type: BindingValueType,
+}
+
+/// renderer 与 shell 共享的有限 State 投影类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingValueType {
+    String,
+    Boolean,
+    Number,
 }
 
 /// 一个输入事件:声明事件名 → 生成的回调名。
@@ -73,7 +84,15 @@ fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot])
     // `export` 让宿主的 `slint!` 能 `import` 本组件并把权威 State 投影到其绑定槽位。
     out.push_str("export component ClockPluginUI inherits Rectangle {\n");
     for slot in bindings {
-        out.push_str(&format!("    in property <string> {}: \"\";\n", slot.prop));
+        let (kind, default) = match slot.value_type {
+            BindingValueType::String => ("string", "\"\""),
+            BindingValueType::Boolean => ("bool", "false"),
+            BindingValueType::Number => ("float", "0"),
+        };
+        out.push_str(&format!(
+            "    in property <{kind}> {}: {default};\n",
+            slot.prop
+        ));
     }
     for slot in callbacks {
         out.push_str(&format!("    callback {};\n", slot.callback));
@@ -113,6 +132,7 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
         "Button" => render_button(comp, ctx),
         "Toggle" => render_toggle(comp, ctx),
         "Progress" => render_meter(comp, ctx, false),
+        "Badge" => render_badge(comp, ctx),
         "Gauge" => render_meter(comp, ctx, true),
         "If" => render_if(comp, ctx, depth),
         "ForEach" => render_foreach(comp, ctx, depth),
@@ -164,7 +184,7 @@ fn render_text(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError>
     };
     match prop {
         PropValue::Binding(Binding::State { bind }) => {
-            let slot = binding_slot(bind, ctx)?;
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
             let mut out = String::from("    Text {\n");
             out.push_str(&format!("        text: root.{0};\n", slot.prop));
             out.push_str(&text_style_props(comp)?);
@@ -212,7 +232,7 @@ fn text_style_props(comp: &Component) -> Result<String, RendererError> {
 fn render_button(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
     let label = match comp.props.get("label") {
         Some(PropValue::Binding(Binding::State { bind })) => {
-            let slot = binding_slot(bind, ctx)?;
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
             format!("root.{0}", slot.prop)
         }
         Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
@@ -247,7 +267,7 @@ fn render_button(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererErro
 fn render_toggle(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
     let checked = match comp.props.get("checked") {
         Some(PropValue::Binding(Binding::State { bind })) => {
-            let slot = binding_slot(bind, ctx)?;
+            let slot = binding_slot(bind, BindingValueType::Boolean, ctx)?;
             format!("root.{0}", slot.prop)
         }
         Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
@@ -289,8 +309,11 @@ fn tied(checked: String) -> String {
 fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String, RendererError> {
     let value = match comp.props.get("value") {
         Some(PropValue::Binding(Binding::State { bind })) => {
-            let slot = binding_slot(bind, ctx)?;
-            format!("root.{0}", slot.prop)
+            let slot = binding_slot(bind, BindingValueType::Number, ctx)?;
+            format!(
+                "(root.{0} < 0 ? 0 : (root.{0} > 100 ? 100 : root.{0}))",
+                slot.prop
+            )
         }
         Some(PropValue::Binding(Binding::Item { .. })) => {
             return Err(RendererError::BindingError(
@@ -301,7 +324,7 @@ fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String,
             let f = v
                 .as_f64()
                 .ok_or_else(|| RendererError::BindingError("meter value 必须是数字".to_owned()))?;
-            format!("{f}%")
+            format!("{}", f.clamp(0.0, 100.0))
         }
         None => {
             return Err(RendererError::BindingError(
@@ -317,11 +340,56 @@ fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String,
     out.push_str("        Rectangle {\n");
     out.push_str("            border-radius: 2px;\n");
     out.push_str("            background: #4a90e2;\n");
-    out.push_str(&format!("            width: {value};\n"));
+    out.push_str(&format!(
+        "            width: parent.width * ({value} / 100);\n"
+    ));
     out.push_str("            height: 8px;\n");
     out.push_str("        }\n");
     out.push_str("    }\n");
     Ok(out)
+}
+
+/// Badge：宿主语义 tone 映射到固定主题色，不接受插件提供的颜色源码。
+fn render_badge(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    let label = match comp.props.get("label") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
+            format!("root.{0}", slot.prop)
+        }
+        Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
+        Some(PropValue::Literal(value)) => encode_string(&value_to_string(value)?)?,
+        None => {
+            return Err(RendererError::BindingError(
+                "Badge 缺少 label prop".to_owned(),
+            ));
+        }
+    };
+    let tone = match comp.props.get("tone") {
+        None => "neutral",
+        Some(PropValue::Literal(value)) => value
+            .as_str()
+            .ok_or_else(|| RendererError::BindingError("Badge tone 必须是字符串".to_owned()))?,
+        Some(PropValue::Binding(_)) => {
+            return Err(RendererError::BindingError(
+                "Badge tone 不允许运行时绑定".to_owned(),
+            ));
+        }
+    };
+    let background = match tone {
+        "neutral" => "#3b4351",
+        "info" => "#245ea8",
+        "success" => "#247a45",
+        "warning" => "#8a6418",
+        "danger" => "#9b3030",
+        other => {
+            return Err(RendererError::EncodeError(format!(
+                "Badge tone `{other}` 不在允许集合"
+            )));
+        }
+    };
+    Ok(format!(
+        "    Rectangle {{\n        border-radius: 8px;\n        background: {background};\n        height: 20px;\n        Text {{\n            text: {label};\n            color: white;\n            horizontal-alignment: center;\n            vertical-alignment: center;\n        }}\n    }}\n"
+    ))
 }
 
 /// If:when 布尔绑定 → Slint `if` 结构。
@@ -331,20 +399,18 @@ fn render_if(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, Re
             "If 缺少 when 布尔 State 绑定".to_owned(),
         ));
     };
-    let slot = binding_slot(bind, ctx)?;
+    let slot = binding_slot(bind, BindingValueType::Boolean, ctx)?;
     let Some(then) = &comp.then else {
         return Err(RendererError::BindingError("If 缺少 then 分支".to_owned()));
     };
     let then_text = render_node(then, ctx, depth + 1)?;
     let mut out = String::new();
-    out.push_str(&format!("if root.{0}: {{\n", slot.prop));
+    out.push_str(&format!("if root.{0}: ", slot.prop));
     out.push_str(&then_text);
-    out.push_str("}\n");
     if let Some(els) = &comp.else_ {
         let else_text = render_node(els, ctx, depth + 1)?;
-        out.push_str("else {\n");
+        out.push_str(&format!("if !root.{0}: ", slot.prop));
         out.push_str(&else_text);
-        out.push_str("}\n");
     }
     Ok(out)
 }
@@ -356,7 +422,7 @@ fn render_foreach(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<Strin
             "ForEach 缺少 items 数组 State 绑定".to_owned(),
         ));
     };
-    let slot = binding_slot(bind, ctx)?;
+    let slot = binding_slot(bind, BindingValueType::String, ctx)?;
     let Some(template) = &comp.template else {
         return Err(RendererError::BindingError(
             "ForEach 缺少 template".to_owned(),
@@ -389,9 +455,18 @@ fn item_key(comp: &Component) -> Result<String, RendererError> {
 }
 
 /// 登记一个 State 绑定并返回生成的属性名(同路径复用同一属性)。
-fn binding_slot(bind: &str, ctx: &mut Ctx) -> Result<BindingSlot, RendererError> {
+fn binding_slot(
+    bind: &str,
+    value_type: BindingValueType,
+    ctx: &mut Ctx,
+) -> Result<BindingSlot, RendererError> {
     PathSegments::parse(bind).map_err(|e| RendererError::BindingError(format!("{bind}: {e}")))?;
     if let Some(slot) = ctx.bindings.get(bind) {
+        if slot.value_type != value_type {
+            return Err(RendererError::BindingError(format!(
+                "{bind} 被用于不兼容的投影类型"
+            )));
+        }
         return Ok(slot.clone());
     }
     if ctx.bindings.len() >= MAX_BINDINGS {
@@ -403,6 +478,7 @@ fn binding_slot(bind: &str, ctx: &mut Ctx) -> Result<BindingSlot, RendererError>
     let slot = BindingSlot {
         path: bind.to_owned(),
         prop,
+        value_type,
     };
     ctx.bindings.insert(bind.to_owned(), slot.clone());
     Ok(slot)
@@ -603,6 +679,7 @@ mod tests {
             vec![BindingSlot {
                 path: "$.time".into(),
                 prop: "prop_time".into(),
+                value_type: BindingValueType::String,
             }]
         );
     }
@@ -717,11 +794,11 @@ mod tests {
         };
         let rendered = render_component(&doc(root)).unwrap();
         let src = &rendered.source;
+        assert!(src.contains("if root.prop_running:"), "缺少 if 分支: {src}");
         assert!(
-            src.contains("if root.prop_running: {"),
-            "缺少 if 分支: {src}"
+            src.contains("if !root.prop_running:"),
+            "缺少 else 分支: {src}"
         );
-        assert!(src.contains("else {"), "缺少 else 分支: {src}");
         assert!(
             src.contains("text: root.prop_time;"),
             "then 分支应渲染 time 绑定"
@@ -815,5 +892,79 @@ mod tests {
                 callback: "emit_0".into(),
             }]
         );
+    }
+
+    #[test]
+    fn renders_typed_boolean_and_number_slots() {
+        let root = column(vec![
+            Component {
+                kind: "If".into(),
+                when: Some(Binding::State {
+                    bind: "$.running".into(),
+                }),
+                then: Some(Box::new(text_bind("$.time"))),
+                ..Default::default()
+            },
+            Component {
+                kind: "Progress".into(),
+                props: BTreeMap::from([(
+                    "value".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.percent".into(),
+                    }),
+                )]),
+                ..Default::default()
+            },
+        ]);
+        let mut document = doc(root);
+        if let floatile_ui_schema::JsonSchema::Object { properties, .. } =
+            &mut document.state.schema
+        {
+            properties.insert("percent".into(), floatile_ui_schema::JsonSchema::Number);
+        }
+        document.state.initial["percent"] = json!(42.0);
+        let rendered = render_component(&document).unwrap();
+        assert!(rendered.source.contains("in property <bool> prop_running"));
+        assert!(rendered.source.contains("in property <float> prop_percent"));
+        assert!(rendered.source.contains(
+            "width: parent.width * ((root.prop_percent < 0 ? 0 : (root.prop_percent > 100 ? 100 : root.prop_percent)) / 100)"
+        ));
+    }
+
+    #[test]
+    fn renders_badge_with_host_owned_tone() {
+        let root = Component {
+            kind: "Badge".into(),
+            props: BTreeMap::from([
+                (
+                    "label".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.time".into(),
+                    }),
+                ),
+                ("tone".into(), PropValue::Literal(json!("success"))),
+            ]),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("background: #247a45"));
+        assert!(rendered.source.contains("text: root.prop_time"));
+    }
+
+    #[test]
+    fn rejects_badge_tone_outside_host_palette() {
+        let root = Component {
+            kind: "Badge".into(),
+            props: BTreeMap::from([
+                ("label".into(), PropValue::Literal(json!("unsafe"))),
+                (
+                    "tone".into(),
+                    PropValue::Literal(json!("url(plugin-input)")),
+                ),
+            ]),
+            ..Default::default()
+        };
+        let error = render_component(&doc(root)).unwrap_err();
+        assert_eq!(error.code(), "RNDR_INVALID_IR");
     }
 }

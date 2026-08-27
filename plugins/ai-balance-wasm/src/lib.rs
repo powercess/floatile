@@ -14,6 +14,10 @@ const CONNECTION_ID: u64 = 1;
 pub struct BalanceState {
     pub balance: String,
     pub status: String,
+    pub utilization: f64,
+    pub loading: bool,
+    pub error: bool,
+    pub empty: bool,
 }
 
 #[derive(Debug)]
@@ -44,10 +48,12 @@ impl AiBalance {
     fn refresh(&self, ctx: &mut Context<Self>) {
         match ctx.http().submit("balance", CONNECTION_ID, &[]) {
             Ok(_) => {
-                let _ = ctx.state().update(r#"{"status":"loading"}"#);
+                let _ = ctx
+                    .state()
+                    .update(r#"{"status":"loading","loading":true,"error":false,"empty":false}"#);
             }
             Err(_) => {
-                let _ = ctx.state().update(r#"{"status":"unavailable"}"#);
+                mark_error(ctx, "unavailable");
             }
         }
         let _ = ctx.timer().schedule(60_000);
@@ -59,10 +65,22 @@ impl Widget for AiBalance {
     type Event = BalanceEvent;
 
     fn view(_state: &Self::State) -> View {
-        view::column(vec![
-            view::text_bind("$.balance"),
-            view::text_bind("$.status"),
-        ])
+        view::page_state(
+            "$.loading",
+            "$.error",
+            "$.empty",
+            view::text_literal("Loading balance…"),
+            view::column(vec![
+                view::badge_bind("$.status", "danger"),
+                view::text_literal("Balance is temporarily unavailable"),
+            ]),
+            view::text_literal("No balance data yet"),
+            view::column(vec![
+                view::text_bind("$.balance"),
+                view::badge_bind("$.status", "success"),
+                view::progress_bind("$.utilization"),
+            ]),
+        )
     }
 
     fn start(&mut self, ctx: &mut Context<Self>) {
@@ -76,12 +94,12 @@ impl Widget for AiBalance {
                 match ctx.http().take_result(id) {
                     Ok(response) => update_balance(ctx, response),
                     Err(_) => {
-                        let _ = ctx.state().update(r#"{"status":"unavailable"}"#);
+                        mark_error(ctx, "unavailable");
                     }
                 }
             }
             BalanceEvent::Completed(_, _) => {
-                let _ = ctx.state().update(r#"{"status":"unavailable"}"#);
+                mark_error(ctx, "unavailable");
             }
         }
     }
@@ -90,20 +108,42 @@ impl Widget for AiBalance {
 }
 
 fn update_balance(ctx: &mut Context<AiBalance>, response: host_http::HttpResponse) {
+    if response.status == 204 {
+        let _ = ctx
+            .state()
+            .update(r#"{"status":"empty","loading":false,"error":false,"empty":true}"#);
+        return;
+    }
     let parsed = serde_json::from_slice::<serde_json::Value>(&response.body);
     let balance = parsed
         .ok()
         .and_then(|value| value.get("balance").cloned())
-        .map(|value| value.to_string());
+        .and_then(|value| value.as_f64());
     match balance {
         Some(balance) => {
-            let patch = serde_json::json!({ "balance": balance, "status": "ok" });
+            let utilization = balance.clamp(0.0, 100.0);
+            let patch = serde_json::json!({
+                "balance": format!("{balance:.2}"),
+                "status": "ok",
+                "utilization": utilization,
+                "loading": false,
+                "error": false,
+                "empty": false
+            });
             let _ = ctx.state().update(&patch.to_string());
         }
-        None => {
-            let _ = ctx.state().update(r#"{"status":"invalid-response"}"#);
-        }
+        None => mark_error(ctx, "invalid-response"),
     }
+}
+
+fn mark_error(ctx: &mut Context<AiBalance>, status: &str) {
+    let patch = serde_json::json!({
+        "status": status,
+        "loading": false,
+        "error": true,
+        "empty": false
+    });
+    let _ = ctx.state().update(&patch.to_string());
 }
 
 #[cfg(target_arch = "wasm32")]

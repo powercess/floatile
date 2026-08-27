@@ -145,14 +145,16 @@ P0 首批组件限定为：
 | 布局 | `Row`、`Column`、`Stack`、`Grid`、`Scroll` |
 | 内容 | `Text`、`Icon`、受限 `Image` |
 | 交互 | `Button`、`Toggle` |
-| 数据 | `Progress`、`Gauge`、`List` |
+| 数据 | `Badge`、`Progress`、`Gauge`、`List` |
 | 控制 | `If`、`ForEach`、State binding、event |
 | 样式 | spacing、size、color token、border、radius、opacity |
 | 动画 | 有限的 enter/exit/value transition |
 | 扩展 | 受预算约束的 `Canvas`/`Path`（可在 P0 后半加入） |
 
 组件属性由机器可读 schema 定义，Rust/TypeScript 类型和文档从同一源生成。P0 不加入 TextInput、
-富文本、WebView、地图、视频、自定义字体和任意 SVG；出现真实需求后单独评审。
+UI API 1.1 提供 `page_state` 组合 loading/error/empty/content，并为 `Badge`、`Progress` 提供 Rust
+builder；boolean/number State 通过类型化 binding slot 投影，不退化为字符串。富文本、WebView、地图、
+视频、自定义字体和任意 SVG；出现真实需求后单独评审。
 
 ## 5. Context API
 
