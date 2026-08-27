@@ -81,7 +81,7 @@ impl Widget for AiBalance {
                 420.0,
                 vec![
                     view::column(vec![
-                        view::text_bind("$.balance"),
+                        view::with_color_token(view::text_bind("$.balance"), "accent"),
                         view::badge_bind("$.status", "success"),
                         view::progress_bind("$.utilization"),
                         view::sparkline_bind("$.trend", "Recent balance utilization", "info"),

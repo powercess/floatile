@@ -13,6 +13,7 @@ pub mod patch;
 pub mod path;
 pub mod registry;
 pub mod schema;
+pub mod theme;
 pub mod validate;
 
 pub use error::UiSchemaError;
@@ -23,7 +24,7 @@ pub use schema::{JsonSchema, validate_value};
 pub use validate::validate_document;
 
 /// 当前受支持的 UI IR 版本（独立于 WIT/manifest/SDK/plugin version）。
-pub const UI_API_VERSION: &str = "1.4.0";
+pub const UI_API_VERSION: &str = "1.5.0";
 
 // ---- P0 初始预算（ui-ir-v1 §10；evil/clock/10-instance 数据后才能冻结）----
 

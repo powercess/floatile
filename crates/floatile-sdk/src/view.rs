@@ -241,6 +241,15 @@ pub fn with_props(
     view
 }
 
+/// 为支持该 prop 的组件选择宿主命名颜色 token。
+pub fn with_color_token(mut view: View, token: &str) -> View {
+    view.props.insert(
+        "colorToken".into(),
+        PropValue::Literal(serde_json::Value::String(token.to_owned())),
+    );
+    view
+}
+
 /// 从 View（根组件）+ State schema + 事件声明 构造 `widget.ftui` 文档。
 pub fn into_document(
     root: View,
@@ -335,6 +344,15 @@ mod tests {
         assert_eq!(
             view.props.get("breakpoint"),
             Some(&PropValue::Literal(serde_json::json!(420.0)))
+        );
+    }
+
+    #[test]
+    fn color_token_builder_uses_named_host_token() {
+        let view = with_color_token(text_literal("balance"), "accent");
+        assert_eq!(
+            view.props.get("colorToken"),
+            Some(&PropValue::Literal(serde_json::json!("accent")))
         );
     }
 }

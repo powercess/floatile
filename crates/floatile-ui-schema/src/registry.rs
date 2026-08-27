@@ -220,6 +220,13 @@ fn build_registry() -> Vec<ComponentSpec> {
                 introduced_minor: 0,
                 optional: true,
             },
+            PropSchema {
+                name: "colorToken",
+                types: &[JsonType::String],
+                allow_binding: false,
+                introduced_minor: 5,
+                optional: true,
+            },
         ],
         &[],
     );
@@ -536,6 +543,18 @@ pub fn validate_literal(
         return Err(UiSchemaError::InvalidPropType {
             prop: "Responsive.breakpoint".to_owned(),
             expected: vec!["number from 240 through 1920".to_owned()],
+        });
+    }
+    if prop.name == "colorToken"
+        && let Some(token) = json.as_str()
+        && crate::theme::color_token(token).is_none()
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: format!("{}.colorToken", spec.name),
+            expected: crate::theme::COLOR_TOKENS
+                .iter()
+                .map(|token| token.name.to_owned())
+                .collect(),
         });
     }
     Ok(())

@@ -208,6 +208,12 @@ fn validate_element(
             });
         }
     }
+    if comp.props.contains_key("color") && comp.props.contains_key("colorToken") {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: format!("{}.color", comp.kind),
+            expected: vec!["color or colorToken, not both".to_owned()],
+        });
+    }
 
     // 子组件策略。
     if comp.kind == "List" && comp.props.contains_key("items") && !comp.children.is_empty() {
@@ -911,6 +917,31 @@ mod tests {
             .insert("breakpoint".into(), PropValue::Literal(json!(120)));
         assert!(matches!(
             validate_document(&invalid),
+            Err(UiSchemaError::InvalidPropType { .. })
+        ));
+    }
+
+    #[test]
+    fn contract_vector_theme_token_minor_and_name_gate() {
+        let themed = text(PropValue::Literal(json!("balance")));
+        let mut current = with_single(themed.clone());
+        current.root.children[0]
+            .props
+            .insert("colorToken".into(), PropValue::Literal(json!("accent")));
+        assert!(validate_document(&current).is_ok());
+
+        let mut old = current.clone();
+        old.ui_api_version = "1.4.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+
+        current.root.children[0]
+            .props
+            .insert("colorToken".into(), PropValue::Literal(json!("plugin-css")));
+        assert!(matches!(
+            validate_document(&current),
             Err(UiSchemaError::InvalidPropType { .. })
         ));
     }

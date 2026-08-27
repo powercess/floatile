@@ -2,7 +2,7 @@
 
 > 状态：Proposed（renderer spike、schema 实现和正反例通过后冻结）
 > 文件：`ui/widget.ftui`
-> 版本：`uiApiVersion = 1.4.0`
+> 版本：`uiApiVersion = 1.5.0`
 > 关联：ADR-0001、FR-PLUGIN-01、F11
 
 `floatile-ui-schema` 已实现 IR 类型、组件 registry v1、State/Event JSON Schema 校验、JSONPath 绑定
@@ -27,7 +27,7 @@ P0 可以使用 canonical JSON 编码，后续可换二进制编码，但 v1 语
 
 ```json
 {
-  "uiApiVersion": "1.4.0",
+  "uiApiVersion": "1.5.0",
   "state": {
     "initial": {
       "time": "--:--:--",
@@ -292,6 +292,16 @@ P0 比较：
 - compact/wide 两个 Slint 分支互斥并复用同一受验证子树；binding/event 槽位去重，运行时最坏节点数
   仍按单个 children 子树计入预算。
 - Rust SDK 提供 `responsive` builder；AI Balance 参考插件在窄窗口与宽窗口间切换监控内容排列。
+
+### 12.6 UI API 1.5 宿主主题 token 切片
+
+- `Text.colorToken` 只接受 UI schema registry 中的命名 token：`foreground`、`muted`、`accent`、
+  `positive`、`warning`、`danger`；名称与受限颜色值由 guest-safe 单一源定义。
+- `colorToken` 与自定义 `color` 互斥；未知 token、旧 minor 和同时声明两者都在 renderer 前拒绝。
+- renderer 把 token 解析为宿主拥有的颜色字面量，生成的 Slint 不包含插件 token 原文，更不接受 CSS、
+  selector、shader 或 Slint 表达式。
+- P0 使用固定宿主 palette；随系统主题动态切换仍未实现，不得把固定 token 支持描述为动态主题完成。
+- Rust SDK 提供 `with_color_token`；AI Balance 用 `accent` 表达余额主指标。
 
 ## 13. Contract tests
 

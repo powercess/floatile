@@ -380,7 +380,13 @@ fn render_text(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError>
 
 fn text_style_props(comp: &Component) -> Result<String, RendererError> {
     let mut out = String::new();
-    if let Some(PropValue::Literal(v)) = comp.props.get("color")
+    if let Some(PropValue::Literal(v)) = comp.props.get("colorToken")
+        && let Some(token) = v.as_str()
+    {
+        let color = floatile_ui_schema::theme::color_token(token)
+            .ok_or_else(|| RendererError::EncodeError(format!("未知宿主主题 token `{token}`")))?;
+        out.push_str(&format!("        color: {};\n", color.value));
+    } else if let Some(PropValue::Literal(v)) = comp.props.get("color")
         && let Some(s) = v.as_str()
     {
         out.push_str(&format!("        color: {0};\n", color_literal(s)?));
@@ -1230,5 +1236,20 @@ mod tests {
         assert!(rendered.source.contains("if root.width < 420px"));
         assert!(rendered.source.contains("if root.width >= 420px"));
         assert_eq!(rendered.bindings.len(), 1);
+    }
+
+    #[test]
+    fn resolves_named_text_color_from_host_registry() {
+        let root = Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([
+                ("text".into(), PropValue::Literal(json!("balance"))),
+                ("colorToken".into(), PropValue::Literal(json!("accent"))),
+            ]),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("color: #89b4fa"));
+        assert!(!rendered.source.contains("accent"));
     }
 }
