@@ -20,23 +20,26 @@ fn workspace_root() -> PathBuf {
         .join("..")
 }
 
-/// 读取 clock-wasm 组件；未构建时先构建。
+/// 读取与当前 WIT/SDK 精确匹配的 clock-wasm 组件。
 fn clock_wasm_bytes() -> Vec<u8> {
+    static WASM: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    WASM.get_or_init(build_clock_wasm).clone()
+}
+
+fn build_clock_wasm() -> Vec<u8> {
     let wasm_path = workspace_root().join("target/wasm32-wasip2/debug/floatile_clock_wasm.wasm");
-    if !wasm_path.exists() {
-        let status = Command::new("cargo")
-            .current_dir(workspace_root())
-            .args([
-                "build",
-                "-p",
-                "floatile-clock-wasm",
-                "--target",
-                "wasm32-wasip2",
-            ])
-            .status()
-            .expect("failed to run cargo build for clock-wasm");
-        assert!(status.success(), "clock-wasm 构建失败");
-    }
+    let status = Command::new("cargo")
+        .current_dir(workspace_root())
+        .args([
+            "build",
+            "-p",
+            "floatile-clock-wasm",
+            "--target",
+            "wasm32-wasip2",
+        ])
+        .status()
+        .expect("failed to run cargo build for clock-wasm");
+    assert!(status.success(), "clock-wasm 构建失败");
     std::fs::read(&wasm_path).expect("读取 clock-wasm 失败")
 }
 
