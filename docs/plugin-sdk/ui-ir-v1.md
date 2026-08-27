@@ -2,7 +2,7 @@
 
 > 状态：Proposed（renderer spike、schema 实现和正反例通过后冻结）
 > 文件：`ui/widget.ftui`
-> 版本：`uiApiVersion = 1.5.0`
+> 版本：`uiApiVersion = 1.6.0`
 > 关联：ADR-0001、FR-PLUGIN-01、F11
 
 `floatile-ui-schema` 已实现 IR 类型、组件 registry v1、State/Event JSON Schema 校验、JSONPath 绑定
@@ -27,7 +27,7 @@ P0 可以使用 canonical JSON 编码，后续可换二进制编码，但 v1 语
 
 ```json
 {
-  "uiApiVersion": "1.5.0",
+  "uiApiVersion": "1.6.0",
   "state": {
     "initial": {
       "time": "--:--:--",
@@ -302,6 +302,16 @@ P0 比较：
   selector、shader 或 Slint 表达式。
 - P0 使用固定宿主 palette；随系统主题动态切换仍未实现，不得把固定 token 支持描述为动态主题完成。
 - Rust SDK 提供 `with_color_token`；AI Balance 用 `accent` 表达余额主指标。
+
+### 12.7 UI API 1.6 控件无障碍语义切片
+
+- `Toggle`、`Progress`、`Gauge` 在 1.6 文档中必须声明 `accessibilityLabel`；标签可以是受类型校验的
+  string literal 或 State/item binding，不能注入平台无障碍 API。
+- renderer 将 `Toggle` 映射为 `switch` role 与 checked state，将 `Progress`/`Gauge` 映射为
+  `progress-indicator` role、0..100 value range；`Button.label` 同时作为可见文本和无障碍名称。
+- 1.0–1.5 文档不追溯要求新属性，renderer 为旧控件保留组件名 fallback；1.6 起缺失标签在渲染前拒绝。
+- Rust SDK 的 `progress_bind_labeled` 提供显式上下文标签，兼容的 `progress_bind` 使用通用 fallback；
+  AI Balance 参考插件使用显式标签。
 
 ## 13. Contract tests
 

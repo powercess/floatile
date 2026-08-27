@@ -38,7 +38,7 @@ manifest 是安装与运行时的显式事实，不是开发者主要编辑界�
     "name": "Floatile Labs"
   },
   "engineApiVersion": "1.2.0",
-  "uiApiVersion": "1.5.0",
+  "uiApiVersion": "1.6.0",
   "type": "widget",
   "entrypoints": {
     "ui": "ui/widget.ftui",

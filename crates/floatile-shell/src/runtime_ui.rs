@@ -574,12 +574,18 @@ mod tests {
                 },
                 Component {
                     kind: "Progress".into(),
-                    props: BTreeMap::from([(
-                        "value".into(),
-                        PropValue::Binding(floatile_ui_schema::ir::Binding::State {
-                            bind: "$.percent".into(),
-                        }),
-                    )]),
+                    props: BTreeMap::from([
+                        (
+                            "value".into(),
+                            PropValue::Binding(floatile_ui_schema::ir::Binding::State {
+                                bind: "$.percent".into(),
+                            }),
+                        ),
+                        (
+                            "accessibilityLabel".into(),
+                            PropValue::Literal(serde_json::json!("Completion")),
+                        ),
+                    ]),
                     ..Default::default()
                 },
                 Component {

@@ -59,7 +59,15 @@ pub struct RenderedComponent {
 pub fn render_component(doc: &UiDocument) -> Result<RenderedComponent, RendererError> {
     // renderer 独立复验(CLI/runtime 通过不代表本层可跳过)。
     validate_document(doc)?;
-    let mut ctx = Ctx::default();
+    let mut ctx = Ctx {
+        ui_minor: doc
+            .ui_api_version
+            .split('.')
+            .nth(1)
+            .and_then(|minor| minor.parse().ok())
+            .unwrap_or_default(),
+        ..Default::default()
+    };
     let body = render_node(&doc.root, &mut ctx, 0)?;
     let bindings: Vec<BindingSlot> = ctx.bindings.into_values().collect();
     let events: Vec<EventSlot> = ctx.events.values().cloned().collect();
@@ -78,6 +86,7 @@ struct Ctx {
     events: BTreeMap<String, EventSlot>,
     nodes: usize,
     callback_counter: usize,
+    ui_minor: u64,
 }
 
 fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot]) -> String {
@@ -420,6 +429,8 @@ fn render_button(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererErro
     let callback = event_callback(comp, ctx, "activate")?;
     let callback_name = callback.callback.clone();
     let mut out = String::from("    TouchArea {\n");
+    out.push_str("        accessible-role: button;\n");
+    out.push_str(&format!("        accessible-label: {label};\n"));
     out.push_str("        Rectangle {\n");
     out.push_str("            border-radius: 4px;\n");
     out.push_str("            background: #2a2f3a;\n");
@@ -457,9 +468,15 @@ fn render_toggle(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererErro
             ));
         }
     };
+    let accessibility_label = render_accessibility_label(comp, ctx)?;
     let callback = event_callback(comp, ctx, "toggle")?;
     let callback_name = callback.callback.clone();
     let mut out = String::from("    TouchArea {\n");
+    out.push_str("        accessible-role: switch;\n");
+    out.push_str(&format!(
+        "        accessible-label: {accessibility_label};\n"
+    ));
+    out.push_str(&format!("        accessible-checked: {checked};\n"));
     out.push_str("        Rectangle {\n");
     out.push_str("            border-radius: 2px;\n");
     out.push_str("            border-width: 1px;\n");
@@ -506,7 +523,15 @@ fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String,
             ));
         }
     };
+    let accessibility_label = render_accessibility_label(comp, ctx)?;
     let mut out = String::from("    Rectangle {\n");
+    out.push_str("        accessible-role: progress-indicator;\n");
+    out.push_str(&format!(
+        "        accessible-label: {accessibility_label};\n"
+    ));
+    out.push_str(&format!("        accessible-value: {value};\n"));
+    out.push_str("        accessible-value-minimum: 0;\n");
+    out.push_str("        accessible-value-maximum: 100;\n");
     out.push_str("        border-radius: 2px;\n");
     out.push_str("        background: #2a2f3a;\n");
     out.push_str("        width: 100%;\n");
@@ -521,6 +546,32 @@ fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String,
     out.push_str("        }\n");
     out.push_str("    }\n");
     Ok(out)
+}
+
+fn render_string_prop(
+    comp: &Component,
+    prop: &str,
+    ctx: &mut Ctx,
+) -> Result<String, RendererError> {
+    match comp.props.get(prop) {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
+            Ok(format!("root.{0}", slot.prop))
+        }
+        Some(PropValue::Binding(Binding::Item { item })) => Ok(item.clone()),
+        Some(PropValue::Literal(value)) => encode_string(&value_to_string(value)?),
+        None => Err(RendererError::BindingError(format!(
+            "{} 缺少 {prop} prop",
+            comp.kind
+        ))),
+    }
+}
+
+fn render_accessibility_label(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    if ctx.ui_minor < 6 && !comp.props.contains_key("accessibilityLabel") {
+        return encode_string(&comp.kind);
+    }
+    render_string_prop(comp, "accessibilityLabel", ctx)
 }
 
 /// Badge：宿主语义 tone 映射到固定主题色，不接受插件提供的颜色源码。
@@ -1032,12 +1083,18 @@ mod tests {
     fn renders_toggle_event_slot() {
         let root = Component {
             kind: "Toggle".into(),
-            props: BTreeMap::from([(
-                "checked".into(),
-                PropValue::Binding(Binding::State {
-                    bind: "$.running".into(),
-                }),
-            )]),
+            props: BTreeMap::from([
+                (
+                    "checked".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.running".into(),
+                    }),
+                ),
+                (
+                    "accessibilityLabel".into(),
+                    PropValue::Literal(json!("Timer running")),
+                ),
+            ]),
             events: BTreeMap::from([(
                 "toggle".into(),
                 floatile_ui_schema::ir::EmittedEvent {
@@ -1060,6 +1117,17 @@ mod tests {
         );
         let rendered = render_component(&d).unwrap();
         assert!(rendered.source.contains("TouchArea"));
+        assert!(rendered.source.contains("accessible-role: switch"));
+        assert!(
+            rendered
+                .source
+                .contains("accessible-checked: root.prop_running")
+        );
+        assert!(
+            rendered
+                .source
+                .contains("accessible-label: \"Timer running\"")
+        );
         // checked 绑定经受限三元映射为颜色(布尔 → 亮/暗色),无直接属性引用。
         assert!(
             rendered
@@ -1088,12 +1156,18 @@ mod tests {
             },
             Component {
                 kind: "Progress".into(),
-                props: BTreeMap::from([(
-                    "value".into(),
-                    PropValue::Binding(Binding::State {
-                        bind: "$.percent".into(),
-                    }),
-                )]),
+                props: BTreeMap::from([
+                    (
+                        "value".into(),
+                        PropValue::Binding(Binding::State {
+                            bind: "$.percent".into(),
+                        }),
+                    ),
+                    (
+                        "accessibilityLabel".into(),
+                        PropValue::Literal(json!("Timer progress")),
+                    ),
+                ]),
                 ..Default::default()
             },
         ]);
@@ -1107,6 +1181,16 @@ mod tests {
         let rendered = render_component(&document).unwrap();
         assert!(rendered.source.contains("in property <bool> prop_running"));
         assert!(rendered.source.contains("in property <float> prop_percent"));
+        assert!(
+            rendered
+                .source
+                .contains("accessible-role: progress-indicator")
+        );
+        assert!(
+            rendered
+                .source
+                .contains("accessible-label: \"Timer progress\"")
+        );
         assert!(rendered.source.contains(
             "width: parent.width * ((root.prop_percent < 0 ? 0 : (root.prop_percent > 100 ? 100 : root.prop_percent)) / 100)"
         ));

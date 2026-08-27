@@ -299,13 +299,22 @@ fn build_registry() -> Vec<ComponentSpec> {
         &mut specs,
         "Toggle",
         ChildrenPolicy::Forbidden,
-        &[PropSchema {
-            name: "checked",
-            types: &[JsonType::Boolean],
-            allow_binding: true,
-            introduced_minor: 0,
-            optional: false,
-        }],
+        &[
+            PropSchema {
+                name: "checked",
+                types: &[JsonType::Boolean],
+                allow_binding: true,
+                introduced_minor: 0,
+                optional: false,
+            },
+            PropSchema {
+                name: "accessibilityLabel",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 6,
+                optional: true,
+            },
+        ],
         &["toggle"],
     );
 
@@ -313,13 +322,22 @@ fn build_registry() -> Vec<ComponentSpec> {
         &mut specs,
         "Progress",
         ChildrenPolicy::Forbidden,
-        &[PropSchema {
-            name: "value",
-            types: &[JsonType::Number],
-            allow_binding: true,
-            introduced_minor: 0,
-            optional: false,
-        }],
+        &[
+            PropSchema {
+                name: "value",
+                types: &[JsonType::Number],
+                allow_binding: true,
+                introduced_minor: 0,
+                optional: false,
+            },
+            PropSchema {
+                name: "accessibilityLabel",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 6,
+                optional: true,
+            },
+        ],
         &[],
     );
     element_since(
@@ -349,13 +367,22 @@ fn build_registry() -> Vec<ComponentSpec> {
         &mut specs,
         "Gauge",
         ChildrenPolicy::Forbidden,
-        &[PropSchema {
-            name: "value",
-            types: &[JsonType::Number],
-            allow_binding: true,
-            introduced_minor: 0,
-            optional: false,
-        }],
+        &[
+            PropSchema {
+                name: "value",
+                types: &[JsonType::Number],
+                allow_binding: true,
+                introduced_minor: 0,
+                optional: false,
+            },
+            PropSchema {
+                name: "accessibilityLabel",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 6,
+                optional: true,
+            },
+        ],
         &[],
     );
     element(

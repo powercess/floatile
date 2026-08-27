@@ -152,20 +152,30 @@ pub fn badge_bind(path: &str, tone: &str) -> View {
     }
 }
 
-/// Progress 组件：绑定 0..=100 的数值 State 路径。
-pub fn progress_bind(path: &str) -> View {
-    let mut props = std::collections::BTreeMap::new();
-    props.insert(
-        "value".into(),
-        PropValue::Binding(Binding::State {
-            bind: path.to_owned(),
-        }),
-    );
+/// Progress 组件：绑定 0..=100 的数值 State 路径，并提供无障碍标签。
+pub fn progress_bind_labeled(path: &str, accessibility_label: &str) -> View {
+    let props = std::collections::BTreeMap::from([
+        (
+            "value".into(),
+            PropValue::Binding(Binding::State {
+                bind: path.to_owned(),
+            }),
+        ),
+        (
+            "accessibilityLabel".into(),
+            PropValue::Literal(serde_json::Value::String(accessibility_label.to_owned())),
+        ),
+    ]);
     View {
         kind: "Progress".into(),
         props,
         ..Default::default()
     }
+}
+
+/// Progress 兼容构造器；新代码应使用 [`progress_bind_labeled`] 提供上下文标签。
+pub fn progress_bind(path: &str) -> View {
+    progress_bind_labeled(path, "Progress")
 }
 
 /// Sparkline：绑定有界 number array，并提供屏幕阅读器可用的替代标签。
@@ -313,6 +323,15 @@ mod tests {
         assert_eq!(badge.kind, "Badge");
         let progress = progress_bind("$.percent");
         assert_eq!(progress.kind, "Progress");
+        assert_eq!(
+            progress.props.get("accessibilityLabel"),
+            Some(&PropValue::Literal(serde_json::json!("Progress")))
+        );
+        let labeled = progress_bind_labeled("$.percent", "Upload completion");
+        assert_eq!(
+            labeled.props.get("accessibilityLabel"),
+            Some(&PropValue::Literal(serde_json::json!("Upload completion")))
+        );
     }
 
     #[test]

@@ -208,6 +208,15 @@ fn validate_element(
             });
         }
     }
+    if ctx.ui_minor >= 6
+        && matches!(comp.kind.as_str(), "Toggle" | "Progress" | "Gauge")
+        && !comp.props.contains_key("accessibilityLabel")
+    {
+        return Err(UiSchemaError::MissingProp {
+            component: comp.kind.clone(),
+            prop: "accessibilityLabel".to_owned(),
+        });
+    }
     if comp.props.contains_key("color") && comp.props.contains_key("colorToken") {
         return Err(UiSchemaError::InvalidPropType {
             prop: format!("{}.color", comp.kind),
@@ -944,6 +953,49 @@ mod tests {
             validate_document(&current),
             Err(UiSchemaError::InvalidPropType { .. })
         ));
+    }
+
+    #[test]
+    fn contract_vector_control_accessibility_label_minor_gate() {
+        for kind in ["Toggle", "Progress", "Gauge"] {
+            let value_prop = if kind == "Toggle" { "checked" } else { "value" };
+            let value = if kind == "Toggle" {
+                json!(true)
+            } else {
+                json!(42)
+            };
+            let control = Component {
+                kind: kind.into(),
+                props: BTreeMap::from([
+                    (value_prop.into(), PropValue::Literal(value)),
+                    (
+                        "accessibilityLabel".into(),
+                        PropValue::Literal(json!(format!("{kind} status"))),
+                    ),
+                ]),
+                ..Default::default()
+            };
+            assert!(validate_document(&with_single(control.clone())).is_ok());
+
+            let mut old = with_single(control.clone());
+            old.ui_api_version = "1.5.0".into();
+            assert!(matches!(
+                validate_document(&old),
+                Err(UiSchemaError::UnsupportedApiVersion(_))
+            ));
+
+            let mut legacy = with_single(control.clone());
+            legacy.ui_api_version = "1.5.0".into();
+            legacy.root.children[0].props.remove("accessibilityLabel");
+            assert!(validate_document(&legacy).is_ok());
+
+            let mut missing = with_single(control);
+            missing.root.children[0].props.remove("accessibilityLabel");
+            assert!(matches!(
+                validate_document(&missing),
+                Err(UiSchemaError::MissingProp { prop, .. }) if prop == "accessibilityLabel"
+            ));
+        }
     }
 
     #[test]
