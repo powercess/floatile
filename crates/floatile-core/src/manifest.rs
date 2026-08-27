@@ -131,6 +131,14 @@ pub struct HttpTemplateDecl {
     pub max_response_bytes: u64,
     #[serde(default = "default_http_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub cache_ttl_ms: u64,
+    #[serde(default)]
+    pub stale_if_error_ms: u64,
+    #[serde(default)]
+    pub max_retries: u8,
+    #[serde(default = "default_retry_base_delay_ms")]
+    pub retry_base_delay_ms: u64,
 }
 
 fn default_http_statuses() -> Vec<u16> {
@@ -143,6 +151,10 @@ const fn default_http_max_bytes() -> u64 {
 
 const fn default_http_timeout_ms() -> u64 {
     10_000
+}
+
+const fn default_retry_base_delay_ms() -> u64 {
+    250
 }
 
 /// manifest.json v1。
@@ -343,6 +355,10 @@ fn validate_http_templates(manifest: &Manifest) -> Result<(), ManifestError> {
             || template.max_response_bytes > *max_bytes
             || !(100..=30_000).contains(&template.timeout_ms)
             || template.timeout_ms > *max_timeout
+            || template.cache_ttl_ms > 24 * 60 * 60 * 1000
+            || template.stale_if_error_ms > 7 * 24 * 60 * 60 * 1000
+            || template.max_retries > 2
+            || !(10..=2_000).contains(&template.retry_base_delay_ms)
         {
             return Err(ManifestError::InvalidHttpTemplate(format!(
                 "模板 `{}` 超出 network:https origin 或预算",
@@ -749,6 +765,10 @@ mod tests {
             allowed_statuses: vec![200],
             max_response_bytes: 4096,
             timeout_ms: 2000,
+            cache_ttl_ms: 1000,
+            stale_if_error_ms: 5000,
+            max_retries: 1,
+            retry_base_delay_ms: 10,
         });
         assert!(validate_manifest(&manifest).is_ok());
 

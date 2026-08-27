@@ -392,6 +392,26 @@ impl<'a> ConnectionStore<'a> {
         Ok(changed == 1)
     }
 
+    /// Persist the latest host-observed health without allowing stale probes to overwrite newer
+    /// state. Secret or provider error text is intentionally not accepted by this API.
+    pub fn set_health(
+        &self,
+        id: ConnectionId,
+        health: ConnectionHealth,
+        updated_at: u64,
+    ) -> Result<bool, StoreError> {
+        let changed = self.conn.execute(
+            "UPDATE connections SET health = ?1, updated_at = ?2
+             WHERE connection_id = ?3 AND updated_at <= ?2",
+            rusqlite::params![
+                health.as_str(),
+                sqlite_i64(updated_at, "updated_at")?,
+                sqlite_i64(id.0, "connection_id")?,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// 只有无实例引用时才能删除 Connection，避免破坏共享连接。
     pub fn delete_unreferenced(&self, id: ConnectionId) -> Result<bool, StoreError> {
         let changed = self.conn.execute(
@@ -1650,6 +1670,30 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(!columns.iter().any(|column| column.contains("secret")));
+    }
+
+    #[test]
+    fn connection_health_rejects_stale_probe_updates() {
+        let store = open(":memory:").unwrap();
+        let connection = store
+            .connections()
+            .create("openai", "account", &credential("health"), 100)
+            .unwrap();
+        assert!(
+            store
+                .connections()
+                .set_health(connection.id(), ConnectionHealth::Healthy, 120)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .connections()
+                .set_health(connection.id(), ConnectionHealth::Unavailable, 119)
+                .unwrap()
+        );
+        let restored = store.connections().get(connection.id()).unwrap().unwrap();
+        assert_eq!(restored.health(), ConnectionHealth::Healthy);
+        assert_eq!(restored.updated_at(), 120);
     }
 
     #[test]

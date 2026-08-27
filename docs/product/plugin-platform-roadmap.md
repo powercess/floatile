@@ -207,9 +207,9 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   输出 State/audit 计数。自动化验收已在同一干净目录串行通过
   `new → check → test → dev --once → preview → build → install → run → inspect`，全部自动化输出为
   schema v1，三个窗口阶段使用 Xvfb 真实宿主；
-- PP-M5 已建立宿主拥有的 Connection/CredentialRef 纯领域模型与 SQLite v5 前向 migration：实例 grant
-  可收窄和撤销，共享 Connection 不随单个实例删除，凭证轮换推进 generation；SQLite 不保存 secret。
-  Credential Vault、HTTPS Broker、WIT/SDK 和参考插件仍待后续纵向切片；
+- PP-M5 已建立宿主拥有的 Connection/CredentialRef、SQLite v5、会话 Credential Vault、typed HTTPS
+  Operation、静态模板、SSRF/DNS pinning、限流、generation-scoped cache、retry/backoff、健康状态更新
+  和 AI 余额参考插件；平台 Keyring 与真实 provider 的人工网络证据仍按环境单独记录；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。
 

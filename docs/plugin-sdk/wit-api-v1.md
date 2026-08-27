@@ -19,6 +19,8 @@ v1.1 增加 `host-operation`、`storage.submit-get/take-get-result` 与 `operati
 one-shot result 从真实 guest 往返，且完成事件不携带 payload。
 v1.2 增加 `host-http.submit/take-result`；guest 只传模板、Connection 与有界 query，请求构造、
 credential 注入和网络执行仍属于 Permission Broker。
+Rust 作者层对应 `ctx.http().submit(...)` 与 `ctx.http().take_result(...)`；调度继续使用有界的一次性
+`ctx.timer()`，参考插件不会获得 socket、URL 或 credential 句柄。
 
 ## 1. v1 目标
 

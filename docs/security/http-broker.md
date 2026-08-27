@@ -1,8 +1,7 @@
 # HTTP Broker 设计
 
 > 状态：Accepted（ADR-0005；初始 V1 禁用自动 redirect）
-> 阶段：V1 实现目标。P0/MVP 不实现网络能力（WIT 中无对应接口 = 无攻击面）。
-> 本设计先行冻结，确保 V1 不会因“便利”绕过安全约束。
+> 阶段：PP-M5 已实现首个 HTTPS GET 纵向切片；WebSocket、redirect 和 localhost 仍不实现。
 
 ## 1. 目标
 
@@ -57,7 +56,7 @@ request(template_id, params)
 
 ## 4. 域名白名单
 
-- 权限声明形式：`network:https://api.example.com/*`、`network:https://*.example.com/*`、`network:websocket:wss://stream.example.com/*`。
+- 当前权限声明为 `network:https`，参数使用精确 HTTPS origin 数组；不接受通配域和裸 IP。
 - 匹配规则：
   - 精确 host 或单层通配 `*.`；
   - **禁止**裸 IP、`localhost`（需单独 `network:localhost` 授权）、公共后缀通配；
@@ -106,8 +105,9 @@ request(template_id, params)
 - 模板注册本身也是一次授权操作（审计 + 可在权限中心查看/撤销）。
 - 撤销权限 → 已注册模板失效，无需插件配合。
 
-## 11. 未决问题
+## 11. 当前实现边界
 
 1. 是否允许插件自定义非敏感 header 的**值**（模板内固定 vs 运行时可传）。倾向：非敏感且白名单内 header 允许运行时传值，敏感 header 只允许 fromCredential。
 2. WebSocket 心跳/重连的归属（宿主负责，插件只订阅事件）。
-3. 缓存响应是否引入（倾向：V1 不做服务端缓存，减少攻击面）。
+3. PP-M5 已加入有界 generation-scoped cache、stale-if-error 和仅瞬时错误 retry；缓存不含 secret，
+   credential generation 轮换会自然隔离旧条目。

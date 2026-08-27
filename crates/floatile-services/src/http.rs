@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use floatile_core::{
     CapabilityParams, Connection, ConnectionHealth, ConnectionId, HttpTemplateDecl,
@@ -22,6 +22,8 @@ use floatile_core::OperationFailure;
 use crate::CredentialVault;
 
 pub const MAX_QUERY_VALUE_BYTES: usize = 1024;
+pub type ConnectionHealthListener =
+    Arc<dyn Fn(ConnectionId, ConnectionHealth) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpResponse {
@@ -67,6 +69,7 @@ impl From<HttpServiceError> for OperationFailure {
     }
 }
 
+#[derive(Clone)]
 pub struct HttpTransportRequest {
     url: Url,
     credential_header: HeaderName,
@@ -150,6 +153,21 @@ pub struct HttpsService {
     connections: Arc<BTreeMap<ConnectionId, Connection>>,
     vault: Arc<dyn CredentialVault>,
     transport: Arc<dyn HttpTransport>,
+    cache: Arc<Mutex<BTreeMap<CacheKey, CachedResponse>>>,
+    health_listener: Option<ConnectionHealthListener>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CacheKey {
+    template_id: String,
+    connection_id: ConnectionId,
+    credential_generation: u64,
+    url: String,
+}
+
+struct CachedResponse {
+    stored_at: Instant,
+    response: HttpResponse,
 }
 
 impl HttpsService {
@@ -174,7 +192,14 @@ impl HttpsService {
             ),
             vault,
             transport,
+            cache: Arc::new(Mutex::new(BTreeMap::new())),
+            health_listener: None,
         }
+    }
+
+    pub fn with_health_listener(mut self, listener: ConnectionHealthListener) -> Self {
+        self.health_listener = Some(listener);
+        self
     }
 
     pub fn prepare(
@@ -191,7 +216,10 @@ impl HttpsService {
             .connections
             .get(&connection_id)
             .ok_or(HttpServiceError::ConnectionNotGranted)?;
-        if connection.health() != ConnectionHealth::Healthy {
+        if matches!(
+            connection.health(),
+            ConnectionHealth::Unavailable | ConnectionHealth::Revoked
+        ) {
             return Err(HttpServiceError::CredentialUnavailable);
         }
         if query.len() > template.query_params.len() {
@@ -215,11 +243,18 @@ impl HttpsService {
         let header = HeaderName::from_bytes(template.credential_header.as_bytes())
             .map_err(|_| HttpServiceError::InvalidInput)?;
         let mut credential = None;
-        self.vault
+        if self
+            .vault
             .with_secret(connection.credential(), &mut |secret| {
                 credential = HeaderValue::from_bytes(secret).ok();
             })
-            .map_err(|_| HttpServiceError::CredentialUnavailable)?;
+            .is_err()
+        {
+            if let Some(listener) = &self.health_listener {
+                listener(connection_id, ConnectionHealth::Unavailable);
+            }
+            return Err(HttpServiceError::CredentialUnavailable);
+        }
         let mut credential = credential.ok_or(HttpServiceError::CredentialUnavailable)?;
         credential.set_sensitive(true);
         let origin = url.origin().ascii_serialization();
@@ -230,7 +265,7 @@ impl HttpsService {
             max_timeout_ms: template.timeout_ms,
         };
         let transport_request = HttpTransportRequest {
-            url,
+            url: url.clone(),
             credential_header: header,
             credential,
             max_response_bytes: usize::try_from(template.max_response_bytes)
@@ -238,17 +273,79 @@ impl HttpsService {
             allowed_statuses: template.allowed_statuses.clone(),
         };
         let transport = Arc::clone(&self.transport);
+        let health_listener = self.health_listener.clone();
+        let cache = Arc::clone(&self.cache);
+        let cache_key = CacheKey {
+            template_id: template.id.clone(),
+            connection_id,
+            credential_generation: connection.credential_generation(),
+            url: url.into(),
+        };
+        let cache_ttl = Duration::from_millis(template.cache_ttl_ms);
+        let stale_if_error = Duration::from_millis(template.stale_if_error_ms);
+        let max_retries = template.max_retries;
+        let retry_base_delay = Duration::from_millis(template.retry_base_delay_ms);
         Ok(PreparedHttpOperation {
             request_params,
             timeout: Duration::from_millis(template.timeout_ms),
             work: Box::pin(async move {
-                transport
-                    .execute(transport_request)
-                    .await
-                    .map_err(OperationFailure::from)
+                if !cache_ttl.is_zero()
+                    && let Some(hit) = lock(&cache).get(&cache_key)
+                    && hit.stored_at.elapsed() <= cache_ttl
+                {
+                    return Ok(hit.response.clone());
+                }
+                let mut attempt = 0u8;
+                loop {
+                    match transport.execute(transport_request.clone()).await {
+                        Ok(response) => {
+                            if let Some(listener) = &health_listener {
+                                listener(connection_id, ConnectionHealth::Healthy);
+                            }
+                            if !cache_ttl.is_zero() || !stale_if_error.is_zero() {
+                                lock(&cache).insert(
+                                    cache_key.clone(),
+                                    CachedResponse {
+                                        stored_at: Instant::now(),
+                                        response: response.clone(),
+                                    },
+                                );
+                            }
+                            return Ok(response);
+                        }
+                        Err(error) if attempt < max_retries && retryable(error) => {
+                            let multiplier = 1u32 << attempt;
+                            tokio::time::sleep(retry_base_delay.saturating_mul(multiplier)).await;
+                            attempt += 1;
+                        }
+                        Err(error) => {
+                            if !stale_if_error.is_zero()
+                                && let Some(hit) = lock(&cache).get(&cache_key)
+                                && hit.stored_at.elapsed()
+                                    <= cache_ttl.saturating_add(stale_if_error)
+                            {
+                                return Ok(hit.response.clone());
+                            }
+                            if let Some(listener) = &health_listener {
+                                listener(connection_id, ConnectionHealth::Degraded);
+                            }
+                            return Err(OperationFailure::from(error));
+                        }
+                    }
+                }
             }),
         })
     }
+}
+
+fn retryable(error: HttpServiceError) -> bool {
+    matches!(error, HttpServiceError::Unavailable)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub struct PreparedHttpOperation {
@@ -297,7 +394,7 @@ fn is_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use floatile_core::{CredentialRef, HttpTemplateDecl};
 
@@ -306,6 +403,32 @@ mod tests {
 
     struct InspectTransport {
         saw_secret: Arc<AtomicBool>,
+    }
+
+    struct CountingTransport {
+        calls: Arc<AtomicUsize>,
+        failures_before_success: usize,
+    }
+
+    impl HttpTransport for CountingTransport {
+        fn execute(
+            &self,
+            _request: HttpTransportRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, HttpServiceError>> + Send + 'static>>
+        {
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            let fail = call < self.failures_before_success;
+            Box::pin(async move {
+                if fail {
+                    Err(HttpServiceError::Unavailable)
+                } else {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: b"cached".to_vec(),
+                    })
+                }
+            })
+        }
     }
 
     impl HttpTransport for InspectTransport {
@@ -342,6 +465,10 @@ mod tests {
             allowed_statuses: vec![200],
             max_response_bytes: 4096,
             timeout_ms: 2000,
+            cache_ttl_ms: 1000,
+            stale_if_error_ms: 5000,
+            max_retries: 1,
+            retry_base_delay_ms: 10,
         }
     }
 
@@ -392,6 +519,50 @@ mod tests {
         assert_eq!(response.body, br#"{"balance":42}"#);
         assert!(saw_secret.load(Ordering::Acquire));
         assert!(!format!("{response:?}").contains("host-only-secret"));
+    }
+
+    #[tokio::test]
+    async fn retries_transient_failure_then_serves_generation_scoped_cache() {
+        let vault = Arc::new(MemoryCredentialVault::default());
+        let healthy = connection(ConnectionHealth::Healthy);
+        vault
+            .put(healthy.credential(), b"Bearer host-only-secret")
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let health_observed = Arc::clone(&observed);
+        let service = HttpsService::new(
+            vec![template()],
+            vec![healthy],
+            vault,
+            Arc::new(CountingTransport {
+                calls: Arc::clone(&calls),
+                failures_before_success: 1,
+            }),
+        )
+        .with_health_listener(Arc::new(move |id, health| {
+            lock(&health_observed).push((id, health));
+        }));
+        let first = service
+            .prepare("balance", ConnectionId(7), Vec::new())
+            .unwrap()
+            .work
+            .await
+            .unwrap();
+        assert_eq!(first.body, b"cached");
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        let second = service
+            .prepare("balance", ConnectionId(7), Vec::new())
+            .unwrap()
+            .work
+            .await
+            .unwrap();
+        assert_eq!(second, first);
+        assert_eq!(calls.load(Ordering::Acquire), 2, "第二次必须命中缓存");
+        assert_eq!(
+            lock(&observed).as_slice(),
+            &[(ConnectionId(7), ConnectionHealth::Healthy)]
+        );
     }
 
     #[test]

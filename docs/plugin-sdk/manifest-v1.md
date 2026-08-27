@@ -126,6 +126,9 @@ PP-M5 的 `network:https` 使用精确 HTTPS origin 白名单，并绑定速率�
 `httpTemplates` 固定 URL、credential header（仅 `authorization`/`x-api-key`）、允许状态码及 query
 参数名。guest 只能提交模板 ID、获授权的 Connection ID 和已声明 query；secret 不得进入 manifest、
 config、State、WIT 参数、SQLite、日志、审计或错误。
+模板还可声明 `cacheTtlMs`、`staleIfErrorMs`、`maxRetries`（最多 2）和
+`retryBaseDelayMs`；缓存键包含 Connection credential generation，轮换后不会复用旧响应。只有瞬时
+transport failure 会重试，权限、模板、响应校验和凭证错误不会重试。
 
 ```json
 {

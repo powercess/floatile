@@ -25,8 +25,8 @@ pub use credential::{
 };
 pub use errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
 pub use http::{
-    HttpResponse, HttpServiceError, HttpTransport, HttpTransportRequest, HttpsService, QueryParam,
-    ReqwestHttpTransport,
+    ConnectionHealthListener, HttpResponse, HttpServiceError, HttpTransport, HttpTransportRequest,
+    HttpsService, QueryParam, ReqwestHttpTransport,
 };
 pub use log::{LogLevel, LogService};
 pub use metrics::{MemorySnapshot, MetricsService};
