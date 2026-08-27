@@ -634,6 +634,22 @@ mod tests {
                     ]),
                     ..Default::default()
                 },
+                Component {
+                    kind: "Responsive".into(),
+                    props: BTreeMap::from([(
+                        "breakpoint".into(),
+                        PropValue::Literal(serde_json::json!(420)),
+                    )]),
+                    children: vec![Component {
+                        kind: "Text".into(),
+                        props: BTreeMap::from([(
+                            "text".into(),
+                            PropValue::Literal(serde_json::json!("responsive")),
+                        )]),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };

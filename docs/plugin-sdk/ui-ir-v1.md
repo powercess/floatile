@@ -2,7 +2,7 @@
 
 > 状态：Proposed（renderer spike、schema 实现和正反例通过后冻结）
 > 文件：`ui/widget.ftui`
-> 版本：`uiApiVersion = 1.3.0`
+> 版本：`uiApiVersion = 1.4.0`
 > 关联：ADR-0001、FR-PLUGIN-01、F11
 
 `floatile-ui-schema` 已实现 IR 类型、组件 registry v1、State/Event JSON Schema 校验、JSONPath 绑定
@@ -27,7 +27,7 @@ P0 可以使用 canonical JSON 编码，后续可换二进制编码，但 v1 语
 
 ```json
 {
-  "uiApiVersion": "1.3.0",
+  "uiApiVersion": "1.4.0",
   "state": {
     "initial": {
       "time": "--:--:--",
@@ -282,6 +282,16 @@ P0 比较：
 - `tone` 只接受 `info|success|warning|danger`，由宿主映射固定主题色，不接受插件绘图源码、CSS、
   shader 或任意颜色表达式。
 - Rust SDK 提供 `sparkline_bind` builder；AI Balance 参考插件用该组件表达余额利用率趋势。
+
+### 12.5 UI API 1.4 响应式布局切片
+
+- `Responsive.breakpoint` 是 `240..=1920` 的静态逻辑像素阈值；低于阈值时 children 使用纵向布局，
+  否则使用横向布局。
+- 窗口宽度只由宿主 renderer 的 `root.width` 消费，不进入 guest State，也不向插件暴露原生窗口句柄、
+  显示器或平台 API。
+- compact/wide 两个 Slint 分支互斥并复用同一受验证子树；binding/event 槽位去重，运行时最坏节点数
+  仍按单个 children 子树计入预算。
+- Rust SDK 提供 `responsive` builder；AI Balance 参考插件在窄窗口与宽窗口间切换监控内容排列。
 
 ## 13. Contract tests
 

@@ -132,6 +132,7 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
         "Row" => render_layout(comp, ctx, depth, "HorizontalLayout"),
         "Stack" => render_layout(comp, ctx, depth, "StackLayout"),
         "Grid" => render_grid(comp, ctx, depth),
+        "Responsive" => render_responsive(comp, ctx, depth),
         "List" => render_list(comp, ctx, depth),
         "Sparkline" => render_sparkline(comp, ctx),
         "Text" => render_text(comp, ctx),
@@ -147,6 +148,31 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
             "renderer 暂不映射该组件;请移除或等待后续切片".to_owned(),
         )),
     }
+}
+
+/// Responsive:窄窗口纵向、宽窗口横向；分支互斥且复用同一受验证子树。
+fn render_responsive(
+    comp: &Component,
+    ctx: &mut Ctx,
+    depth: usize,
+) -> Result<String, RendererError> {
+    let breakpoint = comp
+        .props
+        .get("breakpoint")
+        .and_then(|value| match value {
+            PropValue::Literal(value) => value.as_f64(),
+            PropValue::Binding(_) => None,
+        })
+        .ok_or_else(|| RendererError::BindingError("Responsive 缺少 breakpoint".to_owned()))?;
+    let mut children = String::new();
+    for child in &comp.children {
+        children.push_str(&render_node(child, ctx, depth + 1)?);
+        children.push('\n');
+    }
+    let props = render_layout_props(comp)?;
+    Ok(format!(
+        "if root.width < {breakpoint}px: VerticalLayout {{\n{props}{children}}}\nif root.width >= {breakpoint}px: HorizontalLayout {{\n{props}{children}}}\n"
+    ))
 }
 
 fn render_sparkline(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
@@ -1190,5 +1216,19 @@ mod tests {
             rendered.bindings[0].value_type,
             BindingValueType::NumberList
         );
+    }
+
+    #[test]
+    fn renders_responsive_layout_from_host_width() {
+        let root = Component {
+            kind: "Responsive".into(),
+            props: BTreeMap::from([("breakpoint".into(), PropValue::Literal(json!(420)))]),
+            children: vec![text_bind("$.time")],
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("if root.width < 420px"));
+        assert!(rendered.source.contains("if root.width >= 420px"));
+        assert_eq!(rendered.bindings.len(), 1);
     }
 }

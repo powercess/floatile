@@ -50,6 +50,19 @@ pub fn grid(columns: u32, children: Vec<View>) -> View {
     }
 }
 
+/// 响应式容器：窗口宽度低于 breakpoint 时纵向，否则横向。
+pub fn responsive(breakpoint: f64, children: Vec<View>) -> View {
+    View {
+        kind: "Responsive".into(),
+        props: std::collections::BTreeMap::from([(
+            "breakpoint".into(),
+            PropValue::Literal(serde_json::json!(breakpoint)),
+        )]),
+        children,
+        ..Default::default()
+    }
+}
+
 /// 静态 List 容器。
 pub fn list(children: Vec<View>) -> View {
     View {
@@ -312,6 +325,16 @@ mod tests {
         assert_eq!(
             sparkline.props.get("label"),
             Some(&PropValue::Literal(serde_json::json!("Usage trend")))
+        );
+    }
+
+    #[test]
+    fn responsive_builder_includes_static_breakpoint() {
+        let view = responsive(420.0, vec![text_literal("content")]);
+        assert_eq!(view.kind, "Responsive");
+        assert_eq!(
+            view.props.get("breakpoint"),
+            Some(&PropValue::Literal(serde_json::json!(420.0)))
         );
     }
 }

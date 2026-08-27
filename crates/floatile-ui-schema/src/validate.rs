@@ -889,6 +889,33 @@ mod tests {
     }
 
     #[test]
+    fn contract_vector_responsive_minor_and_breakpoint_gate() {
+        let responsive = Component {
+            kind: "Responsive".into(),
+            props: BTreeMap::from([("breakpoint".into(), PropValue::Literal(json!(420)))]),
+            children: vec![text(PropValue::Literal(json!("content")))],
+            ..Default::default()
+        };
+        assert!(validate_document(&with_single(responsive.clone())).is_ok());
+
+        let mut old = with_single(responsive.clone());
+        old.ui_api_version = "1.3.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+
+        let mut invalid = with_single(responsive);
+        invalid.root.children[0]
+            .props
+            .insert("breakpoint".into(), PropValue::Literal(json!(120)));
+        assert!(matches!(
+            validate_document(&invalid),
+            Err(UiSchemaError::InvalidPropType { .. })
+        ));
+    }
+
+    #[test]
     fn contract_vector_positive_components() {
         // 正例:registry 元素组件结构合法。
         for kind in [

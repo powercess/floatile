@@ -186,6 +186,20 @@ fn build_registry() -> Vec<ComponentSpec> {
         &[],
     );
     element(&mut specs, "Scroll", ChildrenPolicy::Many, &[], &[]);
+    element_since(
+        &mut specs,
+        "Responsive",
+        4,
+        ChildrenPolicy::Many,
+        &[PropSchema {
+            name: "breakpoint",
+            types: &[JsonType::Number],
+            allow_binding: false,
+            introduced_minor: 4,
+            optional: false,
+        }],
+        &[],
+    );
 
     element(
         &mut specs,
@@ -512,6 +526,16 @@ pub fn validate_literal(
         return Err(UiSchemaError::InvalidPropType {
             prop: "Grid.columns".to_owned(),
             expected: vec!["integer from 1 through 16".to_owned()],
+        });
+    }
+    if spec.name == "Responsive"
+        && prop.name == "breakpoint"
+        && let Some(breakpoint) = json.as_f64()
+        && !(240.0..=1920.0).contains(&breakpoint)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Responsive.breakpoint".to_owned(),
+            expected: vec!["number from 240 through 1920".to_owned()],
         });
     }
     Ok(())

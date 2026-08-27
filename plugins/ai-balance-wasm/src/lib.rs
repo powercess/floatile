@@ -77,13 +77,18 @@ impl Widget for AiBalance {
                 view::text_literal("Balance is temporarily unavailable"),
             ]),
             view::text_literal("No balance data yet"),
-            view::column(vec![
-                view::text_bind("$.balance"),
-                view::badge_bind("$.status", "success"),
-                view::progress_bind("$.utilization"),
-                view::sparkline_bind("$.trend", "Recent balance utilization", "info"),
-                view::list_bind("$.entries"),
-            ]),
+            view::responsive(
+                420.0,
+                vec![
+                    view::column(vec![
+                        view::text_bind("$.balance"),
+                        view::badge_bind("$.status", "success"),
+                        view::progress_bind("$.utilization"),
+                        view::sparkline_bind("$.trend", "Recent balance utilization", "info"),
+                    ]),
+                    view::list_bind("$.entries"),
+                ],
+            ),
         )
     }
 
