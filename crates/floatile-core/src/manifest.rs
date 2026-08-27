@@ -115,6 +115,36 @@ pub struct BuildMeta {
     pub sdk_version: String,
 }
 
+/// 宿主拥有的 HTTPS 请求模板。guest 只能选择模板并填写声明过的查询参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HttpTemplateDecl {
+    pub id: String,
+    pub method: String,
+    pub url: String,
+    #[serde(default)]
+    pub query_params: Vec<String>,
+    pub credential_header: String,
+    #[serde(default = "default_http_statuses")]
+    pub allowed_statuses: Vec<u16>,
+    #[serde(default = "default_http_max_bytes")]
+    pub max_response_bytes: u64,
+    #[serde(default = "default_http_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_http_statuses() -> Vec<u16> {
+    vec![200]
+}
+
+const fn default_http_max_bytes() -> u64 {
+    256 * 1024
+}
+
+const fn default_http_timeout_ms() -> u64 {
+    10_000
+}
+
 /// manifest.json v1。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Manifest {
@@ -135,6 +165,12 @@ pub struct Manifest {
     pub entrypoints: Entrypoints,
     pub sizes: Sizes,
     pub permissions: Vec<PermissionDecl>,
+    #[serde(
+        default,
+        rename = "httpTemplates",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub http_templates: Vec<HttpTemplateDecl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +208,8 @@ pub enum ManifestError {
     InvalidCapabilityParams { capability: String, detail: String },
     #[error("非法包路径 `{0}`")]
     InvalidPackagePath(String),
+    #[error("非法 HTTPS 模板: {0}")]
+    InvalidHttpTemplate(String),
 }
 
 impl ManifestError {
@@ -190,6 +228,7 @@ impl ManifestError {
             Self::InherentCapabilityDeclared(_) => "FMAN_INHERENT_CAPABILITY_DECLARED",
             Self::InvalidCapabilityParams { .. } => "FMAN_INVALID_CAPABILITY_PARAMS",
             Self::InvalidPackagePath(_) => "FMAN_INVALID_PACKAGE_PATH",
+            Self::InvalidHttpTemplate(_) => "FMAN_INVALID_HTTP_TEMPLATE",
         }
     }
 }
@@ -239,7 +278,136 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), ManifestError> {
     for decl in &manifest.permissions {
         validate_permission(decl)?;
     }
+    validate_http_templates(manifest)?;
     Ok(())
+}
+
+fn validate_http_templates(manifest: &Manifest) -> Result<(), ManifestError> {
+    if manifest.http_templates.len() > 16 {
+        return Err(ManifestError::InvalidHttpTemplate(
+            "httpTemplates 最多 16 项".to_owned(),
+        ));
+    }
+    let network = manifest
+        .permissions
+        .iter()
+        .find(|permission| permission.capability == "network:https")
+        .map(|permission| {
+            parse_capability_params(CapabilityId::NetworkHttps, permission.params.as_ref())
+        })
+        .transpose()
+        .map_err(|error| ManifestError::InvalidHttpTemplate(error.to_string()))?
+        .flatten();
+    let network = match network {
+        Some(crate::capability::CapabilityParams::Network {
+            origins,
+            max_response_bytes,
+            max_timeout_ms,
+            ..
+        }) => Some((origins, max_response_bytes, max_timeout_ms)),
+        _ => None,
+    };
+    let mut ids = std::collections::BTreeSet::new();
+    for template in &manifest.http_templates {
+        let valid_id = !template.id.is_empty()
+            && template.id.len() <= 64
+            && template
+                .id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.');
+        if !valid_id || !ids.insert(template.id.as_str()) {
+            return Err(ManifestError::InvalidHttpTemplate(format!(
+                "模板 id `{}` 非法或重复",
+                template.id
+            )));
+        }
+        if template.method != "GET" {
+            return Err(ManifestError::InvalidHttpTemplate(format!(
+                "模板 `{}` 当前仅允许 GET",
+                template.id
+            )));
+        }
+        let origin = https_url_origin(&template.url).ok_or_else(|| {
+            ManifestError::InvalidHttpTemplate(format!(
+                "模板 `{}` URL 必须是无凭证、无 fragment 的固定 HTTPS URL",
+                template.id
+            ))
+        })?;
+        let Some((origins, max_bytes, max_timeout)) = &network else {
+            return Err(ManifestError::InvalidHttpTemplate(
+                "声明 httpTemplates 必须同时声明 network:https".to_owned(),
+            ));
+        };
+        if !origins.iter().any(|allowed| allowed == origin)
+            || template.max_response_bytes == 0
+            || template.max_response_bytes > *max_bytes
+            || !(100..=30_000).contains(&template.timeout_ms)
+            || template.timeout_ms > *max_timeout
+        {
+            return Err(ManifestError::InvalidHttpTemplate(format!(
+                "模板 `{}` 超出 network:https origin 或预算",
+                template.id
+            )));
+        }
+        if !matches!(
+            template.credential_header.as_str(),
+            "authorization" | "x-api-key"
+        ) {
+            return Err(ManifestError::InvalidHttpTemplate(format!(
+                "模板 `{}` credentialHeader 仅允许 authorization/x-api-key",
+                template.id
+            )));
+        }
+        if template.query_params.len() > 16
+            || template.query_params.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 64
+                    || !name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            })
+            || template
+                .query_params
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != template.query_params.len()
+        {
+            return Err(ManifestError::InvalidHttpTemplate(format!(
+                "模板 `{}` queryParams 非法或重复",
+                template.id
+            )));
+        }
+        if template.allowed_statuses.is_empty()
+            || template.allowed_statuses.len() > 32
+            || template
+                .allowed_statuses
+                .iter()
+                .any(|status| !(100..=599).contains(status))
+        {
+            return Err(ManifestError::InvalidHttpTemplate(format!(
+                "模板 `{}` allowedStatuses 非法",
+                template.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn https_url_origin(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty()
+        || authority.contains('@')
+        || authority.starts_with('[')
+        || authority.eq_ignore_ascii_case("localhost")
+        || url.contains('#')
+        || url.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(&url[.."https://".len() + authority_end])
 }
 
 pub(crate) fn validate_plugin_id(id: &str) -> Result<(), ManifestError> {
@@ -459,6 +627,20 @@ fn permission_schema_from_registry() -> serde_json::Value {
                         "sampleRateHz": { "type": "integer", "minimum": 0, "maximum": u32::MAX }
                     }
                 }),
+                CapabilityParamKind::Network => serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["origins"],
+                    "properties": {
+                        "origins": {
+                            "type": "array", "minItems": 1, "maxItems": 16,
+                            "items": { "type": "string", "pattern": "^https://[^/?#@]+$" }
+                        },
+                        "maxRequestsPerMinute": { "type": "integer", "minimum": 1, "maximum": 600 },
+                        "maxResponseBytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+                        "maxTimeoutMs": { "type": "integer", "minimum": 100, "maximum": 30000 }
+                    }
+                }),
             };
             serde_json::json!({
                 "type": "object",
@@ -535,6 +717,7 @@ mod tests {
                 capability: "timer:schedule".into(),
                 params: Some(json!({"maxPerMinute": 60, "maxActive": 2})),
             }],
+            http_templates: Vec::new(),
             config: None,
             storage: None,
             build: None,
@@ -544,6 +727,42 @@ mod tests {
     #[test]
     fn accepts_valid_manifest() {
         assert!(validate_manifest(&valid_manifest()).is_ok());
+    }
+
+    #[test]
+    fn validates_connection_bound_https_templates() {
+        let mut manifest = valid_manifest();
+        manifest.permissions.push(PermissionDecl {
+            capability: "network:https".into(),
+            params: Some(serde_json::json!({
+                "origins": ["https://api.example.com"],
+                "maxResponseBytes": 4096,
+                "maxTimeoutMs": 2000
+            })),
+        });
+        manifest.http_templates.push(HttpTemplateDecl {
+            id: "balance".into(),
+            method: "GET".into(),
+            url: "https://api.example.com/v1/balance".into(),
+            query_params: vec!["account".into()],
+            credential_header: "authorization".into(),
+            allowed_statuses: vec![200],
+            max_response_bytes: 4096,
+            timeout_ms: 2000,
+        });
+        assert!(validate_manifest(&manifest).is_ok());
+
+        manifest.http_templates[0].url = "https://evil.example/steal".into();
+        assert!(matches!(
+            validate_manifest(&manifest),
+            Err(ManifestError::InvalidHttpTemplate(_))
+        ));
+        manifest.http_templates[0].url = "https://api.example.com/v1/balance".into();
+        manifest.http_templates[0].credential_header = "cookie".into();
+        assert!(matches!(
+            validate_manifest(&manifest),
+            Err(ManifestError::InvalidHttpTemplate(_))
+        ));
     }
 
     #[test]
@@ -671,7 +890,7 @@ mod tests {
     fn rejects_unknown_and_inherent_capabilities() {
         let mut m = valid_manifest();
         m.permissions = vec![PermissionDecl {
-            capability: "network:https".into(),
+            capability: "network:raw".into(),
             params: None,
         }];
         assert!(matches!(

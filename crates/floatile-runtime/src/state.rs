@@ -9,8 +9,8 @@ use std::time::Instant;
 use floatile_core::OperationId;
 use floatile_core::types::InstanceId;
 use floatile_plugin_api::floatile::widget::{
-    host_clock, host_log, host_metrics, host_operation, host_storage, host_theme, host_timer,
-    host_ui,
+    host_clock, host_http, host_log, host_metrics, host_operation, host_storage, host_theme,
+    host_timer, host_ui,
 };
 use floatile_services::broker::Broker;
 use floatile_services::errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
@@ -258,6 +258,31 @@ impl host_storage::Host for InstanceHostState {
         let id = OperationId::new(id).ok_or(host_operation::OperationError::InvalidOperationId)?;
         self.broker
             .take_storage_get_result(id)
+            .map_err(map_operation_take)
+    }
+}
+
+impl host_http::Host for InstanceHostState {
+    async fn submit(
+        &mut self,
+        template_id: String,
+        _connection_id: u64,
+        _query: Vec<host_http::QueryParam>,
+    ) -> Result<u64, host_operation::OperationError> {
+        self.broker
+            .submit_https_unconfigured(&template_id)
+            .map(OperationId::get)
+            .map_err(map_operation_submit)
+    }
+
+    async fn take_result(
+        &mut self,
+        id: u64,
+    ) -> Result<host_http::HttpResponse, host_operation::OperationError> {
+        let id = OperationId::new(id).ok_or(host_operation::OperationError::InvalidOperationId)?;
+        self.broker
+            .take_https_result::<(u16, Vec<u8>)>(id)
+            .map(|(status, body)| host_http::HttpResponse { status, body })
             .map_err(map_operation_take)
     }
 }

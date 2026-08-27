@@ -512,6 +512,7 @@ async fn handle_operation_completion(
 ) -> Result<(), InstanceError> {
     let capability = match completion.capability {
         CapabilityId::StorageRead => OperationCapability::StorageRead,
+        CapabilityId::NetworkHttps => OperationCapability::HttpsRequest,
         _ => {
             store.data().broker.discard_operation_result(completion.id);
             return Ok(());

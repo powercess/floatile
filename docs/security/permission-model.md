@@ -41,7 +41,7 @@ P0/MVP 最小集：
 | `clipboard:read/write` | 剪贴板（V1+） | — | 需显式授权 |
 | `launcher:open-url` | 打开 URL（V1+） | `schemes: [https]`；域名白名单 | — |
 | `launcher:open-approved-app` | 打开已批准应用（V1+） | 应用路径白名单 | — |
-| `network:https://<domain>/*` | 受控 HTTP（V1+，经 HTTP Broker） | 域名模式 | — |
+| `network:https` | 受控 HTTPS（PP-M5，经 HTTP Broker） | 精确 HTTPS origin + 速率/响应/超时预算 | L2 |
 | `network:websocket:wss://<domain>/*` | 受控 WebSocket（V1+） | 域名模式 | — |
 | `network:localhost` | 本地回环访问（单独授权） | — | 高危，需二次确认 |
 | `file:read:user-selected` | 读用户显式选择的文件（V1+） | 文件范围 | 仅会话内 |

@@ -275,6 +275,33 @@ impl Broker {
         self.take_operation_result(CapabilityId::StorageRead, id)
     }
 
+    /// HTTPS 服务尚未为本实例绑定模板/Connection 时的安全降级路径。
+    /// 仍通过 Broker 记录授权与环境不可用，WIT adapter 不直接作权限判断。
+    pub fn submit_https_unconfigured(
+        &self,
+        template_id: &str,
+    ) -> Result<OperationId, OperationSubmitError> {
+        self.authorize_existing_grant(
+            CapabilityId::NetworkHttps,
+            &format!("https template={}B service=unconfigured", template_id.len()),
+        )
+        .map_err(OperationSubmitError::PermissionDenied)?;
+        self.audit.record(
+            CapabilityId::NetworkHttps,
+            false,
+            Some(DenyReason::EnvironmentUnavailable),
+            "https service=unconfigured",
+        );
+        Err(OperationSubmitError::Unavailable)
+    }
+
+    pub fn take_https_result<T: Any + Send + 'static>(
+        &self,
+        id: OperationId,
+    ) -> Result<T, OperationTakeError> {
+        self.take_operation_result(CapabilityId::NetworkHttps, id)
+    }
+
     pub fn metrics_cpu_percent(&mut self) -> Result<f64, MetricsError> {
         self.authorize(
             CapabilityId::SystemCpu,

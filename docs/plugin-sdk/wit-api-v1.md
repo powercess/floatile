@@ -7,16 +7,18 @@
 
 ## 0. 当前实现与迁移门
 
-`wit/floatile-widget.wit@1.1.0`、`floatile-sdk` guest bindings、`floatile-plugin-api` host async
+`wit/floatile-widget.wit@1.2.0`、`floatile-sdk` guest bindings、`floatile-plugin-api` host async
 bindings 与 `plugins/clock-wasm` 已迁移到 ADR-0001 目标契约形状：包含 `host-ui`/`host-clock`、canonical
 initial State、统一 `start/handle-event/stop` lifecycle 与稳定 `widget-error`。host/guest 均从 `wit/`
 单一源生成，engine version 一致，clock fixture 通过 `wasm-tools validate`，验证了 stable Rust、
 wit-bindgen、Wasmtime bindgen 与 Component 构建链路。
 
-项目尚未对外分发插件，现有 `1.1.0` 不是发布兼容承诺。`floatile-runtime` 已实现 Wasmtime adapter，
+项目尚未对外分发插件，现有 `1.2.0` 不是发布兼容承诺。`floatile-runtime` 已实现 Wasmtime adapter，
 全部宿主能力经 `PermissionBroker`；clock/evil fixture 覆盖 lifecycle、State Patch、拒绝和宿主存活。
 v1.1 增加 `host-operation`、`storage.submit-get/take-get-result` 与 `operation-completed`，验证 typed
 one-shot result 从真实 guest 往返，且完成事件不携带 payload。
+v1.2 增加 `host-http.submit/take-result`；guest 只传模板、Connection 与有界 query，请求构造、
+credential 注入和网络执行仍属于 Permission Broker。
 
 ## 1. v1 目标
 
@@ -41,6 +43,7 @@ WIT 只负责 WASM plugin 与 host 的跨边界调用。UI 结构由 `widget.ftu
 | `host-clock` | `ctx.clock` | 固有只读能力；不暴露系统句柄 | 必须 |
 | `host-timer` | `ctx.timer` | `timer:schedule` | 必须 |
 | `host-storage` | `ctx.storage` | `storage:read/write` | 必须 |
+| `host-http` | `ctx.http` | `network:https` | 必须 |
 | `host-metrics` | `ctx.metrics` | `system:cpu/memory` | 必须 |
 | `host-theme` | `ctx.theme` | `theme:subscribe` | 必须 |
 | `widget-contract` | `Widget` lifecycle | host 调 guest export | 必须 |
@@ -54,7 +57,7 @@ WIT 只负责 WASM plugin 与 host 的跨边界调用。UI 结构由 `widget.ftu
 bindings、runtime adapter、版本和 contract tests。
 
 ```wit
-package floatile:widget@1.1.0;
+package floatile:widget@1.2.0;
 
 interface host-ui {
     variant ui-error {

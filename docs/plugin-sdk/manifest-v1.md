@@ -37,7 +37,7 @@ manifest 是安装与运行时的显式事实，不是开发者主要编辑界�
     "id": "dev.floatile",
     "name": "Floatile Labs"
   },
-  "engineApiVersion": "1.1.0",
+  "engineApiVersion": "1.2.0",
   "uiApiVersion": "1.0.0",
   "type": "widget",
   "entrypoints": {
@@ -88,6 +88,7 @@ manifest 是安装与运行时的显式事实，不是开发者主要编辑界�
 | `entrypoints.logic` | 是 | 规范相对路径，指向 WASM Component |
 | `sizes` | 是 | 有限正逻辑像素；default 在 min/max 内 |
 | `permissions` | 是 | 可以为空；未知 capability 或非法 params 拒绝 |
+| `httpTemplates` | 否 | 固定 HTTPS GET 模板；origin/响应/超时预算不得超过 `network:https` |
 | `config.schema` | 否 | 包内规范路径；缺省表示无用户配置；只允许当前 schema 文档内 fragment 引用 |
 | `storage.migrationVersion` | 否 | 非负整数；只描述插件私有 KV 迁移 |
 | `build` | 否 | 诊断元数据，不参与信任/授权 |
@@ -120,6 +121,11 @@ max_active = 2
 error；声明但未使用为 warning；CLI 不自动扩大权限。
 
 ## 4. 权限对象
+
+PP-M5 的 `network:https` 使用精确 HTTPS origin 白名单，并绑定速率、最大响应和超时预算。
+`httpTemplates` 固定 URL、credential header（仅 `authorization`/`x-api-key`）、允许状态码及 query
+参数名。guest 只能提交模板 ID、获授权的 Connection ID 和已声明 query；secret 不得进入 manifest、
+config、State、WIT 参数、SQLite、日志、审计或错误。
 
 ```json
 {
