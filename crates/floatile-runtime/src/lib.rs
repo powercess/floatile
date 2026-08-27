@@ -49,7 +49,7 @@ const QUEUE_CAPACITY: usize = 64;
 /// 更小预算单独测试）。
 const DEFAULT_FUEL_PER_CALL: u64 = 1_000_000_000;
 /// 默认单次 guest 调用墙钟预算。
-const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(2);
 /// Wasmtime epoch 的宿主节拍；deadline 向上取整到该粒度。
 const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(10);
 /// 默认每实例线性内存上限。

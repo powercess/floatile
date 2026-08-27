@@ -110,7 +110,7 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - ADR-0004 completion bridge 接收不含 payload 的 Operation 终态，按
   `plugin + instance + generation` 过滤并 `try_send` 到有界 actor lane；旧代、满载或 actor 关闭时通知
   Broker 丢弃宿主 retained result。当前只验证宿主模型，不代表 WIT/guest 已可调用。
-- S5b 已实现：Wasmtime 47 + 空 WASI 上下文（零 ambient）、逐调用 fuel、默认 5 s 墙钟预算（10 ms
+- S5b 已实现：Wasmtime 47 + 空 WASI 上下文（零 ambient）、逐调用 fuel、默认 2 s 墙钟预算（10 ms
   epoch ticker）、内存限制、串行 actor、State Patch 原子应用、WIT adapter 经 Broker；`clock-wasm`
   集成测试及 fuel/timeout/memory/peer 存活安全测试通过。shell 的 UI event 桥容量 64、`try_send`
   过载丢弃并聚合审计，每轮批量 8 个事件以保留 State 投影调度机会。

@@ -94,7 +94,7 @@
 - Broker 固有能力（UI/log/clock）与 timer 最小声明能力；allow/deny/quota/audit。
 - 验收：Rust clock 1 Hz 更新；deny、超 patch、队列洪泛、fuel/内存 trap 后宿主存活。
 - 已实现：`floatile-runtime`（Wasmtime 47 + 空 WASI 上下文、逐 guest 调用 fuel 补充、16 MiB
-  默认内存限制、5 s 默认墙钟预算 + 10 ms epoch interruption、串行 actor、State Patch
+  默认内存限制、2 s 默认墙钟预算 + 10 ms epoch interruption、串行 actor、State Patch
   原子应用、WIT adapter 经 Broker）；`floatile-services` Broker 与 clock/log/timer/storage/metrics/theme
   能力；`clock-wasm` 集成测试（start/1Hz tick/update-state/deny 存活/fuel trap 存活）。renderer 侧：
   `floatile-renderer` 生成的 `ClockPluginUI` 组件已实例化进 shell 窗口：`build.rs` 把生成组件写到
