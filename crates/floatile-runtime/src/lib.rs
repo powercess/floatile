@@ -33,7 +33,7 @@ use floatile_services::{
 use floatile_ui_schema::schema::JsonSchema;
 use floatile_ui_schema::validate_value;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Store};
 
@@ -153,8 +153,7 @@ impl WidgetManager {
         let call_timeout = self.call_timeout;
         let epoch_ticker = Arc::clone(&self.epoch_ticker);
         let audit_listener = self.audit_listener.clone();
-        let actor_failure = Arc::new(parking_lot::Mutex::new(None));
-        let task_failure = Arc::clone(&actor_failure);
+        let (failure_tx, actor_failure) = watch::channel(None);
         let join = tokio::spawn(async move {
             let actor = tokio::spawn(run_actor(
                 engine,
@@ -176,7 +175,7 @@ impl WidgetManager {
                 ))),
             };
             if let Err(error) = &result {
-                *task_failure.lock() = Some(error.to_string());
+                failure_tx.send_replace(Some(error.to_string()));
             }
             result
         });
@@ -236,7 +235,7 @@ pub struct WidgetHandle {
     cmd: mpsc::Sender<InstanceCommand>,
     ui: mpsc::Receiver<UiUpdate>,
     join: tokio::task::JoinHandle<Result<(), RuntimeError>>,
-    actor_failure: Arc<parking_lot::Mutex<Option<String>>>,
+    actor_failure: watch::Receiver<Option<String>>,
 }
 
 enum InstanceCommand {
@@ -302,16 +301,17 @@ impl WidgetHandle {
     }
 
     async fn actor_stopped_error(&self) -> InstanceError {
-        // Dropping the command receiver wakes the caller before the actor task's wrapper
-        // necessarily records `run_actor`'s result. Give that wrapper a bounded chance to
-        // publish the setup/call error so cross-platform failures retain their root cause.
-        for _ in 0..4 {
-            if let Some(detail) = self.actor_failure.lock().clone() {
-                return InstanceError::Failed(detail);
-            }
-            tokio::task::yield_now().await;
+        // Dropping the command receiver can wake the caller before the actor wrapper observes
+        // its task result. Wait for that publication instead of relying on scheduler timing.
+        let mut failure = self.actor_failure.clone();
+        match failure.wait_for(Option::is_some).await {
+            Ok(detail) => InstanceError::Failed(
+                detail
+                    .clone()
+                    .unwrap_or_else(|| "actor 未返回调用结果".to_owned()),
+            ),
+            Err(_) => InstanceError::Failed("actor 未返回调用结果".to_owned()),
         }
-        InstanceError::Failed("actor 未返回调用结果".to_owned())
     }
 }
 
