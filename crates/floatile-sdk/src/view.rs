@@ -155,6 +155,31 @@ pub fn progress_bind(path: &str) -> View {
     }
 }
 
+/// Sparkline：绑定有界 number array，并提供屏幕阅读器可用的替代标签。
+pub fn sparkline_bind(path: &str, label: &str, tone: &str) -> View {
+    let props = std::collections::BTreeMap::from([
+        (
+            "values".into(),
+            PropValue::Binding(Binding::State {
+                bind: path.to_owned(),
+            }),
+        ),
+        (
+            "label".into(),
+            PropValue::Literal(serde_json::Value::String(label.to_owned())),
+        ),
+        (
+            "tone".into(),
+            PropValue::Literal(serde_json::Value::String(tone.to_owned())),
+        ),
+    ]);
+    View {
+        kind: "Sparkline".into(),
+        props,
+        ..Default::default()
+    }
+}
+
 /// If 控制节点：按 boolean State 绑定选择 then/else 分支。
 pub fn if_bind(path: &str, then_view: View, else_view: Option<View>) -> View {
     View {
@@ -277,6 +302,16 @@ mod tests {
         assert_eq!(
             grid.props.get("columns"),
             Some(&PropValue::Literal(serde_json::json!(2)))
+        );
+    }
+
+    #[test]
+    fn sparkline_builder_includes_accessible_label() {
+        let sparkline = sparkline_bind("$.trend", "Usage trend", "info");
+        assert_eq!(sparkline.kind, "Sparkline");
+        assert_eq!(
+            sparkline.props.get("label"),
+            Some(&PropValue::Literal(serde_json::json!("Usage trend")))
         );
     }
 }

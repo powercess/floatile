@@ -32,6 +32,7 @@ pub enum BindingValueType {
     Boolean,
     Number,
     StringList,
+    NumberList,
 }
 
 /// 一个输入事件:声明事件名 → 生成的回调名。
@@ -90,6 +91,7 @@ fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot])
             BindingValueType::Boolean => ("bool", "false"),
             BindingValueType::Number => ("float", "0"),
             BindingValueType::StringList => ("[string]", "[]"),
+            BindingValueType::NumberList => ("[float]", "[]"),
         };
         out.push_str(&format!(
             "    in property <{kind}> {}: {default};\n",
@@ -131,6 +133,7 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
         "Stack" => render_layout(comp, ctx, depth, "StackLayout"),
         "Grid" => render_grid(comp, ctx, depth),
         "List" => render_list(comp, ctx, depth),
+        "Sparkline" => render_sparkline(comp, ctx),
         "Text" => render_text(comp, ctx),
         "Button" => render_button(comp, ctx),
         "Toggle" => render_toggle(comp, ctx),
@@ -144,6 +147,79 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
             "renderer 暂不映射该组件;请移除或等待后续切片".to_owned(),
         )),
     }
+}
+
+fn render_sparkline(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    let label = match comp.props.get("label") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            format!(
+                "root.{}",
+                binding_slot(bind, BindingValueType::String, ctx)?.prop
+            )
+        }
+        Some(PropValue::Literal(value)) => encode_string(value.as_str().ok_or_else(|| {
+            RendererError::BindingError("Sparkline.label 必须是 string".to_owned())
+        })?)?,
+        _ => {
+            return Err(RendererError::BindingError(
+                "Sparkline 缺少 label prop".to_owned(),
+            ));
+        }
+    };
+    let color = match comp.props.get("tone") {
+        Some(PropValue::Literal(value)) => match value.as_str() {
+            Some("success") => "#247a45",
+            Some("warning") => "#a86600",
+            Some("danger") => "#a33a3a",
+            Some("info") | None => "#2f6feb",
+            Some(other) => {
+                return Err(RendererError::BindingError(format!(
+                    "Sparkline.tone 不支持 `{other}`"
+                )));
+            }
+        },
+        None => "#2f6feb",
+        Some(PropValue::Binding(_)) => {
+            return Err(RendererError::BindingError(
+                "Sparkline.tone 不允许绑定".to_owned(),
+            ));
+        }
+    };
+    let bars = match comp.props.get("values") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let values = format!(
+                "root.{}",
+                binding_slot(bind, BindingValueType::NumberList, ctx)?.prop
+            );
+            format!(
+                "        for value in {values}: Rectangle {{\n            width: 4px;\n            height: parent.height * ((value < 0 ? 0 : (value > 100 ? 100 : value)) / 100);\n            background: {color};\n        }}\n"
+            )
+        }
+        Some(PropValue::Literal(value)) => {
+            let values = value.as_array().ok_or_else(|| {
+                RendererError::BindingError("Sparkline.values 必须是 number array".to_owned())
+            })?;
+            let mut bars = String::new();
+            for value in values {
+                let value = value.as_f64().ok_or_else(|| {
+                    RendererError::BindingError("Sparkline.values 必须是 number array".to_owned())
+                })?;
+                let value = value.clamp(0.0, 100.0);
+                bars.push_str(&format!(
+                    "        Rectangle {{ width: 4px; height: parent.height * {value} / 100; background: {color}; }}\n"
+                ));
+            }
+            bars
+        }
+        Some(PropValue::Binding(Binding::Item { .. })) | None => {
+            return Err(RendererError::BindingError(
+                "Sparkline.values 缺少受支持的值".to_owned(),
+            ));
+        }
+    };
+    Ok(format!(
+        "Rectangle {{\n    height: 48px;\n    accessible-role: image;\n    accessible-label: {label};\n    HorizontalLayout {{\n        spacing: 2px;\n        alignment: end;\n{bars}    }}\n}}\n"
+    ))
 }
 
 /// Grid:把声明式 columns 转为 Slint 的显式 Row 分组，避免忽略列数语义。
@@ -648,7 +724,7 @@ mod tests {
         UiDocument {
             ui_api_version: floatile_ui_schema::UI_API_VERSION.into(),
             state: floatile_ui_schema::ir::StateSchema {
-                initial: json!({"time": "00:00:00", "running": false, "items": []}),
+                initial: json!({"time": "00:00:00", "running": false, "items": [], "trend": []}),
                 schema: floatile_ui_schema::JsonSchema::Object {
                     required: vec![],
                     properties: BTreeMap::from([
@@ -666,6 +742,13 @@ mod tests {
                                 items: Box::new(floatile_ui_schema::JsonSchema::String {
                                     max_length: Some(64),
                                 }),
+                            },
+                        ),
+                        (
+                            "trend".into(),
+                            floatile_ui_schema::JsonSchema::Array {
+                                max_items: Some(16),
+                                items: Box::new(floatile_ui_schema::JsonSchema::Number),
                             },
                         ),
                     ]),
@@ -1077,5 +1160,35 @@ mod tests {
         let rendered = render_component(&doc(root)).unwrap();
         assert!(rendered.source.contains("GridLayout"));
         assert_eq!(rendered.source.matches("Row {").count(), 2);
+    }
+
+    #[test]
+    fn renders_accessible_bounded_sparkline() {
+        let root = Component {
+            kind: "Sparkline".into(),
+            props: BTreeMap::from([
+                (
+                    "values".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.trend".into(),
+                    }),
+                ),
+                ("label".into(), PropValue::Literal(json!("Usage trend"))),
+                ("tone".into(), PropValue::Literal(json!("info"))),
+            ]),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("in property <[float]> prop_trend"));
+        assert!(rendered.source.contains("accessible-role: image"));
+        assert!(
+            rendered
+                .source
+                .contains("accessible-label: \"Usage trend\"")
+        );
+        assert_eq!(
+            rendered.bindings[0].value_type,
+            BindingValueType::NumberList
+        );
     }
 }

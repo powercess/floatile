@@ -23,7 +23,7 @@ pub use schema::{JsonSchema, validate_value};
 pub use validate::validate_document;
 
 /// 当前受支持的 UI IR 版本（独立于 WIT/manifest/SDK/plugin version）。
-pub const UI_API_VERSION: &str = "1.2.0";
+pub const UI_API_VERSION: &str = "1.3.0";
 
 // ---- P0 初始预算（ui-ir-v1 §10；evil/clock/10-instance 数据后才能冻结）----
 
@@ -41,3 +41,5 @@ pub const MAX_EVENT_DECLS: usize = 128;
 pub const MAX_ASSET_REFS: usize = 64;
 /// 单个动态 List 的字符串项上限。
 pub const MAX_LIST_ITEMS: usize = 256;
+/// 单个 Sparkline 的数值采样点上限。
+pub const MAX_CHART_POINTS: usize = 128;

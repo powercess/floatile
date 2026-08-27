@@ -234,6 +234,7 @@ enum ProjectedValue {
     Boolean(bool),
     Number(f64),
     StringList(Vec<String>),
+    NumberList(Vec<f64>),
 }
 
 impl ProjectedValue {
@@ -247,6 +248,9 @@ impl ProjectedValue {
                     .into_iter()
                     .map(|value| UiValue::String(value.into()))
                     .collect::<Vec<_>>(),
+            ))),
+            Self::NumberList(values) => UiValue::Model(slint::ModelRc::new(slint::VecModel::from(
+                values.into_iter().map(UiValue::Number).collect::<Vec<_>>(),
             ))),
         }
     }
@@ -297,6 +301,30 @@ fn project_binding_value(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(ProjectedValue::StringList(values))
+        }
+        BindingValueType::NumberList => {
+            let items = current.as_array().ok_or_else(|| {
+                RuntimeUiError::Projection(format!("{}: 期望 number array", slot.prop))
+            })?;
+            if items.len() > floatile_ui_schema::MAX_CHART_POINTS {
+                return Err(RuntimeUiError::Projection(format!(
+                    "{}: Sparkline 采样点超过 {}",
+                    slot.prop,
+                    floatile_ui_schema::MAX_CHART_POINTS
+                )));
+            }
+            let values = items
+                .iter()
+                .map(|item| {
+                    item.as_f64().ok_or_else(|| {
+                        RuntimeUiError::Projection(format!(
+                            "{}: Sparkline point 期望 number",
+                            slot.prop
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ProjectedValue::NumberList(values))
         }
     }
 }
@@ -433,7 +461,8 @@ mod tests {
         let state = serde_json::json!({
             "loading": true,
             "percent": 42.5,
-            "items": ["one", "two"]
+            "items": ["one", "two"],
+            "trend": [10.0, 42.5]
         });
         let boolean = BindingSlot {
             path: "$.loading".into(),
@@ -449,6 +478,11 @@ mod tests {
             path: "$.items".into(),
             prop: "prop_items".into(),
             value_type: BindingValueType::StringList,
+        };
+        let trend = BindingSlot {
+            path: "$.trend".into(),
+            prop: "prop_trend".into(),
+            value_type: BindingValueType::NumberList,
         };
         assert!(matches!(
             project_binding_value(&boolean, &state).unwrap(),
@@ -468,6 +502,10 @@ mod tests {
                 .into_ui_value(),
             UiValue::Model(_)
         ));
+        assert!(matches!(
+            project_binding_value(&trend, &state).unwrap(),
+            ProjectedValue::NumberList(values) if values == [10.0, 42.5]
+        ));
     }
 
     #[test]
@@ -486,7 +524,8 @@ mod tests {
             "time": "ok",
             "running": true,
             "percent": 42.5,
-            "items": ["one", "two"]
+            "items": ["one", "two"],
+            "trend": [10.0, 42.5]
         });
         if let JsonSchema::Object { properties, .. } = &mut document.state.schema {
             properties.insert("percent".into(), JsonSchema::Number);
@@ -497,6 +536,13 @@ mod tests {
                     items: Box::new(JsonSchema::String {
                         max_length: Some(64),
                     }),
+                },
+            );
+            properties.insert(
+                "trend".into(),
+                JsonSchema::Array {
+                    max_items: Some(16),
+                    items: Box::new(JsonSchema::Number),
                 },
             );
         }
@@ -570,6 +616,22 @@ mod tests {
                             ..Default::default()
                         },
                     ],
+                    ..Default::default()
+                },
+                Component {
+                    kind: "Sparkline".into(),
+                    props: BTreeMap::from([
+                        (
+                            "values".into(),
+                            PropValue::Binding(floatile_ui_schema::ir::Binding::State {
+                                bind: "$.trend".into(),
+                            }),
+                        ),
+                        (
+                            "label".into(),
+                            PropValue::Literal(serde_json::json!("Usage trend")),
+                        ),
+                    ]),
                     ..Default::default()
                 },
             ],

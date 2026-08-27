@@ -350,6 +350,36 @@ fn build_registry() -> Vec<ComponentSpec> {
         }],
         &[],
     );
+    element_since(
+        &mut specs,
+        "Sparkline",
+        3,
+        ChildrenPolicy::Forbidden,
+        &[
+            PropSchema {
+                name: "values",
+                types: &[JsonType::Array],
+                allow_binding: true,
+                introduced_minor: 3,
+                optional: false,
+            },
+            PropSchema {
+                name: "label",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 3,
+                optional: false,
+            },
+            PropSchema {
+                name: "tone",
+                types: &[JsonType::String],
+                allow_binding: false,
+                introduced_minor: 3,
+                optional: true,
+            },
+        ],
+        &[],
+    );
 
     // 控制组件（Canvas/Path 在 renderer spike 通过前不启用）。
     specs.push(ComponentSpec {
@@ -448,6 +478,30 @@ pub fn validate_literal(
                 "string array with at most {} items",
                 crate::MAX_LIST_ITEMS
             )],
+        });
+    }
+    if spec.name == "Sparkline"
+        && prop.name == "values"
+        && let Some(items) = json.as_array()
+        && (items.len() > crate::MAX_CHART_POINTS
+            || items.iter().any(|item| item.as_f64().is_none()))
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Sparkline.values".to_owned(),
+            expected: vec![format!(
+                "number array with at most {} points",
+                crate::MAX_CHART_POINTS
+            )],
+        });
+    }
+    if spec.name == "Sparkline"
+        && prop.name == "tone"
+        && let Some(value) = json.as_str()
+        && !["info", "success", "warning", "danger"].contains(&value)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Sparkline.tone".to_owned(),
+            expected: vec!["info|success|warning|danger".to_owned()],
         });
     }
     if spec.name == "Grid"

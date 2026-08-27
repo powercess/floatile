@@ -315,6 +315,21 @@ fn validate_binding(
             }
         }
     }
+    if component == "Sparkline" && prop_name == "values" {
+        match target_schema {
+            JsonSchema::Array {
+                max_items: Some(max_items),
+                items,
+            } if *max_items <= crate::MAX_CHART_POINTS
+                && matches!(items.as_ref(), JsonSchema::Number | JsonSchema::Integer) => {}
+            _ => {
+                return Err(UiSchemaError::BindingTypeMismatch(format!(
+                    "Sparkline.values 必须绑定 maxItems <= {} 的 number array",
+                    crate::MAX_CHART_POINTS
+                )));
+            }
+        }
+    }
     let target_type = path::json_type(target_schema).to_owned();
     let allowed = prop.types.iter().any(|t| {
         t.name() == target_type || (matches!(t, JsonType::Number) && target_type == "integer")
@@ -827,6 +842,49 @@ mod tests {
         assert!(matches!(
             validate_document(&unbounded),
             Err(UiSchemaError::BindingTypeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn contract_vector_sparkline_requires_bounded_numbers_and_label() {
+        let sparkline = Component {
+            kind: "Sparkline".into(),
+            props: BTreeMap::from([
+                (
+                    "values".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.trend".into(),
+                    }),
+                ),
+                ("label".into(), PropValue::Literal(json!("Usage trend"))),
+            ]),
+            ..Default::default()
+        };
+        let mut current = with_single(sparkline.clone());
+        if let JsonSchema::Object { properties, .. } = &mut current.state.schema {
+            properties.insert(
+                "trend".into(),
+                JsonSchema::Array {
+                    max_items: Some(16),
+                    items: Box::new(JsonSchema::Number),
+                },
+            );
+        }
+        current.state.initial["trend"] = json!([]);
+        assert!(validate_document(&current).is_ok());
+
+        let mut old = current.clone();
+        old.ui_api_version = "1.2.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+
+        let mut missing_label = current;
+        missing_label.root.children[0].props.remove("label");
+        assert!(matches!(
+            validate_document(&missing_label),
+            Err(UiSchemaError::MissingProp { .. })
         ));
     }
 
