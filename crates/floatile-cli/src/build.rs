@@ -150,6 +150,15 @@ pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildEr
     // 2. 宿主运行 build_ftui 生成 widget.ftui。
     let ftui_output = Command::new("cargo")
         .current_dir(project_dir)
+        // Author projects conventionally use the same `build_ftui` binary name. Cargo places
+        // host binaries directly under the target profile directory, so concurrent builds of
+        // different plugins can otherwise overwrite/run each other's executable on Windows.
+        .env(
+            "CARGO_TARGET_DIR",
+            meta.target_dir
+                .join("floatile-host")
+                .join(&meta.package_name),
+        )
         .args([
             "run",
             "--quiet",
