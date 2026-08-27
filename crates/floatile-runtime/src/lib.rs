@@ -153,24 +153,34 @@ impl WidgetManager {
         let call_timeout = self.call_timeout;
         let epoch_ticker = Arc::clone(&self.epoch_ticker);
         let audit_listener = self.audit_listener.clone();
-        let join = tokio::spawn(run_actor(
-            engine,
-            config,
-            https,
-            max_memory,
-            fuel_per_call,
-            call_timeout,
-            epoch_ticker,
-            audit_listener,
-            ui_tx,
-            cmd_rx,
-            actor_tx,
-        ));
+        let actor_failure = Arc::new(parking_lot::Mutex::new(None));
+        let task_failure = Arc::clone(&actor_failure);
+        let join = tokio::spawn(async move {
+            let result = run_actor(
+                engine,
+                config,
+                https,
+                max_memory,
+                fuel_per_call,
+                call_timeout,
+                epoch_ticker,
+                audit_listener,
+                ui_tx,
+                cmd_rx,
+                actor_tx,
+            )
+            .await;
+            if let Err(error) = &result {
+                *task_failure.lock() = Some(error.to_string());
+            }
+            result
+        });
 
         Ok(WidgetHandle {
             cmd: cmd_tx,
             ui: ui_rx,
             join,
+            actor_failure,
         })
     }
 }
@@ -221,6 +231,7 @@ pub struct WidgetHandle {
     cmd: mpsc::Sender<InstanceCommand>,
     ui: mpsc::Receiver<UiUpdate>,
     join: tokio::task::JoinHandle<Result<(), RuntimeError>>,
+    actor_failure: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
 enum InstanceCommand {
@@ -235,16 +246,14 @@ impl WidgetHandle {
     pub async fn start(&self) -> Result<(), InstanceError> {
         let (tx, rx) = oneshot::channel();
         self.send(InstanceCommand::Start(tx)).await?;
-        rx.await
-            .map_err(|_| InstanceError::Failed("actor 未返回调用结果".to_owned()))?
+        rx.await.map_err(|_| self.actor_stopped_error())?
     }
 
     /// 投递一个统一事件（UI/timer/mode/config/theme/suspend/resume）。
     pub async fn handle_event(&self, event: WidgetEvent) -> Result<(), InstanceError> {
         let (tx, rx) = oneshot::channel();
         self.send(InstanceCommand::Event(event, tx)).await?;
-        rx.await
-            .map_err(|_| InstanceError::Failed("actor 未返回调用结果".to_owned()))?
+        rx.await.map_err(|_| self.actor_stopped_error())?
     }
 
     /// 展示模式切换通知。
@@ -279,6 +288,15 @@ impl WidgetHandle {
             .send(cmd)
             .await
             .map_err(|_| InstanceError::Failed("实例已终止（命令通道关闭）".to_owned()))
+    }
+
+    fn actor_stopped_error(&self) -> InstanceError {
+        let detail = self
+            .actor_failure
+            .lock()
+            .clone()
+            .unwrap_or_else(|| "actor 未返回调用结果".to_owned());
+        InstanceError::Failed(detail)
     }
 }
 
