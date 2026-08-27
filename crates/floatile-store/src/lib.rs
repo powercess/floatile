@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use floatile_core::{
+    Connection as HostConnection, ConnectionGrant, ConnectionHealth, ConnectionId, CredentialRef,
     InstallationDigest, InstallationRef, InstanceConfig, InstanceDesiredState, InstanceId,
     PluginId, PluginInstance, WidgetLayout,
 };
@@ -27,7 +28,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -66,6 +67,9 @@ impl Store {
         }
         if current < 4 {
             self.migration_v4()?;
+        }
+        if current < 5 {
+            self.migration_v5()?;
         }
         Ok(())
     }
@@ -168,6 +172,47 @@ impl Store {
             .map_err(|error| StoreError::Migration(format!("v4 提交失败: {error}")))
     }
 
+    fn migration_v5(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS connections (
+                connection_id        INTEGER PRIMARY KEY,
+                provider             TEXT NOT NULL,
+                account_identity     TEXT NOT NULL,
+                credential_ref       TEXT NOT NULL UNIQUE,
+                health               TEXT NOT NULL CHECK (
+                    health IN ('unknown','healthy','degraded','unavailable','revoked')
+                ),
+                credential_generation INTEGER NOT NULL DEFAULT 0
+                    CHECK (credential_generation >= 0),
+                created_at           INTEGER NOT NULL CHECK (created_at >= 0),
+                updated_at           INTEGER NOT NULL CHECK (updated_at >= created_at)
+            );
+            CREATE INDEX IF NOT EXISTS connections_provider
+                ON connections(provider);
+            CREATE TABLE IF NOT EXISTS connection_id_allocator (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                next_id   INTEGER NOT NULL CHECK (next_id >= 1)
+            );
+            INSERT OR IGNORE INTO connection_id_allocator(singleton, next_id)
+                VALUES (1, 1);
+            CREATE TABLE IF NOT EXISTS instance_connection_grants (
+                instance_id   INTEGER NOT NULL,
+                connection_id INTEGER NOT NULL,
+                granted_at    INTEGER NOT NULL CHECK (granted_at >= 0),
+                PRIMARY KEY (instance_id, connection_id),
+                FOREIGN KEY (instance_id) REFERENCES plugin_instances(instance_id),
+                FOREIGN KEY (connection_id) REFERENCES connections(connection_id)
+            );
+            CREATE INDEX IF NOT EXISTS instance_connection_grants_connection
+                ON instance_connection_grants(connection_id);
+            PRAGMA user_version = 5;",
+        )
+        .map_err(|error| StoreError::Migration(format!("v5 建立 Connection 表失败: {error}")))?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v5 提交失败: {error}")))
+    }
+
     /// 布局存储接口。
     pub fn layout(&self) -> LayoutStore<'_> {
         LayoutStore { conn: &self.conn }
@@ -184,6 +229,179 @@ impl Store {
     /// 持久化插件实例接口。
     pub fn instances(&self) -> InstanceStore<'_> {
         InstanceStore { conn: &self.conn }
+    }
+
+    /// 宿主外部数据连接及其实例授权接口。只持久化不透明 CredentialRef，不保存 secret。
+    pub fn connections(&self) -> ConnectionStore<'_> {
+        ConnectionStore { conn: &self.conn }
+    }
+}
+
+pub struct ConnectionStore<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> ConnectionStore<'a> {
+    pub fn create(
+        &self,
+        provider: &str,
+        account_identity: &str,
+        credential: &CredentialRef,
+        created_at: u64,
+    ) -> Result<HostConnection, StoreError> {
+        let created_at_sql = sqlite_i64(created_at, "created_at")?;
+        let tx = self.conn.unchecked_transaction()?;
+        let id: i64 = tx.query_row(
+            "UPDATE connection_id_allocator SET next_id = next_id + 1
+             WHERE singleton = 1 RETURNING next_id - 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let model = HostConnection::restore(
+            ConnectionId(read_positive_id(id, "connection_id")?),
+            provider,
+            account_identity,
+            credential.clone(),
+            ConnectionHealth::Unknown,
+            0,
+            created_at,
+            created_at,
+        )
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        tx.execute(
+            "INSERT INTO connections (
+                connection_id, provider, account_identity, credential_ref, health,
+                credential_generation, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, 'unknown', 0, ?5, ?5)",
+            rusqlite::params![
+                id,
+                provider,
+                account_identity,
+                credential.as_str(),
+                created_at_sql
+            ],
+        )?;
+        tx.commit()?;
+        Ok(model)
+    }
+
+    pub fn get(&self, id: ConnectionId) -> Result<Option<HostConnection>, StoreError> {
+        let id = sqlite_i64(id.0, "connection_id")?;
+        let mut statement = self.conn.prepare(
+            "SELECT connection_id, provider, account_identity, credential_ref, health,
+                    credential_generation, created_at, updated_at
+             FROM connections WHERE connection_id = ?1",
+        )?;
+        let mut rows = statement.query(rusqlite::params![id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        row_to_connection(row).map(Some)
+    }
+
+    pub fn list(&self) -> Result<Vec<HostConnection>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT connection_id, provider, account_identity, credential_ref, health,
+                    credential_generation, created_at, updated_at
+             FROM connections ORDER BY connection_id",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next()? {
+            result.push(row_to_connection(row)?);
+        }
+        Ok(result)
+    }
+
+    pub fn grant(
+        &self,
+        instance_id: InstanceId,
+        connection_id: ConnectionId,
+        granted_at: u64,
+    ) -> Result<bool, StoreError> {
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO instance_connection_grants
+                (instance_id, connection_id, granted_at)
+             SELECT ?1, ?2, ?3
+             WHERE EXISTS (SELECT 1 FROM plugin_instances WHERE instance_id = ?1)
+               AND EXISTS (SELECT 1 FROM connections WHERE connection_id = ?2)",
+            rusqlite::params![
+                sqlite_i64(instance_id.0, "instance_id")?,
+                sqlite_i64(connection_id.0, "connection_id")?,
+                sqlite_i64(granted_at, "granted_at")?,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn revoke(
+        &self,
+        instance_id: InstanceId,
+        connection_id: ConnectionId,
+    ) -> Result<bool, StoreError> {
+        let changed = self.conn.execute(
+            "DELETE FROM instance_connection_grants
+             WHERE instance_id = ?1 AND connection_id = ?2",
+            rusqlite::params![
+                sqlite_i64(instance_id.0, "instance_id")?,
+                sqlite_i64(connection_id.0, "connection_id")?,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn grants_for_instance(
+        &self,
+        instance_id: InstanceId,
+    ) -> Result<Vec<ConnectionGrant>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT instance_id, connection_id, granted_at
+             FROM instance_connection_grants WHERE instance_id = ?1 ORDER BY connection_id",
+        )?;
+        let mut rows =
+            statement.query(rusqlite::params![sqlite_i64(instance_id.0, "instance_id")?])?;
+        let mut grants = Vec::new();
+        while let Some(row) = rows.next()? {
+            grants.push(ConnectionGrant {
+                instance_id: InstanceId(read_u64(row, 0, "instance_id")?),
+                connection_id: ConnectionId(read_u64(row, 1, "connection_id")?),
+                granted_at: read_u64(row, 2, "granted_at")?,
+            });
+        }
+        Ok(grants)
+    }
+
+    pub fn rotate_credential(
+        &self,
+        id: ConnectionId,
+        credential: &CredentialRef,
+        updated_at: u64,
+    ) -> Result<bool, StoreError> {
+        let changed = self.conn.execute(
+            "UPDATE connections
+             SET credential_ref = ?1, credential_generation = credential_generation + 1,
+                 health = 'unknown', updated_at = ?2
+             WHERE connection_id = ?3 AND updated_at <= ?2
+               AND credential_generation < 9223372036854775807",
+            rusqlite::params![
+                credential.as_str(),
+                sqlite_i64(updated_at, "updated_at")?,
+                sqlite_i64(id.0, "connection_id")?,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// 只有无实例引用时才能删除 Connection，避免破坏共享连接。
+    pub fn delete_unreferenced(&self, id: ConnectionId) -> Result<bool, StoreError> {
+        let changed = self.conn.execute(
+            "DELETE FROM connections WHERE connection_id = ?1
+             AND NOT EXISTS (
+                SELECT 1 FROM instance_connection_grants WHERE connection_id = ?1
+             )",
+            rusqlite::params![sqlite_i64(id.0, "connection_id")?],
+        )?;
+        Ok(changed == 1)
     }
 }
 
@@ -353,6 +571,10 @@ impl<'a> InstanceStore<'a> {
     pub fn delete(&self, instance_id: InstanceId) -> Result<bool, StoreError> {
         let instance_id = sqlite_i64(instance_id.0, "instance_id")?;
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM instance_connection_grants WHERE instance_id = ?1",
+            rusqlite::params![instance_id],
+        )?;
         let changed = tx.execute(
             "DELETE FROM plugin_instances WHERE instance_id = ?1",
             rusqlite::params![instance_id],
@@ -580,6 +802,36 @@ fn row_to_instance(row: &rusqlite::Row<'_>) -> Result<PluginInstance, StoreError
         updated_at,
     )
     .map_err(|error| StoreError::Corrupt(error.to_string()))
+}
+
+fn row_to_connection(row: &rusqlite::Row<'_>) -> Result<HostConnection, StoreError> {
+    let id = ConnectionId(read_u64(row, 0, "connection_id")?);
+    let provider = row.get::<_, String>(1)?;
+    let account_identity = row.get::<_, String>(2)?;
+    let credential = CredentialRef::new(row.get::<_, String>(3)?)
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    let health = ConnectionHealth::parse(&row.get::<_, String>(4)?)
+        .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+    HostConnection::restore(
+        id,
+        provider,
+        account_identity,
+        credential,
+        health,
+        read_u64(row, 5, "credential_generation")?,
+        read_u64(row, 6, "created_at")?,
+        read_u64(row, 7, "updated_at")?,
+    )
+    .map_err(|error| StoreError::Corrupt(error.to_string()))
+}
+
+fn read_positive_id(value: i64, field: &str) -> Result<u64, StoreError> {
+    let value =
+        u64::try_from(value).map_err(|_| StoreError::Corrupt(format!("{field} 不得为负数")))?;
+    if value == 0 {
+        return Err(StoreError::Corrupt(format!("{field} 不得为 0")));
+    }
+    Ok(value)
 }
 
 fn sqlite_i64(value: u64, field: &'static str) -> Result<i64, StoreError> {
@@ -1241,6 +1493,193 @@ mod tests {
             store.instances().get(InstanceId(2)),
             Err(StoreError::Corrupt(_))
         ));
+    }
+
+    fn credential(name: &str) -> CredentialRef {
+        CredentialRef::new(format!("cred://openai/{name}")).unwrap()
+    }
+
+    fn v4_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store.migration_v2().unwrap();
+        store.migration_v3().unwrap();
+        store.migration_v4().unwrap();
+        store
+    }
+
+    #[test]
+    fn migration_v5_failure_rolls_back_connection_allocator_and_version() {
+        let mut store = v4_store();
+        store
+            .conn
+            .execute_batch("CREATE TABLE connections (broken INTEGER);")
+            .unwrap();
+
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let allocator_exists: u32 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'connection_id_allocator'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(allocator_exists, 0);
+    }
+
+    #[test]
+    fn connection_grants_are_instance_scoped_and_shared_connection_survives_deletion() {
+        let store = open(":memory:").unwrap();
+        let first = store
+            .instances()
+            .create(
+                &installation(),
+                &config("first"),
+                InstanceDesiredState::Stopped,
+                100,
+            )
+            .unwrap();
+        let second = store
+            .instances()
+            .create(
+                &installation(),
+                &config("second"),
+                InstanceDesiredState::Stopped,
+                100,
+            )
+            .unwrap();
+        let connection = store
+            .connections()
+            .create("openai", "account@example.com", &credential("primary"), 100)
+            .unwrap();
+
+        assert!(
+            store
+                .connections()
+                .grant(first.id(), connection.id(), 101)
+                .unwrap()
+        );
+        assert!(
+            store
+                .connections()
+                .grant(second.id(), connection.id(), 102)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .connections()
+                .grant(second.id(), connection.id(), 103)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .connections()
+                .delete_unreferenced(connection.id())
+                .unwrap()
+        );
+
+        assert!(store.instances().delete(first.id()).unwrap());
+        assert!(
+            store
+                .connections()
+                .grants_for_instance(first.id())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .connections()
+                .grants_for_instance(second.id())
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store.connections().get(connection.id()).unwrap().is_some());
+        assert!(
+            store
+                .connections()
+                .revoke(second.id(), connection.id())
+                .unwrap()
+        );
+        assert!(
+            store
+                .connections()
+                .delete_unreferenced(connection.id())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn credential_rotation_only_persists_reference_and_advances_generation() {
+        let store = open(":memory:").unwrap();
+        let connection = store
+            .connections()
+            .create("openai", "account", &credential("old"), 100)
+            .unwrap();
+        assert!(
+            store
+                .connections()
+                .rotate_credential(connection.id(), &credential("new"), 110)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .connections()
+                .rotate_credential(connection.id(), &credential("stale"), 109)
+                .unwrap()
+        );
+        let restored = store.connections().get(connection.id()).unwrap().unwrap();
+        assert_eq!(restored.credential().as_str(), "cred://openai/new");
+        assert_eq!(restored.credential_generation(), 1);
+        assert_eq!(restored.health(), ConnectionHealth::Unknown);
+
+        let columns: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(connections)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!columns.iter().any(|column| column.contains("secret")));
+    }
+
+    #[test]
+    fn connection_grant_rejects_unknown_instance_or_connection() {
+        let store = open(":memory:").unwrap();
+        let instance = store
+            .instances()
+            .create(
+                &installation(),
+                &config("known"),
+                InstanceDesiredState::Stopped,
+                100,
+            )
+            .unwrap();
+        let connection = store
+            .connections()
+            .create("openai", "account", &credential("known"), 100)
+            .unwrap();
+        assert!(
+            !store
+                .connections()
+                .grant(InstanceId(999), connection.id(), 100)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .connections()
+                .grant(instance.id(), ConnectionId(999), 100)
+                .unwrap()
+        );
     }
 
     #[test]

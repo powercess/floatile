@@ -129,7 +129,8 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 ### 3.8 `floatile-store`
 
 - SQLite open/migration/transaction。
-- 当前 v4 持久化 layout、plugin instance 和 audit_log；plugin private KV 尚未接入 SQLite。
+- 当前 v5 持久化 layout、plugin instance、audit_log、宿主 Connection 元数据和实例级 Connection grant；
+  SQLite 只保存不透明 `CredentialRef`，不保存 secret；plugin private KV 尚未接入 SQLite。
 - 实例 CRUD 负责不复用 ID、Config/时间戳复验和删除实例所有的布局；Installation 内容仍由
   原子安装目录与 `install.json` digest 管理。
 - 不做 permission 决策，不向 plugin 暴露连接/SQL/path。

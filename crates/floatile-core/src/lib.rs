@@ -1,4 +1,5 @@
 pub mod capability;
+pub mod connection;
 pub mod constants;
 pub mod install;
 pub mod instance;
@@ -12,6 +13,11 @@ pub use capability::{
     CapabilityExposure, CapabilityId, CapabilityParamKind, CapabilityParams, CapabilityRisk,
     DenyReason, EffectiveGrant, Grant, Grants, InstanceGrant, PermissionDecision, TrustLevel,
     decide, narrow_instance, parse_capability_params,
+};
+pub use connection::{
+    Connection, ConnectionGrant, ConnectionHealth, ConnectionId, ConnectionModelError,
+    CredentialRef, MAX_CONNECTION_ACCOUNT_BYTES, MAX_CONNECTION_PROVIDER_BYTES,
+    MAX_CREDENTIAL_REF_BYTES,
 };
 pub use instance::{
     InstallationDigest, InstallationRef, InstanceConfig, InstanceDesiredState, InstanceModelError,
