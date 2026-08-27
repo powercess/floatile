@@ -13,30 +13,46 @@ macro_rules! impl_export_widget {
             use ::core::cell::RefCell;
 
             /// 自动生成的 Component 适配层（非公开 API）。
-            struct _FloatileWidgetAdapter(RefCell<$widget>);
+            struct _FloatileWidgetAdapter {
+                widget: RefCell<$widget>,
+                init_error: ::core::option::Option<::std::string::String>,
+            }
 
             impl $crate::GuestWidgetInstance for _FloatileWidgetAdapter {
                 fn new(init: $crate::WidgetInit) -> Self {
                     // canonical initial State 是宿主校验后下发的唯一权威；guest
-                    // 不得自行猜默认值（WIT widget-init 注释）。反序列化失败 =
-                    // 插件 State 类型与宿主校验的 UI IR 契约 drift，以 trap 终止
-                    // 本实例（per 架构文档：宿主与其他实例必须存活）。
+                    // 不得自行猜默认值（WIT widget-init 注释）。反序列化失败说明
+                    // 插件 State 类型与宿主校验的 UI IR 契约 drift；保留原因并在
+                    // start 返回 invalid-input，使 runtime 终止本实例且能稳定诊断。
                     let initial = $crate::serde_json::from_str::<
                         <$widget as $crate::Widget>::State,
-                    >(&init.initial_state_json)
-                    .unwrap_or_else(|error| {
-                        ::core::panic!(
-                            "host initial state 与插件 State 类型不匹配: {error}"
-                        )
-                    });
+                    >(&init.initial_state_json);
                     let mut widget = <$widget as ::core::default::Default>::default();
-                    <$widget as $crate::Widget>::init(&mut widget, &initial);
-                    _FloatileWidgetAdapter(RefCell::new(widget))
+                    let init_error = match initial {
+                        ::core::result::Result::Ok(initial) => {
+                            <$widget as $crate::Widget>::init(&mut widget, &initial);
+                            ::core::option::Option::None
+                        }
+                        ::core::result::Result::Err(error) => ::core::option::Option::Some(
+                            ::std::format!(
+                                "host initial state 与插件 State 类型不匹配: {error}"
+                            ),
+                        ),
+                    };
+                    _FloatileWidgetAdapter {
+                        widget: RefCell::new(widget),
+                        init_error,
+                    }
                 }
 
                 fn start(&self) -> Result<(), $crate::WidgetError> {
+                    if let ::core::option::Option::Some(error) = &self.init_error {
+                        return ::core::result::Result::Err(
+                            $crate::WidgetError::InvalidInput(error.clone()),
+                        );
+                    }
                     let mut ctx = $crate::Context::new();
-                    self.0.borrow_mut().start(&mut ctx);
+                    self.widget.borrow_mut().start(&mut ctx);
                     Ok(())
                 }
 
@@ -44,17 +60,24 @@ macro_rules! impl_export_widget {
                     &self,
                     event: $crate::WidgetEvent,
                 ) -> Result<(), $crate::WidgetError> {
+                    if let ::core::option::Option::Some(error) = &self.init_error {
+                        return ::core::result::Result::Err(
+                            $crate::WidgetError::InvalidInput(error.clone()),
+                        );
+                    }
                     if let Some(ev) =
                         <<$widget as $crate::Widget>::Event as $crate::FromWidgetEvent>::from_widget_event(event)
                     {
                         let mut ctx = $crate::Context::new();
-                        self.0.borrow_mut().event(ev, &mut ctx);
+                        self.widget.borrow_mut().event(ev, &mut ctx);
                     }
                     Ok(())
                 }
 
                 fn stop(&self) {
-                    self.0.borrow_mut().stop();
+                    if self.init_error.is_none() {
+                        self.widget.borrow_mut().stop();
+                    }
                 }
             }
 
