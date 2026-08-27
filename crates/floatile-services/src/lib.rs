@@ -7,6 +7,7 @@
 pub mod audit;
 pub mod broker;
 pub mod clock;
+pub mod credential;
 pub mod errors;
 pub mod log;
 pub mod metrics;
@@ -18,6 +19,9 @@ pub mod timer;
 pub use audit::{AuditEvent, AuditListener, AuditSink, fnv1a};
 pub use broker::Broker;
 pub use clock::{Clock, ClockSnapshot};
+pub use credential::{
+    CredentialError, CredentialVault, MAX_CREDENTIAL_BYTES, MemoryCredentialVault,
+};
 pub use errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
 pub use log::{LogLevel, LogService};
 pub use metrics::{MemorySnapshot, MetricsService};

@@ -87,6 +87,10 @@ request(template_id, params)
 - 模板引用 `fromCredential` 时，Broker 注入；插件拿到的永远是「已注入的请求」，读不到原始值。
 - Keyring 不可用（如 Linux 无 Secret Service）→ 降级为宿主管理的加密文件凭证库（显式 opt-in），或拒绝网络能力。
 
+当前 PP-M5 基线已实现宿主 `CredentialVault` 接口与不落盘的会话 vault，用于 Broker 组合和确定性
+安全测试。它不支持跨宿主重启：平台 Keyring 未接入时，重启后的 Connection 必须显式报告
+`unavailable`，不得从 Config、State、环境变量或普通 SQLite 表恢复 secret。
+
 ## 9. 审计（脱敏）
 
 - 记录：时间、plugin_id、instance_id、template_id、method、origin（域名级）、status、bytes、duration、decision。
