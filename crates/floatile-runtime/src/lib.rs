@@ -156,7 +156,7 @@ impl WidgetManager {
         let actor_failure = Arc::new(parking_lot::Mutex::new(None));
         let task_failure = Arc::clone(&actor_failure);
         let join = tokio::spawn(async move {
-            let result = run_actor(
+            let actor = tokio::spawn(run_actor(
                 engine,
                 config,
                 https,
@@ -168,8 +168,13 @@ impl WidgetManager {
                 ui_tx,
                 cmd_rx,
                 actor_tx,
-            )
-            .await;
+            ));
+            let result = match actor.await {
+                Ok(result) => result,
+                Err(error) => Err(RuntimeError::InstanceFailed(format!(
+                    "actor 任务异常终止: {error}"
+                ))),
+            };
             if let Err(error) = &result {
                 *task_failure.lock() = Some(error.to_string());
             }
