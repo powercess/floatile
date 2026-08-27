@@ -28,9 +28,9 @@ pub use layout::{
     RecoveredLayout, WidgetLayout, recover_layout,
 };
 pub use manifest::{
-    BuildMeta, ConfigRef, Entrypoints, Manifest, ManifestError, PackagePath, PermissionDecl,
-    PluginKind, Publisher, Sizes, StorageDecl, manifest_json_schema, validate_manifest,
-    validate_manifest_json_with_schema,
+    BuildMeta, ConfigRef, Entrypoints, HttpTemplateDecl, Manifest, ManifestError, PackagePath,
+    PermissionDecl, PluginKind, Publisher, Sizes, StorageDecl, manifest_json_schema,
+    validate_manifest, validate_manifest_json_with_schema,
 };
 pub use operation::{
     OperationCompletion, OperationCompletionDisposition, OperationFailure, OperationId,

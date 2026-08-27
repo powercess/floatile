@@ -28,7 +28,7 @@ use floatile_plugin_api::floatile::widget::host_operation::{
     OperationTerminal as WitOperationTerminal,
 };
 use floatile_services::{
-    AuditListener, AuditSink, Broker, OperationLimits, OperationRegistry, TimerSink,
+    AuditListener, AuditSink, Broker, HttpsService, OperationLimits, OperationRegistry, TimerSink,
 };
 use floatile_ui_schema::schema::JsonSchema;
 use floatile_ui_schema::validate_value;
@@ -134,6 +134,15 @@ impl WidgetManager {
 
     /// 派生一个插件实例（加载组件 + 启动串行 actor）。
     pub fn spawn(&self, config: WidgetConfig) -> Result<WidgetHandle, RuntimeError> {
+        self.spawn_with_https(config, None)
+    }
+
+    /// Spawn with the host-owned PP-M5 HTTPS service for this exact instance generation.
+    pub fn spawn_with_https(
+        &self,
+        config: WidgetConfig,
+        https: Option<HttpsService>,
+    ) -> Result<WidgetHandle, RuntimeError> {
         let (cmd_tx, cmd_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (ui_tx, ui_rx) = mpsc::channel(QUEUE_CAPACITY);
 
@@ -147,6 +156,7 @@ impl WidgetManager {
         let join = tokio::spawn(run_actor(
             engine,
             config,
+            https,
             max_memory,
             fuel_per_call,
             call_timeout,
@@ -276,6 +286,7 @@ impl WidgetHandle {
 async fn run_actor(
     engine: wasmtime::Engine,
     config: WidgetConfig,
+    https: Option<HttpsService>,
     max_memory: usize,
     fuel_per_call: u64,
     call_timeout: Duration,
@@ -317,7 +328,7 @@ async fn run_actor(
     let operation_actor = actor_tx.clone();
     let completion_audit = audit.clone();
     let completion_results = operations.result_discarder();
-    let broker = Broker::new(
+    let mut broker = Broker::new(
         config.plugin.clone(),
         config.generation,
         config.grants,
@@ -328,6 +339,9 @@ async fn run_actor(
     .map_err(|error| {
         RuntimeError::InstanceFailed(format!("绑定 Operation registry 失败: {error}"))
     })?;
+    if let Some(https) = https {
+        broker = broker.with_https(https);
+    }
     tokio::spawn(async move {
         while let Some(completion) = operation_completions.recv().await {
             let capability = completion.capability;

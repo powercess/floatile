@@ -9,6 +9,7 @@ pub mod broker;
 pub mod clock;
 pub mod credential;
 pub mod errors;
+pub mod http;
 pub mod log;
 pub mod metrics;
 pub mod operation;
@@ -23,6 +24,10 @@ pub use credential::{
     CredentialError, CredentialVault, MAX_CREDENTIAL_BYTES, MemoryCredentialVault,
 };
 pub use errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
+pub use http::{
+    HttpResponse, HttpServiceError, HttpTransport, HttpTransportRequest, HttpsService, QueryParam,
+    ReqwestHttpTransport,
+};
 pub use log::{LogLevel, LogService};
 pub use metrics::{MemorySnapshot, MetricsService};
 pub use operation::{

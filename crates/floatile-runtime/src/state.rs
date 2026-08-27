@@ -266,11 +266,21 @@ impl host_http::Host for InstanceHostState {
     async fn submit(
         &mut self,
         template_id: String,
-        _connection_id: u64,
-        _query: Vec<host_http::QueryParam>,
+        connection_id: u64,
+        query: Vec<host_http::QueryParam>,
     ) -> Result<u64, host_operation::OperationError> {
         self.broker
-            .submit_https_unconfigured(&template_id)
+            .submit_https(
+                &template_id,
+                floatile_core::ConnectionId(connection_id),
+                query
+                    .into_iter()
+                    .map(|param| floatile_services::QueryParam {
+                        name: param.name,
+                        value: param.value,
+                    })
+                    .collect(),
+            )
             .map(OperationId::get)
             .map_err(map_operation_submit)
     }
@@ -281,8 +291,11 @@ impl host_http::Host for InstanceHostState {
     ) -> Result<host_http::HttpResponse, host_operation::OperationError> {
         let id = OperationId::new(id).ok_or(host_operation::OperationError::InvalidOperationId)?;
         self.broker
-            .take_https_result::<(u16, Vec<u8>)>(id)
-            .map(|(status, body)| host_http::HttpResponse { status, body })
+            .take_https_result(id)
+            .map(|response| host_http::HttpResponse {
+                status: response.status,
+                body: response.body,
+            })
             .map_err(map_operation_take)
     }
 }

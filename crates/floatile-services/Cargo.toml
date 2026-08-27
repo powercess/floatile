@@ -17,6 +17,9 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

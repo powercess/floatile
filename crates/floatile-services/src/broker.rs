@@ -18,6 +18,7 @@ use floatile_core::{
 use crate::audit::AuditSink;
 use crate::clock::{Clock, ClockSnapshot};
 use crate::errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
+use crate::http::{HttpResponse, HttpsService, QueryParam};
 use crate::log::{LogLevel, LogService};
 use crate::metrics::{MemorySnapshot, MetricsService};
 use crate::operation::{
@@ -41,6 +42,7 @@ pub struct Broker {
     metrics: MetricsService,
     theme: ThemeService,
     operations: Option<OperationRegistry>,
+    https: Option<HttpsService>,
 }
 
 impl Broker {
@@ -113,6 +115,7 @@ impl Broker {
             metrics: MetricsService::new(metrics_rate),
             theme: ThemeService::new(),
             operations: None,
+            https: None,
         }
     }
 
@@ -130,6 +133,12 @@ impl Broker {
         }
         self.operations = Some(operations);
         Ok(self)
+    }
+
+    /// Bind manifest templates, instance-scoped Connection grants, vault, and transport.
+    pub fn with_https(mut self, https: HttpsService) -> Self {
+        self.https = Some(https);
+        self
     }
 
     /// 纯授权检查（用于 UI State 等由 runtime 执行、Broker 只裁决的能力）。
@@ -277,28 +286,51 @@ impl Broker {
 
     /// HTTPS 服务尚未为本实例绑定模板/Connection 时的安全降级路径。
     /// 仍通过 Broker 记录授权与环境不可用，WIT adapter 不直接作权限判断。
-    pub fn submit_https_unconfigured(
+    pub fn submit_https(
         &self,
         template_id: &str,
+        connection_id: floatile_core::ConnectionId,
+        query: Vec<QueryParam>,
     ) -> Result<OperationId, OperationSubmitError> {
-        self.authorize_existing_grant(
+        let Some(https) = &self.https else {
+            self.authorize_existing_grant(
+                CapabilityId::NetworkHttps,
+                &format!("https template={}B service=unconfigured", template_id.len()),
+            )
+            .map_err(OperationSubmitError::PermissionDenied)?;
+            self.audit.record(
+                CapabilityId::NetworkHttps,
+                false,
+                Some(DenyReason::EnvironmentUnavailable),
+                "https service=unconfigured",
+            );
+            return Err(OperationSubmitError::Unavailable);
+        };
+        let prepared =
+            https
+                .prepare(template_id, connection_id, query)
+                .map_err(|error| match error {
+                    crate::http::HttpServiceError::InvalidInput
+                    | crate::http::HttpServiceError::TemplateUnavailable
+                    | crate::http::HttpServiceError::ConnectionNotGranted => {
+                        OperationSubmitError::InvalidInput
+                    }
+                    _ => OperationSubmitError::Unavailable,
+                })?;
+        self.submit_operation(
             CapabilityId::NetworkHttps,
-            &format!("https template={}B service=unconfigured", template_id.len()),
+            Some(&prepared.request_params),
+            prepared.timeout,
+            &format!(
+                "operation=https template={}B connection={}",
+                template_id.len(),
+                connection_id.0
+            ),
+            prepared.work,
         )
-        .map_err(OperationSubmitError::PermissionDenied)?;
-        self.audit.record(
-            CapabilityId::NetworkHttps,
-            false,
-            Some(DenyReason::EnvironmentUnavailable),
-            "https service=unconfigured",
-        );
-        Err(OperationSubmitError::Unavailable)
     }
 
-    pub fn take_https_result<T: Any + Send + 'static>(
-        &self,
-        id: OperationId,
-    ) -> Result<T, OperationTakeError> {
+    pub fn take_https_result(&self, id: OperationId) -> Result<HttpResponse, OperationTakeError> {
         self.take_operation_result(CapabilityId::NetworkHttps, id)
     }
 
