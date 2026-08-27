@@ -8,17 +8,20 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use floatile_core::{InstanceDesiredState, InstanceId, PluginInstance};
 use floatile_platform::PlatformCapabilities;
-use floatile_services::AuditListener;
+use floatile_services::{AuditListener, CredentialVault, HttpsService, MemoryCredentialVault};
 use slint::{Timer, TimerMode};
 
 use crate::plugin_manager::{RunnableInstance, load_runnable_instance};
-use crate::runtime_ui::{RuntimeUiLifecycleEvent, RuntimeUiSession, spawn_runtime_ui};
+use crate::runtime_ui::{
+    RuntimeUiLifecycleEvent, RuntimeUiSession, compose_instance_https, spawn_runtime_ui_with_https,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const UI_DRAIN_INTERVAL: Duration = Duration::from_millis(50);
@@ -118,7 +121,10 @@ enum DesiredAction {
 
 enum SupervisorAction {
     Stop(InstanceId),
-    Start(Box<RunnableInstance>),
+    Start {
+        runnable: Box<RunnableInstance>,
+        https: HttpsService,
+    },
     Failure {
         instance_id: Option<InstanceId>,
         plugin_id: Option<String>,
@@ -178,11 +184,31 @@ impl DynamicInstanceSupervisor {
         caps: PlatformCapabilities,
         audit_listener: Option<AuditListener>,
     ) -> Result<Self, std::io::Error> {
+        Self::start_with_vault(
+            database,
+            plugin_store,
+            caps,
+            audit_listener,
+            Arc::new(MemoryCredentialVault::default()),
+        )
+    }
+
+    /// Start the supervisor with the process-owned credential vault used by HTTPS operations.
+    /// The vault handle crosses only host components and is never exposed to a guest instance.
+    pub fn start_with_vault(
+        database: PathBuf,
+        plugin_store: PathBuf,
+        caps: PlatformCapabilities,
+        audit_listener: Option<AuditListener>,
+        vault: Arc<dyn CredentialVault>,
+    ) -> Result<Self, std::io::Error> {
         let (action_tx, action_rx) = mpsc::sync_channel(ACTION_QUEUE_CAPACITY);
         let (commands, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let worker = thread::Builder::new()
             .name("floatile-instance-supervisor".to_owned())
-            .spawn(move || supervisor_worker(database, plugin_store, action_tx, command_rx))?;
+            .spawn(move || {
+                supervisor_worker(database, plugin_store, action_tx, command_rx, vault)
+            })?;
 
         let sessions = Rc::new(RefCell::new(BTreeMap::new()));
         let desired_generations = Rc::new(RefCell::new(BTreeMap::new()));
@@ -264,6 +290,7 @@ fn supervisor_worker(
     plugin_store: PathBuf,
     action_tx: SyncSender<Vec<SupervisorAction>>,
     command_rx: Receiver<SupervisorCommand>,
+    vault: Arc<dyn CredentialVault>,
 ) {
     let store = match floatile_store::open(&database) {
         Ok(store) => store,
@@ -301,7 +328,7 @@ fn supervisor_worker(
         };
         let (desired, next_known) = plan_snapshot(&snapshot, &known);
         if !desired.is_empty() {
-            let actions = prepare_actions(&store, &plugin_store, desired);
+            let actions = prepare_actions(&store, &plugin_store, desired, Arc::clone(&vault));
             if action_tx.send(actions).is_err() {
                 break;
             }
@@ -332,6 +359,7 @@ fn prepare_actions(
     store: &floatile_store::Store,
     plugin_store: &std::path::Path,
     desired: Vec<DesiredAction>,
+    vault: Arc<dyn CredentialVault>,
 ) -> Vec<SupervisorAction> {
     let mut prepared = Vec::with_capacity(desired.len());
     for action in desired {
@@ -377,9 +405,23 @@ fn prepare_actions(
                 };
                 let version = instance.installation().version().to_owned();
                 match load_runnable_instance(plugin_store, instance) {
-                    Ok(Some(runnable)) => {
-                        prepared.push(SupervisorAction::Start(Box::new(runnable)))
-                    }
+                    Ok(Some(runnable)) => match compose_instance_https(
+                        store,
+                        runnable.instance.id(),
+                        &runnable.plugin.manifest,
+                        Arc::clone(&vault),
+                    ) {
+                        Ok(https) => prepared.push(SupervisorAction::Start {
+                            runnable: Box::new(runnable),
+                            https,
+                        }),
+                        Err(error) => prepared.push(SupervisorAction::Failure {
+                            instance_id: Some(id),
+                            plugin_id: Some(plugin_id),
+                            code: error.code(),
+                            detail: error.to_string(),
+                        }),
+                    },
                     Ok(None) => prepared.push(SupervisorAction::Failure {
                         instance_id: Some(id),
                         plugin_id: Some(plugin_id),
@@ -435,7 +477,7 @@ fn apply_actions(
                     "persistent plugin instance reconcile failed (isolated; host continues)"
                 );
             }
-            SupervisorAction::Start(runnable) => {
+            SupervisorAction::Start { runnable, https } => {
                 let id = runnable.instance.id();
                 let generation = runnable.instance.generation();
                 let plugin_id = runnable.plugin.manifest.id.0.clone();
@@ -446,8 +488,14 @@ fn apply_actions(
                 let task_observed = Rc::clone(observed);
                 let task_audit = audit_listener.clone();
                 match slint::spawn_local(async move {
-                    match spawn_runtime_ui(runnable.plugin, runnable.instance, caps, task_audit)
-                        .await
+                    match spawn_runtime_ui_with_https(
+                        runnable.plugin,
+                        runnable.instance,
+                        caps,
+                        task_audit,
+                        Some(https),
+                    )
+                    .await
                     {
                         Ok(session) => {
                             if task_desired.borrow().get(&id.0) == Some(&generation) {
