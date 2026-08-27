@@ -1,6 +1,6 @@
 # HTTP Broker 设计
 
-> 状态：Proposed
+> 状态：Accepted（ADR-0005；初始 V1 禁用自动 redirect）
 > 阶段：V1 实现目标。P0/MVP 不实现网络能力（WIT 中无对应接口 = 无攻击面）。
 > 本设计先行冻结，确保 V1 不会因“便利”绕过安全约束。
 
@@ -13,6 +13,10 @@
 - 全链路审计（脱敏）。
 
 ## 2. 请求模板（Request Template）
+
+规范性契约由 ADR-0005 冻结：模板进入 manifest v1 的可选 `httpTemplates`，调用时由已授权
+`connection-id` 选择宿主 CredentialRef。本文示例中的 `fromCredential` 是早期设计草图，不再表示
+插件包可指定宿主凭证路径；实现与测试以 ADR-0005 为准。
 
 插件不是「自由填 URL」，而是**注册模板**，宿主校验后绑定到 `network:` 权限：
 
