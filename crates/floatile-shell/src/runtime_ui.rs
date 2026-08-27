@@ -233,6 +233,7 @@ enum ProjectedValue {
     String(String),
     Boolean(bool),
     Number(f64),
+    StringList(Vec<String>),
 }
 
 impl ProjectedValue {
@@ -241,6 +242,12 @@ impl ProjectedValue {
             Self::String(value) => UiValue::String(value.into()),
             Self::Boolean(value) => UiValue::Bool(value),
             Self::Number(value) => UiValue::Number(value),
+            Self::StringList(values) => UiValue::Model(slint::ModelRc::new(slint::VecModel::from(
+                values
+                    .into_iter()
+                    .map(|value| UiValue::String(value.into()))
+                    .collect::<Vec<_>>(),
+            ))),
         }
     }
 }
@@ -270,6 +277,27 @@ fn project_binding_value(
             .as_f64()
             .map(ProjectedValue::Number)
             .ok_or_else(|| RuntimeUiError::Projection(format!("{}: 期望 number", slot.prop))),
+        BindingValueType::StringList => {
+            let items = current.as_array().ok_or_else(|| {
+                RuntimeUiError::Projection(format!("{}: 期望 string array", slot.prop))
+            })?;
+            if items.len() > floatile_ui_schema::MAX_LIST_ITEMS {
+                return Err(RuntimeUiError::Projection(format!(
+                    "{}: List 项数超过 {}",
+                    slot.prop,
+                    floatile_ui_schema::MAX_LIST_ITEMS
+                )));
+            }
+            let values = items
+                .iter()
+                .map(|item| {
+                    item.as_str().map(str::to_owned).ok_or_else(|| {
+                        RuntimeUiError::Projection(format!("{}: List item 期望 string", slot.prop))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ProjectedValue::StringList(values))
+        }
     }
 }
 
@@ -402,7 +430,11 @@ mod tests {
 
     #[test]
     fn typed_projection_preserves_boolean_and_number_values() {
-        let state = serde_json::json!({"loading": true, "percent": 42.5});
+        let state = serde_json::json!({
+            "loading": true,
+            "percent": 42.5,
+            "items": ["one", "two"]
+        });
         let boolean = BindingSlot {
             path: "$.loading".into(),
             prop: "prop_loading".into(),
@@ -413,6 +445,11 @@ mod tests {
             prop: "prop_percent".into(),
             value_type: BindingValueType::Number,
         };
+        let list = BindingSlot {
+            path: "$.items".into(),
+            prop: "prop_items".into(),
+            value_type: BindingValueType::StringList,
+        };
         assert!(matches!(
             project_binding_value(&boolean, &state).unwrap(),
             ProjectedValue::Boolean(true)
@@ -420,6 +457,16 @@ mod tests {
         assert!(matches!(
             project_binding_value(&number, &state).unwrap(),
             ProjectedValue::Number(value) if value == 42.5
+        ));
+        assert!(matches!(
+            project_binding_value(&list, &state).unwrap(),
+            ProjectedValue::StringList(values) if values == ["one", "two"]
+        ));
+        assert!(matches!(
+            project_binding_value(&list, &state)
+                .unwrap()
+                .into_ui_value(),
+            UiValue::Model(_)
         ));
     }
 
@@ -438,10 +485,20 @@ mod tests {
         document.state.initial = serde_json::json!({
             "time": "ok",
             "running": true,
-            "percent": 42.5
+            "percent": 42.5,
+            "items": ["one", "two"]
         });
         if let JsonSchema::Object { properties, .. } = &mut document.state.schema {
             properties.insert("percent".into(), JsonSchema::Number);
+            properties.insert(
+                "items".into(),
+                JsonSchema::Array {
+                    max_items: Some(16),
+                    items: Box::new(JsonSchema::String {
+                        max_length: Some(64),
+                    }),
+                },
+            );
         }
         document.root = Component {
             kind: "Column".into(),
@@ -477,6 +534,42 @@ mod tests {
                             bind: "$.percent".into(),
                         }),
                     )]),
+                    ..Default::default()
+                },
+                Component {
+                    kind: "List".into(),
+                    props: BTreeMap::from([(
+                        "items".into(),
+                        PropValue::Binding(floatile_ui_schema::ir::Binding::State {
+                            bind: "$.items".into(),
+                        }),
+                    )]),
+                    ..Default::default()
+                },
+                Component {
+                    kind: "Grid".into(),
+                    props: BTreeMap::from([(
+                        "columns".into(),
+                        PropValue::Literal(serde_json::json!(2)),
+                    )]),
+                    children: vec![
+                        Component {
+                            kind: "Text".into(),
+                            props: BTreeMap::from([(
+                                "text".into(),
+                                PropValue::Literal(serde_json::json!("one")),
+                            )]),
+                            ..Default::default()
+                        },
+                        Component {
+                            kind: "Text".into(),
+                            props: BTreeMap::from([(
+                                "text".into(),
+                                PropValue::Literal(serde_json::json!("two")),
+                            )]),
+                            ..Default::default()
+                        },
+                    ],
                     ..Default::default()
                 },
             ],

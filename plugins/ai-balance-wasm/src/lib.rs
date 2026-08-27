@@ -18,6 +18,7 @@ pub struct BalanceState {
     pub loading: bool,
     pub error: bool,
     pub empty: bool,
+    pub entries: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -79,6 +80,7 @@ impl Widget for AiBalance {
                 view::text_bind("$.balance"),
                 view::badge_bind("$.status", "success"),
                 view::progress_bind("$.utilization"),
+                view::list_bind("$.entries"),
             ]),
         )
     }
@@ -128,7 +130,8 @@ fn update_balance(ctx: &mut Context<AiBalance>, response: host_http::HttpRespons
                 "utilization": utilization,
                 "loading": false,
                 "error": false,
-                "empty": false
+                "empty": false,
+                "entries": [format!("Current balance: {balance:.2}")]
             });
             let _ = ctx.state().update(&patch.to_string());
         }

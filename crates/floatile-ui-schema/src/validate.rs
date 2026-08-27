@@ -172,6 +172,12 @@ fn validate_element(
                 component: comp.kind.clone(),
                 prop: name.clone(),
             })?;
+        if prop.introduced_minor > ctx.ui_minor {
+            return Err(UiSchemaError::UnsupportedApiVersion(format!(
+                "{}.{} requires 1.{}.0",
+                comp.kind, name, prop.introduced_minor
+            )));
+        }
         match value {
             PropValue::Binding(binding) => {
                 if !prop.allow_binding {
@@ -204,6 +210,11 @@ fn validate_element(
     }
 
     // 子组件策略。
+    if comp.kind == "List" && comp.props.contains_key("items") && !comp.children.is_empty() {
+        return Err(UiSchemaError::InvalidChildren(
+            "List 使用 items 时不能同时声明静态 children".to_owned(),
+        ));
+    }
     match spec.children {
         ChildrenPolicy::Forbidden => {
             if !comp.children.is_empty() {
@@ -270,10 +281,10 @@ fn validate_binding(
     component: &str,
     prop_name: &str,
 ) -> Result<(), UiSchemaError> {
-    let target_type = match binding {
+    let target_schema = match binding {
         Binding::State { bind } => {
             let segs = path::PathSegments::parse(bind)?;
-            path::json_type(path::resolve(state_schema, segs.segments())?).to_owned()
+            path::resolve(state_schema, segs.segments())?
         }
         Binding::Item { item } => {
             let item_schema = item_schema.ok_or_else(|| {
@@ -282,13 +293,29 @@ fn validate_binding(
                 ))
             })?;
             if item == "value" {
-                path::json_type(item_schema).to_owned()
+                item_schema
             } else {
                 let segs = path::PathSegments::parse(&format!("$.{item}"))?;
-                path::json_type(path::resolve(item_schema, segs.segments())?).to_owned()
+                path::resolve(item_schema, segs.segments())?
             }
         }
     };
+    if component == "List" && prop_name == "items" {
+        match target_schema {
+            JsonSchema::Array {
+                max_items: Some(max_items),
+                items,
+            } if *max_items <= crate::MAX_LIST_ITEMS
+                && matches!(items.as_ref(), JsonSchema::String { .. }) => {}
+            _ => {
+                return Err(UiSchemaError::BindingTypeMismatch(format!(
+                    "List.items 必须绑定 maxItems <= {} 的 string array",
+                    crate::MAX_LIST_ITEMS
+                )));
+            }
+        }
+    }
+    let target_type = path::json_type(target_schema).to_owned();
     let allowed = prop.types.iter().any(|t| {
         t.name() == target_type || (matches!(t, JsonType::Number) && target_type == "integer")
     });
@@ -762,6 +789,45 @@ mod tests {
         let mut current = with_single(badge);
         current.ui_api_version = "1.1.0".into();
         assert!(validate_document(&current).is_ok());
+    }
+
+    #[test]
+    fn contract_vector_list_items_minor_and_budget_gate() {
+        let list = Component {
+            kind: "List".into(),
+            props: BTreeMap::from([(
+                "items".into(),
+                PropValue::Binding(Binding::State {
+                    bind: "$.zones".into(),
+                }),
+            )]),
+            ..Default::default()
+        };
+        let mut old = with_single(list.clone());
+        old.ui_api_version = "1.1.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+        let current = with_single(list.clone());
+        assert!(validate_document(&current).is_ok());
+
+        let mut unbounded = with_single(list);
+        if let JsonSchema::Object { properties, .. } = &mut unbounded.state.schema {
+            properties.insert(
+                "zones".into(),
+                JsonSchema::Array {
+                    max_items: None,
+                    items: Box::new(JsonSchema::String {
+                        max_length: Some(64),
+                    }),
+                },
+            );
+        }
+        assert!(matches!(
+            validate_document(&unbounded),
+            Err(UiSchemaError::BindingTypeMismatch(_))
+        ));
     }
 
     #[test]

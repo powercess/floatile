@@ -2,7 +2,7 @@
 
 > 状态：Proposed（renderer spike、schema 实现和正反例通过后冻结）
 > 文件：`ui/widget.ftui`
-> 版本：`uiApiVersion = 1.1.0`
+> 版本：`uiApiVersion = 1.2.0`
 > 关联：ADR-0001、FR-PLUGIN-01、F11
 
 `floatile-ui-schema` 已实现 IR 类型、组件 registry v1、State/Event JSON Schema 校验、JSONPath 绑定
@@ -27,7 +27,7 @@ P0 可以使用 canonical JSON 编码，后续可换二进制编码，但 v1 语
 
 ```json
 {
-  "uiApiVersion": "1.1.0",
+  "uiApiVersion": "1.2.0",
   "state": {
     "initial": {
       "time": "--:--:--",
@@ -264,6 +264,14 @@ P0 比较：
   表达式。
 - Rust SDK 的 `page_state` 用嵌套 `If` 组合 loading/error/empty/content，固定优先级为
   loading → error → empty → content；三个判定路径都必须绑定 boolean State。
+
+### 12.3 UI API 1.2 集合布局切片
+
+- `List.items` 可以绑定具有显式 `maxItems <= 256` 的 string array State；renderer 生成受控 Slint
+  model，shell worker 只跨线程传递 `Vec<String>`，并在 UI 线程构造 model。
+- `List` 的动态 `items` 与静态 `children` 互斥，避免重复扩张节点；字面量 items 同样执行项数与类型
+  校验。
+- `Grid.columns` 是 1..=16 的静态布局提示；Rust SDK 提供 `grid`、`list` 和 `list_bind` builder。
 
 ## 13. Contract tests
 

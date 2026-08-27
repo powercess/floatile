@@ -35,6 +35,46 @@ pub fn stack(children: Vec<View>) -> View {
     }
 }
 
+/// Grid 容器：列数是受验证的静态布局提示。
+pub fn grid(columns: u32, children: Vec<View>) -> View {
+    let mut props = std::collections::BTreeMap::new();
+    props.insert(
+        "columns".into(),
+        PropValue::Literal(serde_json::json!(columns)),
+    );
+    View {
+        kind: "Grid".into(),
+        props,
+        children,
+        ..Default::default()
+    }
+}
+
+/// 静态 List 容器。
+pub fn list(children: Vec<View>) -> View {
+    View {
+        kind: "List".into(),
+        children,
+        ..Default::default()
+    }
+}
+
+/// 动态字符串 List：绑定具有显式 `maxItems` 的 string array State。
+pub fn list_bind(path: &str) -> View {
+    let mut props = std::collections::BTreeMap::new();
+    props.insert(
+        "items".into(),
+        PropValue::Binding(Binding::State {
+            bind: path.to_owned(),
+        }),
+    );
+    View {
+        kind: "List".into(),
+        props,
+        ..Default::default()
+    }
+}
+
 /// Text 组件：绑定 State 路径。
 pub fn text_bind(path: &str) -> View {
     let mut props = std::collections::BTreeMap::new();
@@ -226,5 +266,17 @@ mod tests {
         assert_eq!(badge.kind, "Badge");
         let progress = progress_bind("$.percent");
         assert_eq!(progress.kind, "Progress");
+    }
+
+    #[test]
+    fn list_and_grid_builders_emit_bounded_layout_contract() {
+        let list = list_bind("$.items");
+        assert_eq!(list.kind, "List");
+        let grid = grid(2, vec![text_literal("one"), text_literal("two")]);
+        assert_eq!(grid.kind, "Grid");
+        assert_eq!(
+            grid.props.get("columns"),
+            Some(&PropValue::Literal(serde_json::json!(2)))
+        );
     }
 }

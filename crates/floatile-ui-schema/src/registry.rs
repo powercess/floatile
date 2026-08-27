@@ -57,6 +57,8 @@ pub struct PropSchema {
     pub types: &'static [JsonType],
     /// 是否允许 State/Item 绑定（如 `Text.text`、`Toggle.checked`）。
     pub allow_binding: bool,
+    /// 首次引入该 prop 的 UI API 1.x minor。
+    pub introduced_minor: u64,
     pub optional: bool,
 }
 
@@ -104,48 +106,56 @@ const COMMON_ELEMENT_PROPS: &[PropSchema] = &[
         name: "padding",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "gap",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "width",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "height",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "opacity",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "radius",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "color",
         types: &[JsonType::String],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "border",
         types: &[JsonType::String],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
 ];
@@ -170,6 +180,7 @@ fn build_registry() -> Vec<ComponentSpec> {
             name: "columns",
             types: &[JsonType::Integer],
             allow_binding: false,
+            introduced_minor: 0,
             optional: true,
         }],
         &[],
@@ -185,12 +196,14 @@ fn build_registry() -> Vec<ComponentSpec> {
                 name: "text",
                 types: &[JsonType::String],
                 allow_binding: true,
+                introduced_minor: 0,
                 optional: false,
             },
             PropSchema {
                 name: "style",
                 types: &[JsonType::String],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
         ],
@@ -205,12 +218,14 @@ fn build_registry() -> Vec<ComponentSpec> {
                 name: "name",
                 types: &[JsonType::String],
                 allow_binding: true,
+                introduced_minor: 0,
                 optional: false,
             },
             PropSchema {
                 name: "size",
                 types: &[JsonType::Number],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
         ],
@@ -225,18 +240,21 @@ fn build_registry() -> Vec<ComponentSpec> {
                 name: "asset",
                 types: &[JsonType::String],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: false,
             },
             PropSchema {
                 name: "width",
                 types: &[JsonType::Number],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
             PropSchema {
                 name: "height",
                 types: &[JsonType::Number],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
         ],
@@ -251,6 +269,7 @@ fn build_registry() -> Vec<ComponentSpec> {
             name: "label",
             types: &[JsonType::String],
             allow_binding: true,
+            introduced_minor: 0,
             optional: false,
         }],
         &["activate"],
@@ -263,6 +282,7 @@ fn build_registry() -> Vec<ComponentSpec> {
             name: "checked",
             types: &[JsonType::Boolean],
             allow_binding: true,
+            introduced_minor: 0,
             optional: false,
         }],
         &["toggle"],
@@ -276,6 +296,7 @@ fn build_registry() -> Vec<ComponentSpec> {
             name: "value",
             types: &[JsonType::Number],
             allow_binding: true,
+            introduced_minor: 0,
             optional: false,
         }],
         &[],
@@ -290,12 +311,14 @@ fn build_registry() -> Vec<ComponentSpec> {
                 name: "label",
                 types: &[JsonType::String],
                 allow_binding: true,
+                introduced_minor: 0,
                 optional: false,
             },
             PropSchema {
                 name: "tone",
                 types: &[JsonType::String],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
         ],
@@ -309,11 +332,24 @@ fn build_registry() -> Vec<ComponentSpec> {
             name: "value",
             types: &[JsonType::Number],
             allow_binding: true,
+            introduced_minor: 0,
             optional: false,
         }],
         &[],
     );
-    element(&mut specs, "List", ChildrenPolicy::Many, &[], &[]);
+    element(
+        &mut specs,
+        "List",
+        ChildrenPolicy::Many,
+        &[PropSchema {
+            name: "items",
+            types: &[JsonType::Array],
+            allow_binding: true,
+            introduced_minor: 2,
+            optional: true,
+        }],
+        &[],
+    );
 
     // 控制组件（Canvas/Path 在 renderer spike 通过前不启用）。
     specs.push(ComponentSpec {
@@ -399,6 +435,29 @@ pub fn validate_literal(
         return Err(UiSchemaError::InvalidPropType {
             prop: "Badge.tone".to_owned(),
             expected: vec!["neutral|info|success|warning|danger".to_owned()],
+        });
+    }
+    if spec.name == "List"
+        && prop.name == "items"
+        && let Some(items) = json.as_array()
+        && (items.len() > crate::MAX_LIST_ITEMS || items.iter().any(|item| !item.is_string()))
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "List.items".to_owned(),
+            expected: vec![format!(
+                "string array with at most {} items",
+                crate::MAX_LIST_ITEMS
+            )],
+        });
+    }
+    if spec.name == "Grid"
+        && prop.name == "columns"
+        && let Some(columns) = json.as_u64()
+        && !(1..=16).contains(&columns)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Grid.columns".to_owned(),
+            expected: vec!["integer from 1 through 16".to_owned()],
         });
     }
     Ok(())

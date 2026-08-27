@@ -153,7 +153,8 @@ P0 首批组件限定为：
 
 组件属性由机器可读 schema 定义，Rust/TypeScript 类型和文档从同一源生成。P0 不加入 TextInput、
 UI API 1.1 提供 `page_state` 组合 loading/error/empty/content，并为 `Badge`、`Progress` 提供 Rust
-builder；boolean/number State 通过类型化 binding slot 投影，不退化为字符串。富文本、WebView、地图、
+builder；boolean/number State 通过类型化 binding slot 投影，不退化为字符串。UI API 1.2 提供
+`grid`、`list`、`list_bind`，动态列表只接受具有显式项数预算的字符串数组。富文本、WebView、地图、
 视频、自定义字体和任意 SVG；出现真实需求后单独评审。
 
 ## 5. Context API

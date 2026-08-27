@@ -31,6 +31,7 @@ pub enum BindingValueType {
     String,
     Boolean,
     Number,
+    StringList,
 }
 
 /// 一个输入事件:声明事件名 → 生成的回调名。
@@ -88,6 +89,7 @@ fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot])
             BindingValueType::String => ("string", "\"\""),
             BindingValueType::Boolean => ("bool", "false"),
             BindingValueType::Number => ("float", "0"),
+            BindingValueType::StringList => ("[string]", "[]"),
         };
         out.push_str(&format!(
             "    in property <{kind}> {}: {default};\n",
@@ -127,7 +129,8 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
         "Column" => render_layout(comp, ctx, depth, "VerticalLayout"),
         "Row" => render_layout(comp, ctx, depth, "HorizontalLayout"),
         "Stack" => render_layout(comp, ctx, depth, "StackLayout"),
-        "Grid" => render_layout(comp, ctx, depth, "GridLayout"),
+        "Grid" => render_grid(comp, ctx, depth),
+        "List" => render_list(comp, ctx, depth),
         "Text" => render_text(comp, ctx),
         "Button" => render_button(comp, ctx),
         "Toggle" => render_toggle(comp, ctx),
@@ -140,6 +143,69 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
             kind.to_owned(),
             "renderer 暂不映射该组件;请移除或等待后续切片".to_owned(),
         )),
+    }
+}
+
+/// Grid:把声明式 columns 转为 Slint 的显式 Row 分组，避免忽略列数语义。
+fn render_grid(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, RendererError> {
+    let columns = comp
+        .props
+        .get("columns")
+        .and_then(|value| match value {
+            PropValue::Literal(value) => value.as_u64(),
+            PropValue::Binding(_) => None,
+        })
+        .unwrap_or(1) as usize;
+    let props = render_layout_props(comp)?;
+    let mut rows = String::new();
+    for row in comp.children.chunks(columns) {
+        rows.push_str("    Row {\n");
+        for child in row {
+            let rendered = render_node(child, ctx, depth + 1)?;
+            for line in rendered.lines() {
+                rows.push_str("        ");
+                rows.push_str(line);
+                rows.push('\n');
+            }
+        }
+        rows.push_str("    }\n");
+    }
+    Ok(format!("GridLayout {{\n{props}{rows}}}\n"))
+}
+
+fn render_list(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, RendererError> {
+    let Some(items) = comp.props.get("items") else {
+        return render_layout(comp, ctx, depth, "VerticalLayout");
+    };
+    if !comp.children.is_empty() {
+        return Err(RendererError::BindingError(
+            "List 使用 items 时不能同时声明静态 children".to_owned(),
+        ));
+    }
+    match items {
+        PropValue::Binding(Binding::State { bind }) => {
+            let slot = binding_slot(bind, BindingValueType::StringList, ctx)?;
+            Ok(format!(
+                "VerticalLayout {{\n    for item in root.{}: Text {{ text: item; }}\n}}\n",
+                slot.prop
+            ))
+        }
+        PropValue::Binding(Binding::Item { .. }) => Err(RendererError::BindingError(
+            "List.items 不支持 ForEach item 绑定".to_owned(),
+        )),
+        PropValue::Literal(value) => {
+            let array = value.as_array().ok_or_else(|| {
+                RendererError::BindingError("List.items 必须是字符串数组".to_owned())
+            })?;
+            let mut children = String::new();
+            for item in array {
+                let text = item.as_str().ok_or_else(|| {
+                    RendererError::BindingError("List.items 必须是字符串数组".to_owned())
+                })?;
+                children.push_str(&format!("    Text {{ text: {}; }}\n", encode_string(text)?));
+            }
+            Ok(format!("VerticalLayout {{\n{children}}}\n"))
+        }
     }
 }
 
@@ -723,9 +789,9 @@ mod tests {
 
     #[test]
     fn rejects_registry_but_unmapped_component() {
-        // registry 通过、但 renderer 尚未映射的组件(如 Scroll/List)由 renderer 层拒绝。
+        // registry 通过、但 renderer 尚未映射的组件(如 Scroll)由 renderer 层拒绝。
         let root = Component {
-            kind: "List".into(),
+            kind: "Scroll".into(),
             ..Default::default()
         };
         let err = render_component(&doc(root)).unwrap_err();
@@ -966,5 +1032,50 @@ mod tests {
         };
         let error = render_component(&doc(root)).unwrap_err();
         assert_eq!(error.code(), "RNDR_INVALID_IR");
+    }
+
+    #[test]
+    fn renders_bounded_string_list_model() {
+        let root = Component {
+            kind: "List".into(),
+            props: BTreeMap::from([(
+                "items".into(),
+                PropValue::Binding(Binding::State {
+                    bind: "$.items".into(),
+                }),
+            )]),
+            ..Default::default()
+        };
+        let mut document = doc_with_items();
+        document.root = root;
+        let rendered = render_component(&document).unwrap();
+        assert!(
+            rendered
+                .source
+                .contains("in property <[string]> prop_items")
+        );
+        assert!(rendered.source.contains("for item in root.prop_items"));
+        assert_eq!(
+            rendered.bindings[0].value_type,
+            BindingValueType::StringList
+        );
+    }
+
+    #[test]
+    fn renders_grid_columns_as_explicit_rows() {
+        let child = |label: &str| Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([("text".into(), PropValue::Literal(json!(label)))]),
+            ..Default::default()
+        };
+        let root = Component {
+            kind: "Grid".into(),
+            props: BTreeMap::from([("columns".into(), PropValue::Literal(json!(2)))]),
+            children: vec![child("one"), child("two"), child("three")],
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("GridLayout"));
+        assert_eq!(rendered.source.matches("Row {").count(), 2);
     }
 }
