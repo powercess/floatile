@@ -20,7 +20,7 @@ Rust 参考时钟的 `build_ftui` 生成，以免在 UI schema codegen 落地前
 
 - `@bytecodealliance/jco` 1.31.0 + ComponentizeJS 0.22.0 + TypeScript 7.0.2。
 - 支持普通 TypeScript/JavaScript；`jco guest-types` 从仓库 WIT 生成严格 guest types。
-- `jco componentize --disable all` 可移除全部 WASI feature，组件只导入七个
+- `jco componentize --disable all` 可移除全部 WASI feature，组件只导入当前 world 的九个
   `floatile:widget/*` host interface。
 - 官方 AOT/Weval 模式也纳入对照。
 
@@ -110,6 +110,18 @@ advisory 所称的 4.2.2，spike lock 以本地禁用桩移除 AOT 链；不得�
 - component 3,268,502 B，package 855,374 B；
 - release 单实例 startup 273 ms、首 tick 1,277 ms、RSS 增量 135,327,744 B；
 - release 10 实例 startup 2,401 ms、全部首 tick 3,402 ms、RSS 增量 662,474,752 B。
+
+2026-08-28 又从 PR #76 的固定 head
+`7788644697ed08a841ad0910d4e99772c6fe7132` 构建 `componentize-qjs-cli --features opt-size`，并将
+spike 同步到当前 `floatile:widget@1.2.0`/`uiApiVersion = 1.6.0`。生成组件精确白名单为九个
+`floatile:widget/*@1.2.0` host interface，零 WASI import，并重新通过四个行为/隔离测试和包预算：
+
+- component 1,053,110 B，package 440,106 B；
+- release 单实例 startup 227 ms、首 tick 1,229 ms、RSS 增量 90,034,176 B；
+- release 10 实例 startup 1,293 ms、全部首 tick 2,308 ms、RSS 增量 313,122,816 B。
+
+本次数据来自同一 Linux 测试机的一次串行冷运行，保留为候选比较证据，不冒充稳定态 CPU或
+Windows/macOS 证据。固定 SHA 只用于复现未发布修复，不是 Floatile 的生产依赖。
 
 这些数据显著优于本 ADR 的 StarlingMonkey 对照，但尚不改变 no-go 决策：修复未进入上游发布版，
 Windows/macOS 构建、稳定态 CPU、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime

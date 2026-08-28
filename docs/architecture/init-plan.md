@@ -125,8 +125,10 @@
 - 先用 ADR 选择 TypeScript adapter/runtime；禁止公开非标准 TypeScript 子集或 Broker 外 ambient API。
 - 与 Rust 共用 UI/component/capability/error/behavior vectors；实现 TSX 构建期 View 和同一 WIT world。
 - 验收：Rust/TypeScript clocks 行为一致；单/10 实例 CPU/RSS/冷启动/包大小和三平台构建记录。
-- 当前结论：ADR-0003 已完成 Linux 候选 spike，但 StarlingMonkey 资源门失败、componentize-qjs 0.4.3
-  契约门失败，因此 **no-go**；公共 SDK/TSX/CLI 模板尚未开始，F11 不得标记完成。
+- 当前结论：ADR-0003 已完成 Linux 候选 spike；StarlingMonkey 资源门失败，componentize-qjs 0.4.3
+  契约门失败，上游未发布修复候选已通过 Linux 契约/隔离/资源复测，但三平台、许可/NOTICE 和正式
+  发布门未完成，因此仍为 **no-go**。private TypeScript SDK/UI codegen 已开始，CLI TypeScript 模板
+  与可发布 SDK 尚未启用，F11 不得标记完成。
 
 ### S6 — `.floatile` 包 + 安装
 

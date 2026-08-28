@@ -1,7 +1,7 @@
-import hostClock from "floatile:widget/host-clock@1.0.0";
-import hostLog from "floatile:widget/host-log@1.0.0";
-import hostTimer from "floatile:widget/host-timer@1.0.0";
-import hostUi from "floatile:widget/host-ui@1.0.0";
+import hostClock from "floatile:widget/host-clock@1.2.0";
+import hostLog from "floatile:widget/host-log@1.2.0";
+import hostTimer from "floatile:widget/host-timer@1.2.0";
+import hostUi from "floatile:widget/host-ui@1.2.0";
 
 class WidgetInstance {
   constructor(init) {

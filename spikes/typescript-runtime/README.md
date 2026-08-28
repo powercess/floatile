@@ -7,7 +7,7 @@
 
 固定工具链：Node.js ≥20、pnpm 11.3.0、`@bytecodealliance/jco` 1.31.0、
 ComponentizeJS/StarlingMonkey、`componentize-qjs` 0.4.3、TypeScript 7.0.2。两个后端生成的
-组件只能导入 `floatile:widget/*`，仍由 Permission Broker 仲裁；StarlingMonkey 构建关闭全部
+组件只能导入当前 WIT world 明确列出的 `floatile:widget/*`，仍由 Permission Broker 仲裁；StarlingMonkey 构建关闭全部
 WASI feature，QuickJS 构建使用 `--stub-wasi --opt-size --sync`。
 Weval/AOT 已被 ADR-0003 判定体积和 RSS 更差；其 npm 链还包含未发布修复版的
 `decompress` advisory，因此 lock 用本地禁用桩替换 Weval，构建脚本不提供 AOT 路径。
@@ -30,7 +30,8 @@ pnpm test:quickjs
 ```
 
 发布版 `componentize-qjs` 0.4.3 的 `test:quickjs` 预期在带参数 resource method 处失败。
-若验证上游候选修复，可在构建时设置绝对路径
+若验证上游 PR #76 固定 head
+`7788644697ed08a841ad0910d4e99772c6fe7132` 的候选修复，可在从该提交构建 CLI 后设置绝对路径
 `FLOATILE_COMPONENTIZE_QJS_BIN=/path/to/componentize-qjs`；输出固定为
 `clock-typescript-quickjs.wasm`，同一组 Rust host tests 通过
 `FLOATILE_TYPESCRIPT_CLOCK_WASM` 选择组件，不复制行为语义。
@@ -38,5 +39,5 @@ pnpm test:quickjs
 `pnpm measure` 在 release 下串行输出单/10 实例启动、首 tick 与 RSS（CPU 需在外层用
 `time -p`/平台 profiler 采样）。最小 receiver/参数复现位于
 `repro/quickjs-resource-method/`。QuickJS 对照与资源数据记录在 ADR-0003；在修复尚未发布且
-许可/三平台门未完成前结论仍为 no-go，因此公共 SDK、TSX View codegen、CLI TypeScript 模板
-仍未开始。
+许可/三平台门未完成前结论仍为 no-go。仓库中的 private TypeScript SDK/UI codegen 只用于推进
+共享契约和测试，CLI TypeScript 模板与可发布 SDK 仍不得启用。
