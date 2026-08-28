@@ -492,7 +492,12 @@ fn element_since(
     events: &'static [&'static str],
 ) {
     let mut all = Vec::with_capacity(COMMON_ELEMENT_PROPS.len() + props.len());
-    all.extend_from_slice(COMMON_ELEMENT_PROPS);
+    all.extend(
+        COMMON_ELEMENT_PROPS
+            .iter()
+            .filter(|common| !props.iter().any(|specific| specific.name == common.name))
+            .copied(),
+    );
     all.extend_from_slice(props);
     out.push(ComponentSpec {
         name,
@@ -661,5 +666,18 @@ mod tests {
         let specs = value["components"].as_array().unwrap();
         assert_eq!(specs.len(), components().len());
         assert!(specs.iter().any(|spec| spec["name"] == "Text"));
+        for spec in components() {
+            let unique = spec
+                .props
+                .iter()
+                .map(|prop| prop.name)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                unique.len(),
+                spec.props.len(),
+                "duplicate props in {}",
+                spec.name
+            );
+        }
     }
 }

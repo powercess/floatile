@@ -75,6 +75,24 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc -p floatile-sdk -p floatile-sdk-macros -p floatile-ui-schema --no-deps --locked
+      - name: Set up TypeScript SDK toolchain
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26.8.0'
+      - name: Set up pnpm
+        if: runner.os == 'Linux'
+        uses: pnpm/action-setup@v5
+        with:
+          version: '11.3.0'
+      - name: TypeScript SDK generated contract
+        if: runner.os == 'Linux'
+        run: |
+          pnpm install --dir sdk/typescript --frozen-lockfile
+          cargo run -p floatile-cli --locked -- schema ui target/floatile-ui-registry.json
+          node sdk/typescript/scripts/generate-components.mjs target/floatile-ui-registry.json sdk/typescript/src/generated/components.ts --check
+          pnpm --dir sdk/typescript typecheck
+          pnpm --dir sdk/typescript test
       - name: Build WASI guest (hermetic integration tests)
         # 集成测试读取 target/wasm32-wasip2/debug 下的组件；先构建保证干净
         # checkout 上测试不依赖执行顺序或测试内并发构建。

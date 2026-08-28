@@ -218,7 +218,7 @@ schemas/
   manifest-v1.schema.json
   floatile-ui-v1.schema.json
 sdk/
-  typescript/               # @floatile/sdk；引入前需 runtime ADR
+  typescript/               # @floatile/sdk 构建期 UI/codegen；private，runtime 仍需后继 ADR
 plugins/
   clock-wasm/               # Rust 参考插件
   clock-typescript/         # TypeScript adapter 通过后加入

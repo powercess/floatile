@@ -273,6 +273,9 @@ Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快�
 选择补成 `[sdk] language/version`，为 Rust/TypeScript 共用项目模型建立显式事实。只有 `--write`
 修改文件，重复执行无变化；缺失、超限、非普通文件或无效 TOML 使用稳定 `FMIGRATE_*` code 拒绝。
 版本轴与不可自动迁移边界见 [`migration-guide.md`](migration-guide.md)。
+TypeScript SDK 已建立 private 的构建期 UI 层：组件函数和 prop/binding 类型由
+`floatile schema ui` 的 registry contract 机械生成，并在 CI 中做 stale、strict typecheck 与 canonical
+IR builder 测试。它尚未选择或打包 runtime，也未获准发布；生命周期 adapter 仍受第 11 节工具链门约束。
 
 ## 8. 诊断格式
 
