@@ -92,7 +92,7 @@ manifest 是安装与运行时的显式事实，不是开发者主要编辑界�
 | `config.schema` | 否 | 包内规范路径；缺省表示无用户配置；只允许当前 schema 文档内 fragment 引用 |
 | `storage.migrationVersion` | 否 | 非负整数；只描述插件私有 KV 迁移 |
 | `build` | 否 | 诊断元数据，不参与信任/授权 |
-| `signature` | P0 否 | 进入分发前另行 ADR 与 schema |
+| `signature` | 不存在 | ADR-0005 使用 detached 根路径 `signature.json`；manifest 不内嵌自引用签名 |
 
 manifest 不重复存放 State/Event schema；它们属于 UI IR 并与组件树同 digest。宿主加载 UI IR 后
 必须验证内嵌 schema 与 State bindings/event declarations 一致。
@@ -154,7 +154,7 @@ ui/widget.ftui
 logic/plugin.wasm
 assets/
 config.schema.json       # 可选
-signature.json           # P0 不使用，未来分发版本可选/必需
+signature.json           # ADR-0005 detached DSSE envelope；开发策略可缺省，分发策略必需
 ```
 
 P0 不允许 `.slint`、原生库、脚本 entrypoint、符号链接或额外可执行文件。即使文件未被 manifest

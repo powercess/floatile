@@ -108,6 +108,14 @@
   组件按 minor，破坏语义按 major；Custom UI 必须新 ADR。
 - P0 验证：至少 clock、system monitor、countdown 三种内部 fixture 证明模型，不用预留未验证控件。
 
+### R17. 包签名与发布者信任混淆 — 高
+- 攻击者可能利用包内自带 key、`keyid`、合法旧版本或同版本替换包绕过来源判断；宿主也可能把
+  “签名有效”错误等同于 capability 授权，造成静默提权或降级攻击。
+- 缓解：按 ADR-0005 使用 detached DSSE/Ed25519；信任锚只来自宿主持有的 publisher trust store；
+  Permission Broker 授权独立；持久化最高已接受版本/摘要并显式处理撤销、权限 diff 和回滚。
+- P0 验证：覆盖摘要、签名、路径和 publisher 篡改，未知/撤销 key、同版本不同摘要、降级、显式回滚、
+  权限扩大确认及失败零残留；在线撤销和透明日志在引入前另行 ADR。
+
 ## 2. 依赖选型
 
 | 领域 | 选型 | 理由 | 风险备注 |

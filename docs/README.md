@@ -16,6 +16,7 @@
 | 技术选型与版本 | `architecture/technology-stack.md` | 引入/替换关键工具或版本策略变化 |
 | 不可逆决策 | `architecture/decisions/` | 兼容性、安全、持久化、许可或平台承诺变化 |
 | 风险与假设 | `architecture/risks.md` | 发现新风险或获得验证结论 |
+| 分发与信任 | `architecture/decisions/0005-package-signing-and-trust.md`、`plugin-sdk/manifest-v1.md` | 签名格式、publisher trust、撤销、更新或回滚策略变化 |
 | 权限与网络安全 | `security/permission-model.md`、`security/http-broker.md` | 能力、scope、配额、脱敏或网络策略变化 |
 | 插件系统总体架构 | `plugin-sdk/plugin-system-architecture.md` | 数据流、生命周期、实例隔离、语言/runtime 或版本轴变化 |
 | 插件 SDK 与开发体验 | `plugin-sdk/sdk-developer-experience.md` | Rust/TypeScript API、组件、CLI、诊断、测试或 Agent 契约变化 |
