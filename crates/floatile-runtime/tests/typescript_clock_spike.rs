@@ -37,12 +37,46 @@ struct LifecycleVector {
     expected_host_outcome: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecuritySuite {
+    schema_version: u64,
+    engine_api_version: String,
+    vectors: Vec<SecurityVector>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecurityVector {
+    id: String,
+    mode: String,
+    trigger: String,
+    expected_host_outcome: String,
+    host_survives: bool,
+}
+
 fn lifecycle_suite() -> LifecycleSuite {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../conformance/sdk-lifecycle-v1.json"
     )))
     .expect("lifecycle conformance vectors must parse")
+}
+
+fn security_suite() -> SecuritySuite {
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../conformance/sdk-security-v1.json"
+    )))
+    .expect("security conformance vectors must parse")
+}
+
+fn security_vector<'a>(suite: &'a SecuritySuite, id: &str) -> &'a SecurityVector {
+    suite
+        .vectors
+        .iter()
+        .find(|vector| vector.id == id)
+        .unwrap_or_else(|| panic!("missing security vector {id}"))
 }
 
 fn workspace_root() -> PathBuf {
@@ -190,7 +224,53 @@ async fn typescript_clock_matches_reference_behavior() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires spikes/typescript-runtime pnpm build"]
 async fn typescript_clock_denied_timer_is_brokered_and_instance_survives() {
+    let suite = security_suite();
+    let vector = security_vector(&suite, "broker-deny");
+    assert_eq!(vector.mode, "deny");
+    assert_eq!(vector.trigger, "start");
+    assert_eq!(vector.expected_host_outcome, "completed");
+    assert!(vector.host_survives);
     clock_behavior::assert_timer_denied(harness(false)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires spikes/typescript-runtime pnpm build"]
+async fn typescript_clock_invalid_patch_matches_shared_vector() {
+    let suite = security_suite();
+    assert_eq!(suite.schema_version, 1);
+    assert_eq!(
+        suite.engine_api_version,
+        floatile_plugin_api::ENGINE_API_VERSION
+    );
+    let vector = security_vector(&suite, "invalid-state-patch");
+    assert_eq!(vector.trigger, "start");
+    assert_eq!(
+        vector.expected_host_outcome,
+        "completed-without-state-update"
+    );
+    assert!(vector.host_survives);
+
+    let manager = WidgetManager::new().expect("创建共享 engine");
+    let mut handle = manager
+        .spawn(widget_config(
+            InstanceId(211),
+            component_bytes(),
+            &serde_json::json!({"mode": vector.mode}).to_string(),
+        ))
+        .expect("bad patch fixture spawn");
+    handle
+        .start()
+        .await
+        .expect("bad patch is a recoverable host rejection");
+    let update = tokio::time::timeout(Duration::from_millis(300), handle.ui_updates().recv()).await;
+    assert!(
+        update.is_err(),
+        "rejected patch must not publish State: {update:?}"
+    );
+    handle
+        .shutdown()
+        .await
+        .expect("bad patch instance should stop");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -246,20 +326,38 @@ async fn typescript_clock_lifecycle_errors_match_shared_vectors() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires spikes/typescript-runtime pnpm build"]
-async fn typescript_clock_timeout_isolated_from_peer() {
+async fn typescript_clock_fuel_exhaustion_matches_shared_vector() {
+    let suite = security_suite();
+    let vector = security_vector(&suite, "fuel-exhaustion");
+    assert_eq!(vector.trigger, "event");
+    assert_eq!(vector.expected_host_outcome, "failed");
+    assert!(vector.host_survives);
     let wasm = component_bytes();
     let manager = WidgetManager::new().expect("创建共享 engine");
     let looping = manager
         .spawn(widget_config(
             InstanceId(101),
             wasm.clone(),
-            r#"{"mode":"loop"}"#,
+            &serde_json::json!({"mode": vector.mode}).to_string(),
         ))
         .expect("loop fixture spawn");
     let peer = manager
         .spawn(widget_config(InstanceId(102), wasm, "{}"))
         .expect("peer spawn");
-    assert!(looping.start().await.is_err(), "无限循环必须被预算终止");
+    looping
+        .start()
+        .await
+        .expect("event loop fixture should start");
+    let result = looping
+        .handle_event(WidgetEvent::Ui(UiEvent {
+            name: "trigger".into(),
+            payload_json: "{}".into(),
+        }))
+        .await;
+    assert!(
+        matches!(result, Err(InstanceError::Failed(_))),
+        "无限循环必须耗尽 fuel: {result:?}"
+    );
 
     peer.start().await.expect("peer start 应成功");
     peer.shutdown().await.expect("peer shutdown 应成功");
@@ -267,8 +365,61 @@ async fn typescript_clock_timeout_isolated_from_peer() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires spikes/typescript-runtime pnpm build"]
+async fn typescript_clock_wall_timeout_matches_shared_vector() {
+    let suite = security_suite();
+    let vector = security_vector(&suite, "wall-clock-timeout");
+    assert_eq!(vector.trigger, "event");
+    assert_eq!(vector.expected_host_outcome, "timed-out");
+    assert!(vector.host_survives);
+
+    let wasm = component_bytes();
+    let manager = WidgetManager::new()
+        .expect("创建共享 engine")
+        .with_fuel_per_call(u64::MAX)
+        .with_call_timeout(Duration::from_millis(25));
+    let looping = manager
+        .spawn(widget_config(
+            InstanceId(221),
+            wasm.clone(),
+            &serde_json::json!({"mode": vector.mode}).to_string(),
+        ))
+        .expect("wall timeout fixture spawn");
+    let peer = manager
+        .spawn(widget_config(InstanceId(222), wasm, "{}"))
+        .expect("peer spawn");
+    looping
+        .start()
+        .await
+        .expect("event loop fixture should start");
+    peer.start().await.expect("peer start should succeed");
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        looping.handle_event(WidgetEvent::Ui(UiEvent {
+            name: "trigger".into(),
+            payload_json: "{}".into(),
+        })),
+    )
+    .await
+    .expect("epoch deadline should beat the host fallback");
+    assert!(
+        matches!(result, Err(InstanceError::Failed(_))),
+        "墙钟预算必须终止实例: {result:?}"
+    );
+    peer.shutdown()
+        .await
+        .expect("peer should survive wall timeout");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires spikes/typescript-runtime pnpm build"]
 async fn typescript_clock_memory_limit_isolated_from_peer() {
+    let suite = security_suite();
+    let vector = security_vector(&suite, "memory-limit");
+    assert_eq!(vector.trigger, "start");
+    assert_eq!(vector.expected_host_outcome, "failed");
+    assert!(vector.host_survives);
     let constrained = harness_builder(true)
+        .config_json(serde_json::json!({"mode": vector.mode}).to_string())
         .max_memory(1024 * 1024)
         .build()
         .expect("低内存 fixture spawn");

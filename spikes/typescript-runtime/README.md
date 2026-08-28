@@ -37,6 +37,9 @@ pnpm test:quickjs
 `FLOATILE_TYPESCRIPT_CLOCK_WASM` 选择组件，不复制行为语义。
 QuickJS 参考时钟消费 `sdk/typescript` 构建产物的 `defineWidget`/`createWidgetContract`，六条共享
 lifecycle error 向量会真实穿过 SDK、adapter 和 Wasmtime host；它不是只做 Node 对象形状测试。
+同一 host suite 还从 `sdk-security-v1.json` 驱动 Broker deny、invalid patch、fuel exhaustion、epoch
+墙钟预算和 StoreLimits/peer 隔离。普通 JavaScript 堆分配失败是可捕获异常，不冒充 Wasmtime
+线性内存 trap；内存向量由宿主 StoreLimits 验证。
 
 `pnpm measure` 在 release 下串行输出单/10 实例启动、首 tick 与 RSS（CPU 需在外层用
 `time -p`/平台 profiler 采样）。最小 receiver/参数复现位于

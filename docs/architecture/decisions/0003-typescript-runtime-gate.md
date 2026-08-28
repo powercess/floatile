@@ -121,9 +121,10 @@ spike 同步到当前 `floatile:widget@1.2.0`/`uiApiVersion = 1.6.0`。生成组
 - release 10 实例 startup 1,293 ms、全部首 tick 2,308 ms、RSS 增量 313,122,816 B。
 
 随后将 QuickJS 参考时钟改为消费 private `sdk/typescript` 的
-`defineWidget`/`createWidgetContract`，不再手写 resource export glue。组件 1,080,365 B、package
-453,211 B，六条共享 lifecycle error 向量均由真实 SDK → adapter → Wasmtime 链路识别为 guest
-rejection，既有行为、Broker deny、timeout、低内存与 peer 存活测试继续通过。
+`defineWidget`/`createWidgetContract`，不再手写 resource export glue。组件 1,081,238 B、package
+453,512 B，六条共享 lifecycle error 向量均由真实 SDK → adapter → Wasmtime 链路识别为 guest
+rejection；共享安全向量的 Broker deny、invalid patch、fuel、墙钟预算、StoreLimits 与 peer 存活也由
+同一 TypeScript component 实测通过。
 
 本次数据来自同一 Linux 测试机的一次串行冷运行，保留为候选比较证据，不冒充稳定态 CPU或
 Windows/macOS 证据。固定 SHA 只用于复现未发布修复，不是 Floatile 的生产依赖。

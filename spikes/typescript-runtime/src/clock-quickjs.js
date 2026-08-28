@@ -31,9 +31,16 @@ const clock = defineWidget({
     const error = conformanceError(context.config, "start");
     if (error) throw error;
     const mode = context.config?.mode;
-    if (mode === "loop") {
+    if (mode === "loop-start") {
       while (true) {
         context.config;
+      }
+    }
+    if (mode === "bad-patch") {
+      try {
+        context.state.update({ unexpected: true });
+      } catch {
+        // 宿主拒绝后 SDK 不提交本地 State mirror。
       }
     }
     try {
@@ -52,6 +59,11 @@ const clock = defineWidget({
   event(event, context) {
     const error = conformanceError(context.config, "event");
     if (error) throw error;
+    if (context.config?.mode === "loop") {
+      while (true) {
+        event;
+      }
+    }
     if (event.tag === "ui" && event.val.name === "start") {
       try {
         context.state.update({ running: true });
