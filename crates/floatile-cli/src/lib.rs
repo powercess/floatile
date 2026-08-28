@@ -25,11 +25,11 @@ pub use dev::{BuildStatus, build_once, dev_loop, ensure_project};
 pub use inspect::{InspectError, InspectReport, inspect_package, inspect_package_bytes};
 pub use install::{
     InstallError, InstalledPackage, RecoveryReport, install_dir, install_package,
-    install_trusted_package, recover_trusted_installs,
+    install_trusted_package, recover_trusted_installs, verify_trusted_installation,
 };
 pub use instance::{
     InstanceCommandError, InstanceView, configure_instance, create_instance, delete_instance,
-    get_instance, list_instances, set_instance_desired_state,
+    get_instance, list_instances, rollback_instance, set_instance_desired_state,
 };
 pub use output::{CommandErrorReport, CommandWarning, OUTPUT_SCHEMA_VERSION};
 pub use package::{PackageError, PackageLimits, ValidatedPackage, validate_package};

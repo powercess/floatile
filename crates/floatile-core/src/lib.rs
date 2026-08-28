@@ -21,10 +21,10 @@ pub use connection::{
     MAX_CREDENTIAL_REF_BYTES,
 };
 pub use distribution::{
-    PACKAGE_DIGEST_PAYLOAD_TYPE, PermissionChange, PermissionChangeKind, SIGNATURE_FILE,
-    SignatureVerificationError, TrustedPublisher, TrustedPublisherState, UpgradePlan,
-    UpgradePlanError, dsse_pae, plan_upgrade, publisher_key_id, signable_content_digest,
-    verify_signature_envelope,
+    PACKAGE_DIGEST_PAYLOAD_TYPE, PermissionChange, PermissionChangeKind, RollbackPlan,
+    RollbackPlanError, SIGNATURE_FILE, SignatureVerificationError, TrustedPublisher,
+    TrustedPublisherState, UpgradePlan, UpgradePlanError, dsse_pae, plan_rollback, plan_upgrade,
+    publisher_key_id, signable_content_digest, verify_signature_envelope,
 };
 pub use instance::{
     InstallationDigest, InstallationRef, InstanceConfig, InstanceDesiredState, InstanceModelError,

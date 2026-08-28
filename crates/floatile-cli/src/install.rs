@@ -21,6 +21,7 @@ use floatile_core::distribution::{
 use floatile_core::install::{InstallMeta, content_digest, file_digest, hex_encode};
 use floatile_core::manifest::Manifest;
 use floatile_store::Store;
+use floatile_store::installation::InstalledInstallation;
 use floatile_store::installation::{InstallationCatalogError, load_highest};
 use floatile_store::trust::{PendingInstallation, TrustPolicyError};
 use semver::Version;
@@ -262,6 +263,31 @@ pub fn install_trusted_package(
         meta,
         upgrade,
     })
+}
+
+/// Re-verifies an installed package against current host trust before rollback or execution.
+pub fn verify_trusted_installation(
+    installed: &InstalledInstallation,
+    trust_store: &Store,
+) -> Result<(), InstallError> {
+    let publisher_id = installed.manifest.publisher.id.as_str();
+    let trust = trust_store
+        .trust()
+        .get(publisher_id)
+        .map_err(TrustPolicyError::Store)?
+        .ok_or(InstallError::UnknownPublisher)?;
+    let mut files = BTreeMap::new();
+    for name in installed.meta.files.keys() {
+        let bytes = installed
+            .file(name)
+            .ok_or_else(|| InstallError::Commit(format!("installed file missing: {name}")))?;
+        files.insert(name.clone(), bytes.to_vec());
+    }
+    let envelope = files
+        .get(SIGNATURE_FILE)
+        .ok_or(InstallError::MissingSignature)?;
+    verify_signature_envelope(envelope, &files, publisher_id, &trust.verifier_binding())?;
+    Ok(())
 }
 
 /// Reconciles crash-interrupted trusted installs before a new trusted install begins.
@@ -932,6 +958,70 @@ mod tests {
         )
         .unwrap();
         assert!(!installed.upgrade.unwrap().requires_confirmation);
+    }
+
+    #[test]
+    fn explicit_rollback_rebinds_instance_without_lowering_watermark() {
+        let root = temp_store("explicit-rollback");
+        let plugin_store = root.join("plugins");
+        fs::create_dir_all(&plugin_store).unwrap();
+        let database = root.join("floatile.db");
+        let trust_store = floatile_store::open(&database).unwrap();
+        let signing_key = SigningKey::from_bytes(&[25; 32]);
+        trust_store
+            .trust()
+            .upsert_key(
+                "dev.floatile",
+                signing_key.verifying_key().to_bytes(),
+                TrustState::Active,
+                1,
+            )
+            .unwrap();
+        let v1 = install_trusted_package(
+            &signed_pkg_bytes("1.0.0", &signing_key),
+            &plugin_store,
+            "v1.floatile",
+            &Default::default(),
+            &trust_store,
+            false,
+        )
+        .unwrap();
+        let v2 = install_trusted_package(
+            &signed_pkg_bytes("2.0.0", &signing_key),
+            &plugin_store,
+            "v2.floatile",
+            &Default::default(),
+            &trust_store,
+            false,
+        )
+        .unwrap();
+        assert!(v1.upgrade.is_none());
+        let instance = trust_store
+            .instances()
+            .create(
+                &floatile_core::InstallationRef::from_install_meta(&v2.meta).unwrap(),
+                &floatile_core::InstanceConfig::empty(),
+                floatile_core::InstanceDesiredState::Stopped,
+                10,
+            )
+            .unwrap();
+
+        let rolled_back = crate::instance::rollback_instance(
+            &database,
+            &plugin_store,
+            instance.id(),
+            "1.0.0",
+            "2.0.0 rendering regression",
+            11,
+        )
+        .unwrap();
+        assert_eq!(rolled_back.version, "1.0.0");
+        let accepted = trust_store
+            .trust()
+            .accepted_package("dev.floatile", "dev.floatile.clock")
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted.version, Version::parse("2.0.0").unwrap());
     }
 
     #[test]

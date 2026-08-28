@@ -83,6 +83,13 @@ pub struct UpgradePlan {
     pub requires_confirmation: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackPlan {
+    pub current_version: semver::Version,
+    pub target_version: semver::Version,
+    pub permissions: Vec<PermissionChange>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UpgradePlanError {
     #[error("upgrade candidate changes plugin id")]
@@ -94,6 +101,22 @@ pub enum UpgradePlanError {
     #[error("upgrade candidate decreases storage migration version")]
     StorageMigrationRollback,
     #[error("upgrade manifest contains invalid permission: {0}")]
+    InvalidPermission(String),
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RollbackPlanError {
+    #[error("rollback target changes plugin id")]
+    PluginMismatch,
+    #[error("rollback target changes publisher")]
+    PublisherMismatch,
+    #[error("rollback target version must be older")]
+    VersionNotOlder,
+    #[error("rollback target cannot read the current storage migration")]
+    StorageMigrationIncompatible,
+    #[error("rollback would restore previously removed or reduced permissions")]
+    PermissionExpansion,
+    #[error("rollback manifest contains invalid permission: {0}")]
     InvalidPermission(String),
 }
 
@@ -127,8 +150,74 @@ pub fn plan_upgrade(
         return Err(UpgradePlanError::StorageMigrationRollback);
     }
 
-    let current_permissions = parsed_permissions(current)?;
-    let candidate_permissions = parsed_permissions(candidate)?;
+    let permissions =
+        permission_changes(current, candidate).map_err(UpgradePlanError::InvalidPermission)?;
+    let requires_confirmation = permissions.iter().any(|change| {
+        matches!(
+            change.kind,
+            PermissionChangeKind::Added | PermissionChangeKind::Expanded
+        )
+    });
+    Ok(UpgradePlan {
+        current_version,
+        candidate_version,
+        permissions,
+        requires_confirmation,
+    })
+}
+
+/// Plans an explicit rollback without lowering anti-rollback state or restoring old authority.
+pub fn plan_rollback(
+    current: &Manifest,
+    target: &Manifest,
+) -> Result<RollbackPlan, RollbackPlanError> {
+    if current.id != target.id {
+        return Err(RollbackPlanError::PluginMismatch);
+    }
+    if current.publisher.id != target.publisher.id {
+        return Err(RollbackPlanError::PublisherMismatch);
+    }
+    let current_version = semver::Version::parse(&current.version)
+        .map_err(|error| RollbackPlanError::InvalidPermission(error.to_string()))?;
+    let target_version = semver::Version::parse(&target.version)
+        .map_err(|error| RollbackPlanError::InvalidPermission(error.to_string()))?;
+    if target_version >= current_version {
+        return Err(RollbackPlanError::VersionNotOlder);
+    }
+    let current_migration = current
+        .storage
+        .as_ref()
+        .map_or(0, |storage| storage.migration_version);
+    let target_migration = target
+        .storage
+        .as_ref()
+        .map_or(0, |storage| storage.migration_version);
+    if target_migration != current_migration {
+        return Err(RollbackPlanError::StorageMigrationIncompatible);
+    }
+    let permissions =
+        permission_changes(current, target).map_err(RollbackPlanError::InvalidPermission)?;
+    if permissions.iter().any(|change| {
+        matches!(
+            change.kind,
+            PermissionChangeKind::Added | PermissionChangeKind::Expanded
+        )
+    }) {
+        return Err(RollbackPlanError::PermissionExpansion);
+    }
+    Ok(RollbackPlan {
+        current_version,
+        target_version,
+        permissions,
+    })
+}
+
+fn permission_changes(
+    current: &Manifest,
+    candidate: &Manifest,
+) -> Result<Vec<PermissionChange>, String> {
+    let current_permissions = parsed_permissions(current).map_err(|error| error.to_string())?;
+    let candidate_permissions = parsed_permissions(candidate).map_err(|error| error.to_string())?;
     let capabilities: BTreeSet<_> = current_permissions
         .keys()
         .chain(candidate_permissions.keys())
@@ -153,18 +242,7 @@ pub fn plan_upgrade(
         };
         permissions.push(PermissionChange { capability, kind });
     }
-    let requires_confirmation = permissions.iter().any(|change| {
-        matches!(
-            change.kind,
-            PermissionChangeKind::Added | PermissionChangeKind::Expanded
-        )
-    });
-    Ok(UpgradePlan {
-        current_version,
-        candidate_version,
-        permissions,
-        requires_confirmation,
-    })
+    Ok(permissions)
 }
 
 fn parsed_permissions(
@@ -699,6 +777,42 @@ mod tests {
         assert_eq!(
             plan_upgrade(&current, &publisher),
             Err(UpgradePlanError::PublisherMismatch)
+        );
+    }
+
+    #[test]
+    fn rollback_plan_requires_older_compatible_non_expanding_target() {
+        let current = upgrade_manifest(
+            "2.0.0",
+            json!([{
+                "capability": "timer:schedule",
+                "params": { "maxPerMinute": 10, "maxActive": 1 }
+            }]),
+            2,
+        );
+        let safe_target = upgrade_manifest("1.0.0", json!([]), 2);
+        let plan = plan_rollback(&current, &safe_target).unwrap();
+        assert_eq!(
+            plan.target_version,
+            semver::Version::parse("1.0.0").unwrap()
+        );
+
+        let expanded_target = upgrade_manifest(
+            "1.0.0",
+            json!([{
+                "capability": "timer:schedule",
+                "params": { "maxPerMinute": 60, "maxActive": 2 }
+            }]),
+            2,
+        );
+        assert_eq!(
+            plan_rollback(&current, &expanded_target),
+            Err(RollbackPlanError::PermissionExpansion)
+        );
+        let incompatible_storage = upgrade_manifest("1.0.0", json!([]), 1);
+        assert_eq!(
+            plan_rollback(&current, &incompatible_storage),
+            Err(RollbackPlanError::StorageMigrationIncompatible)
         );
     }
 }

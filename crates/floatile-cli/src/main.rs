@@ -359,6 +359,21 @@ fn cmd_instance(args: &[String]) -> ExitCode {
         }),
         "delete" => instance_id(&options)
             .and_then(|id| instance::delete_instance(&database, id).map(InstanceOutput::Deleted)),
+        "rollback" => instance_id(&options).and_then(|id| {
+            let version = options.version.as_deref().ok_or_else(|| {
+                instance::InstanceCommandError::InvalidArguments(
+                    "rollback 需要 --version".to_owned(),
+                )
+            })?;
+            let reason = options.reason.as_deref().ok_or_else(|| {
+                instance::InstanceCommandError::InvalidArguments(
+                    "rollback 需要 --reason".to_owned(),
+                )
+            })?;
+            let store = options.plugin_store()?;
+            instance::rollback_instance(&database, &store, id, version, reason, unix_timestamp())
+                .map(InstanceOutput::One)
+        }),
         _ => {
             print_instance_usage();
             return ExitCode::from(2);
@@ -497,6 +512,7 @@ struct InstanceCliOptions {
     config_file: Option<PathBuf>,
     database: Option<PathBuf>,
     store: Option<PathBuf>,
+    reason: Option<String>,
     json: bool,
     start: bool,
 }
@@ -510,7 +526,7 @@ impl InstanceCliOptions {
                 "--json" => parsed.json = true,
                 "--no-interactive" => {}
                 "--start" => parsed.start = true,
-                "--version" | "--config" | "--config-file" | "--db" | "--store" => {
+                "--version" | "--config" | "--config-file" | "--db" | "--store" | "--reason" => {
                     let name = args[index].as_str();
                     index += 1;
                     let value = args.get(index).ok_or_else(|| format!("{name} 缺少值"))?;
@@ -522,6 +538,8 @@ impl InstanceCliOptions {
                         parsed.config_file = Some(PathBuf::from(value));
                     } else if name == "--db" {
                         parsed.database = Some(PathBuf::from(value));
+                    } else if name == "--reason" {
+                        parsed.reason = Some(value.clone());
                     } else {
                         parsed.store = Some(PathBuf::from(value));
                     }
@@ -602,7 +620,7 @@ fn unix_timestamp() -> u64 {
 
 fn print_instance_usage() {
     eprintln!(
-        "用法:\n  floatile instance create <plugin-id> --version <semver> [--config <JSON>|--config-file <path>] [--start] [--db PATH] [--store PATH] [--json]\n  floatile instance <list|get|start|stop|delete> [instance-id] [--db PATH] [--json]\n  floatile instance configure <instance-id> (--config <JSON>|--config-file <path>) [--db PATH] [--store PATH] [--json]"
+        "用法:\n  floatile instance create <plugin-id> --version <semver> [--config <JSON>|--config-file <path>] [--start] [--db PATH] [--store PATH] [--json]\n  floatile instance <list|get|start|stop|delete> [instance-id] [--db PATH] [--json]\n  floatile instance configure <instance-id> (--config <JSON>|--config-file <path>) [--db PATH] [--store PATH] [--json]\n  floatile instance rollback <instance-id> --version <historical-semver> --reason <text> [--db PATH] [--store PATH] [--json]"
     );
 }
 

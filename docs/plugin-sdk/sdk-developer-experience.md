@@ -215,6 +215,7 @@ Detected capabilities:
 | `floatile migrate` | SDK/UI/manifest 兼容迁移；默认先 dry-run |
 | `floatile conformance` | 校验并输出语言无关的 SDK contract vectors |
 | `floatile instance create/list/get/configure/start/stop/delete` | 按精确安装版本管理持久实例与 desired state |
+| `floatile instance rollback` | 将 stopped 实例显式重绑到当前信任仍有效的历史 Installation，记录原因且不降低 anti-rollback 水位 |
 
 所有命令必须支持：
 
@@ -242,6 +243,9 @@ DSSE/Ed25519 验证、publisher/key 撤销和 anti-rollback；默认 `install` �
 和状态，不存储或回显 private key。受信升级会比较当前最高安装的 manifest：新增 capability 或扩大
 scope/配额返回 `FINST_PERMISSION_CONFIRMATION` 且零落盘；调用方必须显式传
 `--accept-permissions` 才能继续。纯移除/收窄无需该参数，成功输出包含逐 capability 的 upgrade diff。
+`instance rollback <id> --version <historical> --reason <text>` 仅接受 stopped 实例；目标安装先复核
+install digest 与当前 publisher/key trust，且 storage migration 必须相等、旧权限不得重新扩大。实例
+重绑定与原因审计原子提交，最高已接受版本/摘要保持不变。
 `check` 按 Component Model 实际保留的 Floatile interface/function imports 与 Capability Registry 比对：
 使用声明能力但 manifest 未声明时以 `FCHECK_CAPABILITY_MISSING` 失败；已声明但未导入时产生
 `FCHECK_CAPABILITY_UNUSED` warning，`--deny-warnings` 可将其提升为失败。固有能力无需写入 manifest；
