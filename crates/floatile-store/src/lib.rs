@@ -13,6 +13,7 @@ use floatile_core::{
 use rusqlite::{Connection, OptionalExtension};
 
 pub mod installation;
+pub mod trust;
 
 /// 持久化错误。
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +29,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -70,6 +71,9 @@ impl Store {
         }
         if current < 5 {
             self.migration_v5()?;
+        }
+        if current < 6 {
+            self.migration_v6()?;
         }
         Ok(())
     }
@@ -213,6 +217,43 @@ impl Store {
             .map_err(|error| StoreError::Migration(format!("v5 提交失败: {error}")))
     }
 
+    fn migration_v6(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS publisher_trust (
+                publisher_id TEXT PRIMARY KEY,
+                state        TEXT NOT NULL CHECK (state IN ('active','revoked')),
+                updated_at   INTEGER NOT NULL CHECK (updated_at >= 0)
+            );
+            CREATE TABLE IF NOT EXISTS publisher_keys (
+                publisher_id TEXT NOT NULL,
+                key_id       TEXT NOT NULL,
+                public_key   BLOB NOT NULL CHECK (length(public_key) = 32),
+                state        TEXT NOT NULL CHECK (state IN ('active','revoked')),
+                updated_at   INTEGER NOT NULL CHECK (updated_at >= 0),
+                PRIMARY KEY (publisher_id, key_id),
+                FOREIGN KEY (publisher_id) REFERENCES publisher_trust(publisher_id)
+            );
+            CREATE TABLE IF NOT EXISTS accepted_packages (
+                publisher_id TEXT NOT NULL,
+                plugin_id    TEXT NOT NULL,
+                version      TEXT NOT NULL,
+                digest       BLOB NOT NULL CHECK (length(digest) = 32),
+                accepted_at  INTEGER NOT NULL CHECK (accepted_at >= 0),
+                PRIMARY KEY (publisher_id, plugin_id),
+                FOREIGN KEY (publisher_id) REFERENCES publisher_trust(publisher_id)
+            );
+            PRAGMA user_version = 6;",
+        )
+        .map_err(|error| {
+            StoreError::Migration(format!(
+                "v6 建立 publisher trust 与 anti-rollback 表失败: {error}"
+            ))
+        })?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v6 提交失败: {error}")))
+    }
+
     /// 布局存储接口。
     pub fn layout(&self) -> LayoutStore<'_> {
         LayoutStore { conn: &self.conn }
@@ -234,6 +275,11 @@ impl Store {
     /// 宿主外部数据连接及其实例授权接口。只持久化不透明 CredentialRef，不保存 secret。
     pub fn connections(&self) -> ConnectionStore<'_> {
         ConnectionStore { conn: &self.conn }
+    }
+
+    /// 宿主持有的 publisher trust、签名 key 与 anti-rollback 状态接口。
+    pub fn trust(&self) -> trust::PublisherTrustStore<'_> {
+        trust::PublisherTrustStore::new(&self.conn)
     }
 }
 
@@ -1553,6 +1599,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(allocator_exists, 0);
+    }
+
+    fn v5_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store.migration_v2().unwrap();
+        store.migration_v3().unwrap();
+        store.migration_v4().unwrap();
+        store.migration_v5().unwrap();
+        store
+    }
+
+    #[test]
+    fn migration_v6_failure_rolls_back_all_trust_tables_and_version() {
+        let mut store = v5_store();
+        store
+            .conn
+            .execute_batch("CREATE INDEX publisher_trust ON layout(instance_id);")
+            .unwrap();
+
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        for table in ["publisher_trust", "accepted_packages"] {
+            let exists: u32 = store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "{table} leaked from failed migration");
+        }
     }
 
     #[test]
