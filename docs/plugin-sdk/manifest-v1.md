@@ -107,6 +107,10 @@ id = "dev.floatile.clock"
 name = "World Clock"
 version = "0.1.0"
 
+[sdk]
+language = "rust"
+version = "0.1.0"
+
 [widget]
 default_size = [240, 120]
 min_size = [160, 80]
@@ -116,6 +120,10 @@ max_size = [800, 600]
 max_per_minute = 60
 max_active = 2
 ```
+
+`sdk.language` 当前接受作者工具链登记值并写入 manifest `build.sdk`；它只用于构建诊断，不能改变
+权限或运行语义。旧项目缺少 `[sdk]` 时按 `rust@0.1.0` 兼容读取，`floatile migrate` 默认 dry-run
+报告补齐动作，只有显式 `--write` 才修改作者配置。
 
 不可从代码安全推导的字段必须显式声明。CLI 检出的 capability 只是候选：代码使用但未声明为
 error；声明但未使用为 warning；CLI 不自动扩大权限。

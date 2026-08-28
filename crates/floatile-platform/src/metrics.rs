@@ -92,21 +92,52 @@ fn macos_process_metrics() -> Result<ProcessMetrics, MetricsError> {
 
 #[cfg(target_os = "linux")]
 fn linux_process_metrics() -> Result<ProcessMetrics, MetricsError> {
-    const SCHEDSTAT: &str = "/proc/self/schedstat";
+    const TASKS: &str = "/proc/self/task";
+    const TASK_SCHEDSTAT: &str = "/proc/self/task/*/schedstat";
     const STATUS: &str = "/proc/self/status";
 
-    let schedstat = std::fs::read_to_string(SCHEDSTAT).map_err(|source| MetricsError::Read {
-        source_name: SCHEDSTAT,
+    let tasks = std::fs::read_dir(TASKS).map_err(|source| MetricsError::Read {
+        source_name: TASKS,
         source,
     })?;
+    let mut cpu_nanoseconds = 0u64;
+    let mut sampled_threads = 0usize;
+    for task in tasks {
+        let task = task.map_err(|source| MetricsError::Read {
+            source_name: TASKS,
+            source,
+        })?;
+        let path = task.path().join("schedstat");
+        let schedstat = match std::fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(MetricsError::Read {
+                    source_name: TASK_SCHEDSTAT,
+                    source,
+                });
+            }
+        };
+        let thread_cpu = parse_cpu_nanoseconds(&schedstat).ok_or(MetricsError::Invalid {
+            source_name: TASK_SCHEDSTAT,
+        })?;
+        cpu_nanoseconds = cpu_nanoseconds
+            .checked_add(thread_cpu)
+            .ok_or(MetricsError::Invalid {
+                source_name: TASK_SCHEDSTAT,
+            })?;
+        sampled_threads += 1;
+    }
+    if sampled_threads == 0 {
+        return Err(MetricsError::Invalid {
+            source_name: TASK_SCHEDSTAT,
+        });
+    }
     let status = std::fs::read_to_string(STATUS).map_err(|source| MetricsError::Read {
         source_name: STATUS,
         source,
     })?;
 
-    let cpu_nanoseconds = parse_cpu_nanoseconds(&schedstat).ok_or(MetricsError::Invalid {
-        source_name: SCHEDSTAT,
-    })?;
     let rss_bytes = parse_rss_bytes(&status).ok_or(MetricsError::Invalid {
         source_name: STATUS,
     })?;
@@ -134,11 +165,44 @@ fn parse_rss_bytes(status: &str) -> Option<u64> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn parses_schedstat_cpu_nanoseconds() {
         assert_eq!(parse_cpu_nanoseconds("123456 789 10\n"), Some(123456));
         assert_eq!(parse_cpu_nanoseconds("invalid 789 10\n"), None);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn process_cpu_includes_worker_threads() {
+        let barrier = Arc::new(Barrier::new(3));
+        let stop = Arc::new(AtomicBool::new(false));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    while !stop.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+        barrier.wait();
+        let before = process_metrics().expect("process metrics before worker load");
+        std::thread::sleep(Duration::from_millis(100));
+        let after = process_metrics().expect("process metrics after worker load");
+        stop.store(true, Ordering::Relaxed);
+        for worker in workers {
+            worker.join().expect("worker should stop");
+        }
+        assert!(
+            after.cpu_time > before.cpu_time,
+            "worker CPU must be included in process metrics"
+        );
     }
 
     #[test]

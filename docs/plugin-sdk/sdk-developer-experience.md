@@ -227,7 +227,7 @@ Detected capabilities:
 
 退出码与诊断 code 稳定；日志文本不是自动化接口。
 
-当前已落地：`new/validate/check/dev/test/preview/build/install/trust/run/inspect/instance`；`test` 用
+当前已落地：`new/validate/check/dev/test/preview/build/install/trust/run/inspect/instance/migrate`；`test` 用
 `floatile-runtime::harness` 对已构建包跑无头生命周期冒烟。`instance` 子命令提供单一
 JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`--store`、
 `--config`/`--config-file`与 `--no-interactive`。`inspect` 在输出前复用完整包安全校验，提供 manifest、
@@ -269,7 +269,13 @@ State 更新数和 deny 审计数。当前 `advance_time` 使用真实 Tokio 短
 Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快照，仓库测试要求二者逐字节一致；
 干净目录测试从 `floatile-sdk`、`floatile-sdk-macros` 与 `floatile-ui-schema` 的独立 Cargo 包快照解析
 模板依赖，不使用仓库内部 path。许可 ADR 通过前这些包只用于仓库内可发布性验证，不授权上传 registry。
-`migrate` 仍未实现，属于后续 SDK/API 稳定化工作，不在 PP-M4 Rust 作者闭环范围内。
+`migrate` 使用版本化 JSON 报告且默认只读 dry-run；当前第一条真实迁移将旧项目隐式的 Rust SDK
+选择补成 `[sdk] language/version`，为 Rust/TypeScript 共用项目模型建立显式事实。只有 `--write`
+修改文件，重复执行无变化；缺失、超限、非普通文件或无效 TOML 使用稳定 `FMIGRATE_*` code 拒绝。
+版本轴与不可自动迁移边界见 [`migration-guide.md`](migration-guide.md)。
+TypeScript SDK 已建立 private 的构建期 UI 层：组件函数和 prop/binding 类型由
+`floatile schema ui` 的 registry contract 机械生成，并在 CI 中做 stale、strict typecheck 与 canonical
+IR builder 测试。它尚未选择或打包 runtime，也未获准发布；生命周期 adapter 仍受第 11 节工具链门约束。
 
 ## 8. 诊断格式
 
@@ -323,6 +329,8 @@ load/start/State 更新/shutdown + 宿主存活）并输出稳定 JSON。`advanc
 每个模板包含简短 `AGENTS.md`，只说明项目文件、允许命令和不可编辑生成物。SDK 发布：
 
 - 组件、属性、事件、capability、错误、CLI 输出的版本化 JSON schema；
+- `floatile schema ui <output.json>` 从 `floatile-ui-schema` registry 输出版本化组件/prop/event 契约，
+  TypeScript codegen 不维护平行组件列表；
 - 每个能力一个最小、可编译示例；不提供大而全 demo 作为唯一资料；
 - `floatile check --json --no-interactive` 的确定性输出；
 - `floatile preview --screenshot <path> --ui-tree <path>`；

@@ -23,6 +23,23 @@ struct Vector {
     expected_host_outcome: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecuritySuite {
+    schema_version: u64,
+    engine_api_version: String,
+    vectors: Vec<SecurityVector>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecurityVector {
+    id: String,
+    trigger: String,
+    expected_host_outcome: String,
+    host_survives: bool,
+}
+
 fn suite() -> Suite {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -50,6 +67,14 @@ fn widget_error(vector: &Vector) -> WidgetError {
     }
 }
 
+fn security_suite() -> SecuritySuite {
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../conformance/sdk-security-v1.json"
+    )))
+    .expect("SDK security conformance vectors must be valid JSON")
+}
+
 #[test]
 fn lifecycle_vectors_match_the_generated_wit_contract() {
     let suite = suite();
@@ -73,4 +98,26 @@ fn lifecycle_vectors_match_the_generated_wit_contract() {
         BTreeSet::from(["internal", "invalid-input", "rejected"]),
         "vectors must cover every WIT widget-error variant"
     );
+}
+
+#[test]
+fn security_vectors_are_language_independent_and_host_survival_is_mandatory() {
+    let suite = security_suite();
+    assert_eq!(suite.schema_version, 1);
+    assert_eq!(suite.engine_api_version, ENGINE_API_VERSION);
+    assert_eq!(suite.vectors.len(), 5);
+
+    let mut ids = BTreeSet::new();
+    for vector in suite.vectors {
+        assert!(ids.insert(vector.id), "duplicate security vector id");
+        assert!(matches!(vector.trigger.as_str(), "start" | "event"));
+        assert!(matches!(
+            vector.expected_host_outcome.as_str(),
+            "completed" | "completed-without-state-update" | "failed" | "timed-out"
+        ));
+        assert!(
+            vector.host_survives,
+            "security vectors must preserve host survival"
+        );
+    }
 }

@@ -20,7 +20,7 @@ Rust 参考时钟的 `build_ftui` 生成，以免在 UI schema codegen 落地前
 
 - `@bytecodealliance/jco` 1.31.0 + ComponentizeJS 0.22.0 + TypeScript 7.0.2。
 - 支持普通 TypeScript/JavaScript；`jco guest-types` 从仓库 WIT 生成严格 guest types。
-- `jco componentize --disable all` 可移除全部 WASI feature，组件只导入七个
+- `jco componentize --disable all` 可移除全部 WASI feature，组件只导入当前 world 的九个
   `floatile:widget/*` host interface。
 - 官方 AOT/Weval 模式也纳入对照。
 
@@ -111,8 +111,45 @@ advisory 所称的 4.2.2，spike lock 以本地禁用桩移除 AOT 链；不得�
 - release 单实例 startup 273 ms、首 tick 1,277 ms、RSS 增量 135,327,744 B；
 - release 10 实例 startup 2,401 ms、全部首 tick 3,402 ms、RSS 增量 662,474,752 B。
 
+2026-08-28 又从 PR #76 的固定 head
+`7788644697ed08a841ad0910d4e99772c6fe7132` 构建 `componentize-qjs-cli --features opt-size`，并将
+spike 同步到当前 `floatile:widget@1.2.0`/`uiApiVersion = 1.6.0`。生成组件精确白名单为九个
+`floatile:widget/*@1.2.0` host interface，零 WASI import，并重新通过四个行为/隔离测试和包预算：
+
+- component 1,053,110 B，package 440,106 B；
+- release 单实例 startup 227 ms、首 tick 1,229 ms、RSS 增量 90,034,176 B；
+- release 10 实例 startup 1,293 ms、全部首 tick 2,308 ms、RSS 增量 313,122,816 B。
+
+随后将 QuickJS 参考时钟改为消费 private `sdk/typescript` 的
+`defineWidget`/`createWidgetContract`，不再手写 resource export glue。组件 1,081,238 B、package
+453,512 B，六条共享 lifecycle error 向量均由真实 SDK → adapter → Wasmtime 链路识别为 guest
+rejection；共享安全向量的 Broker deny、invalid patch、fuel、墙钟预算、StoreLimits 与 peer 存活也由
+同一 TypeScript component 实测通过。
+
+修正 Linux 进程 CPU 采样为汇总 `/proc/self/task/*/schedstat` 后，同机 release 冷运行与 3 秒稳定窗口为：
+
+- 单实例 startup 154 ms、首 tick 1,167 ms、RSS 增量 88,014,848 B；稳定态 CPU 2 ms / 3,005 ms，
+  即单核 0.077%；
+- 10 实例 startup 1,365 ms、全部首 tick 2,377 ms、RSS 增量 324,501,504 B；稳定态 CPU
+  8 ms / 3,002 ms，即单核 0.284%。
+
+许可预审区分两类闭包：嵌入 component 的 `componentize-qjs-runtime` normal dependency tree 中
+`componentize-qjs` 为 Apache-2.0、`rquickjs`/`rquickjs-core`/`rquickjs-sys` 为 MIT，其余已识别项属于
+仓库现有 allowlist；来自 wasm-tools git SHA 的 `wit-dylib-ffi` 继承 workspace 的
+`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`。但完整 CLI 构建期依赖还经 `ureq` 引入
+CDLA-Permissive-2.0 的 `webpki-roots`，按 Floatile 当前 `deny.toml` 会拒绝。构建工具与最终 component
+的 NOTICE 生成也尚未自动化，因此许可门仍未通过，不新增例外。
+
+这些数据来自同一 Linux 测试机的一次串行冷运行；3 秒窗口是 Linux 稳定态 CPU 候选证据，不替代
+长时压力或 Windows/macOS 资源证据。固定 SHA 只用于复现未发布修复，不是 Floatile 的生产依赖。
+
+GitHub Actions [run 33155960160](https://github.com/powercess/floatile/actions/runs/33155960160)
+又从同一固定 SHA 在 Ubuntu、macOS 和 Windows 构建候选 CLI，并在三个系统生成及校验 Floatile
+TypeScript component；Ubuntu 额外执行上述完整行为和安全向量。该矩阵证明候选的三宿主构建可复现，
+不把 Linux 性能数字外推为另外两个系统的资源结论。
+
 这些数据显著优于本 ADR 的 StarlingMonkey 对照，但尚不改变 no-go 决策：修复未进入上游发布版，
-Windows/macOS 构建、稳定态 CPU、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime
+Windows/macOS 稳定态资源证据、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime
 初始化函数 `init`，虽不增加 host capability，仍需在生产契约门中决定是否允许或由 adapter 隐藏。
 
 ## 后果与下一步
@@ -122,6 +159,6 @@ Windows/macOS 构建、稳定态 CPU、许可/NOTICE 仍未完成；QuickJS comp
 - 代价：P0 的 TypeScript clock 与公共 SDK 继续阻塞。
 - 本 PR：已将 QuickJS 问题最小化为任意 method 参数的 receiver 错位，形成可直接提交上游的修复与
   回归测试，并把 spike 改为 StarlingMonkey/QuickJS 共用同一宿主行为向量。
-- 下一个 PR：在上游合并并发布固定版本后锁定该版本，补 Windows/macOS 构建、稳定态 CPU、
+- 下一个 PR：在上游合并并发布固定版本后锁定该版本，补 Windows/macOS 稳定态资源证据、
   QuickJS/生成 component 的许可与 NOTICE、额外 `init` export 契约处理；全部通过后新建后继 ADR，
   再决定是否启动公共 TypeScript SDK。

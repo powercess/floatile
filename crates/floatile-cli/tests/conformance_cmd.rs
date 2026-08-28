@@ -20,7 +20,14 @@ fn conformance_command_exposes_the_versioned_lifecycle_suite() {
     assert_eq!(report["status"], "ok");
     assert_eq!(report["suite"], "sdk-lifecycle-v1");
     assert_eq!(report["contract"]["engineApiVersion"], "1.2.0");
-    assert_eq!(report["contract"]["vectors"].as_array().unwrap().len(), 3);
+    assert_eq!(report["contract"]["vectors"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        report["securityContract"]["vectors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
     assert_eq!(report["warnings"], serde_json::json!([]));
 }
 

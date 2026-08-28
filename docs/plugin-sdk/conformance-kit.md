@@ -1,6 +1,6 @@
 # SDK Conformance Kit
 
-> 状态：Implemented（Rust SDK 与 host runtime 自动化验证；TypeScript 尚未实现）
+> 状态：Implemented（Rust SDK、TypeScript 作者层与 host runtime 自动化验证；TypeScript runtime 尚未实现）
 > 范围：PP-M7、FR-PLUGIN-01、F11、NFR-MAINT-01
 
 `conformance/` 保存语言无关、版本化的 JSON 向量。Rust SDK、未来 TypeScript SDK 与宿主 runtime
@@ -18,7 +18,7 @@
 - `message`：该 variant 携带的稳定测试 payload，`internal` 为 `null`；
 - `expectedHostOutcome`：宿主错误分类，不是语言专用异常名。
 
-当前向量覆盖 `invalid-input`、`rejected` 与 `internal` 全部 WIT guest error。runtime 使用真实
+当前向量覆盖 `start/event × invalid-input/rejected/internal` 的完整组合。runtime 使用真实
 WASM Component 执行同一批向量，必须把它们分类为 guest `Rejected`，并证明随后仍可启动和停止同行
 实例。trap、fuel、epoch timeout、内存、Broker deny、Operation 和 State Patch 的既有安全测试将在后续
 PP-M7 切片逐步登记为同目录的版本化向量。
@@ -26,6 +26,17 @@ PP-M7 切片逐步登记为同目录的版本化向量。
 新增语言 SDK 时，第一步必须解析这些文件并拒绝未知 `schemaVersion`、callback、error 或 outcome；
 不能用“等价的本地测试”代替共享向量。
 
+private `@floatile/sdk` 作者层已直接消费 lifecycle 与 security JSON：六种 lifecycle error 映射到同一
+WIT variant，未知 JavaScript 异常只降为无 payload 的 `internal`，不会泄漏异常文本；五类 security
+vector 保留为 adapter/runtime 的强制 host-survival 门。真实 TypeScript Component 执行仍未通过，不能
+把作者层解析测试等同于 runtime 证据。
+
 `floatile conformance --json --no-interactive` 会校验 CLI 内嵌的当前 suite 并输出稳定的 schema v1
 报告；language adapter、CI 与 Agent 应消费该命令，而不是依赖仓库路径。`--deny-warnings` 与其他作者
 命令语义一致；当前 suite 没有 warning。
+
+## 安全与隔离向量
+
+`sdk-security-v1.json` 固定 Broker 默认拒绝、非法 State Patch 原子拒绝、fuel 耗尽、墙钟超时和
+线性内存上限五类宿主结果。每条向量都要求同行实例或后继实例存活；语言 adapter 不得把 trap、超时
+或内存失败降级成业务拒绝，也不得用语言专用 mock 代替真实 Component/host 执行。

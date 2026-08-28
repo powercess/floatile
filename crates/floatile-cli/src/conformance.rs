@@ -11,6 +11,10 @@ pub const LIFECYCLE_SUITE_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../conformance/sdk-lifecycle-v1.json"
 ));
+pub const SECURITY_SUITE_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../conformance/sdk-security-v1.json"
+));
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +34,24 @@ pub struct LifecycleVector {
     pub expected_host_outcome: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecuritySuite {
+    pub schema_version: u32,
+    pub engine_api_version: String,
+    pub vectors: Vec<SecurityVector>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityVector {
+    pub id: String,
+    pub mode: String,
+    pub trigger: String,
+    pub expected_host_outcome: String,
+    pub host_survives: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConformanceReport {
@@ -37,6 +59,7 @@ pub struct ConformanceReport {
     pub status: &'static str,
     pub suite: &'static str,
     pub contract: LifecycleSuite,
+    pub security_contract: SecuritySuite,
     pub warnings: Vec<crate::CommandWarning>,
 }
 
@@ -64,13 +87,55 @@ pub fn lifecycle_report() -> Result<ConformanceReport, ConformanceError> {
     let contract: LifecycleSuite =
         serde_json::from_str(LIFECYCLE_SUITE_JSON).map_err(|_| ConformanceError::InvalidJson)?;
     validate(&contract)?;
+    let security_contract: SecuritySuite =
+        serde_json::from_str(SECURITY_SUITE_JSON).map_err(|_| ConformanceError::InvalidJson)?;
+    validate_security(&security_contract)?;
+    if security_contract.engine_api_version != contract.engine_api_version {
+        return Err(ConformanceError::InvalidVector(
+            "conformance contracts 的 engineApiVersion 不一致".to_owned(),
+        ));
+    }
     Ok(ConformanceReport {
         schema_version: OUTPUT_SCHEMA_VERSION,
         status: "ok",
         suite: "sdk-lifecycle-v1",
         contract,
+        security_contract,
         warnings: Vec::new(),
     })
+}
+
+fn validate_security(suite: &SecuritySuite) -> Result<(), ConformanceError> {
+    if suite.schema_version != 1 {
+        return Err(ConformanceError::UnsupportedSchema(suite.schema_version));
+    }
+    let mut ids = BTreeSet::new();
+    for vector in &suite.vectors {
+        if !ids.insert(vector.id.as_str()) {
+            return Err(ConformanceError::InvalidVector(
+                "security vector id 重复".to_owned(),
+            ));
+        }
+        if !matches!(vector.trigger.as_str(), "start" | "event") {
+            return Err(ConformanceError::InvalidVector(
+                "security trigger 不受支持".to_owned(),
+            ));
+        }
+        if !matches!(
+            vector.expected_host_outcome.as_str(),
+            "completed" | "completed-without-state-update" | "failed" | "timed-out"
+        ) {
+            return Err(ConformanceError::InvalidVector(
+                "security expectedHostOutcome 不受支持".to_owned(),
+            ));
+        }
+        if !vector.host_survives {
+            return Err(ConformanceError::InvalidVector(
+                "security vector 必须要求 hostSurvives".to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate(suite: &LifecycleSuite) -> Result<(), ConformanceError> {
@@ -121,7 +186,9 @@ mod tests {
         assert_eq!(report.suite, "sdk-lifecycle-v1");
         assert_eq!(report.contract.schema_version, 1);
         assert_eq!(report.contract.engine_api_version, "1.2.0");
-        assert_eq!(report.contract.vectors.len(), 3);
+        assert_eq!(report.contract.vectors.len(), 6);
+        assert_eq!(report.security_contract.schema_version, 1);
+        assert_eq!(report.security_contract.vectors.len(), 5);
         Ok(())
     }
 }

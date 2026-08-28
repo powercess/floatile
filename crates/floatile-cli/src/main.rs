@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use floatile_cli::{
-    CommandErrorReport, build, check, conformance, dev, inspect, install, instance, package,
-    preview, project, run, test, trust,
+    CommandErrorReport, build, check, conformance, dev, inspect, install, instance, migrate,
+    package, preview, project, run, test, trust,
 };
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId, PermissionChangeKind};
 
@@ -14,7 +14,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|check|inspect|build|install|trust|instance|dev|test|preview|run|schema|conformance> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|trust|instance|dev|test|preview|run|schema|migrate|conformance> [参数]"
         );
         return ExitCode::from(2);
     }
@@ -32,11 +32,47 @@ fn main() -> ExitCode {
         "preview" => cmd_preview(&args[2..]),
         "run" => cmd_run(&args[2..]),
         "schema" => cmd_schema(&args[2..]),
+        "migrate" => cmd_migrate(&args[2..]),
         "conformance" => cmd_conformance(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn cmd_migrate(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let write = args.iter().any(|argument| argument == "--write");
+    let positionals = match author_positionals(args, &[], &["--write"], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FMIGRATE_ARGUMENT", &detail, json, true),
+    };
+    let project_dir = positionals
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    match migrate::migrate_project(&project_dir, write) {
+        Ok(report) => {
+            if json {
+                println!("{}", serialize_json(&report));
+            } else {
+                println!(
+                    "migrate: PASS mode={} changes={} changed={}",
+                    report.mode,
+                    report.changes.len(),
+                    report.changed
+                );
+                for change in report.changes {
+                    println!(
+                        "  code={} file={} {}",
+                        change.code, change.file, change.description
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => render_basic_error(error.code(), &error.to_string(), json, false),
     }
 }
 
@@ -109,6 +145,15 @@ fn cmd_conformance(args: &[String]) -> ExitCode {
                         vector.callback,
                         vector.guest_error,
                         vector.expected_host_outcome
+                    );
+                }
+                for vector in report.security_contract.vectors {
+                    println!(
+                        "  {} trigger={} outcome={} host-survives={}",
+                        vector.id,
+                        vector.trigger,
+                        vector.expected_host_outcome,
+                        vector.host_survives
                     );
                 }
             }
@@ -624,18 +669,33 @@ fn print_instance_usage() {
     );
 }
 
-/// `floatile schema <manifest.schema.json>`：由单一源生成并输出 manifest.json 的
-/// 独立 JSON Schema 产物，供外部工具/编辑器校验 manifest，避免手写平行 schema。
+/// 由单一源生成 manifest schema 或 UI component registry，供 SDK/codegen 使用。
 fn cmd_schema(args: &[String]) -> ExitCode {
-    let Some(path) = args.first().map(PathBuf::from) else {
-        eprintln!("用法: floatile schema <manifest.schema.json>");
-        return ExitCode::from(2);
+    let (kind, path) = match args {
+        [path] => ("manifest", PathBuf::from(path)),
+        [kind, path] if matches!(kind.as_str(), "manifest" | "ui") => {
+            (kind.as_str(), PathBuf::from(path))
+        }
+        _ => {
+            eprintln!("用法: floatile schema [manifest|ui] <output.json>");
+            return ExitCode::from(2);
+        }
     };
-    let schema = floatile_core::manifest_json_schema();
-    let text = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_owned());
+    let text = if kind == "ui" {
+        serde_json::to_string_pretty(&floatile_ui_schema::component_registry_contract())
+    } else {
+        serde_json::to_string_pretty(&floatile_core::manifest_json_schema())
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(_) => {
+            eprintln!("schema 序列化失败");
+            return ExitCode::FAILURE;
+        }
+    };
     match std::fs::write(&path, text) {
         Ok(()) => {
-            println!("已写出 manifest JSON Schema 到 {}", path.display());
+            println!("已写出 {kind} schema 到 {}", path.display());
             ExitCode::SUCCESS
         }
         Err(e) => {

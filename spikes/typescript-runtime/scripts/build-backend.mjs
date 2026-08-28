@@ -18,6 +18,18 @@ const executable = (name) =>
     "node_modules/.bin",
     process.platform === "win32" ? `${name}.CMD` : name,
   );
+const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const localToolOptions = {
+  cwd: spikeDir,
+  shell: process.platform === "win32",
+  stdio: "inherit",
+};
+
+execFileSync(pnpm, ["--dir", "sdk/typescript", "build"], {
+  cwd: workspace,
+  shell: process.platform === "win32",
+  stdio: "inherit",
+});
 
 execFileSync(process.execPath, ["scripts/prepare.mjs"], {
   cwd: spikeDir,
@@ -35,14 +47,11 @@ execFileSync(
     "--strict",
     "--quiet",
   ],
-  { cwd: spikeDir, stdio: "inherit" },
+  localToolOptions,
 );
 
 if (backend === "starlingmonkey") {
-  execFileSync(executable("tsc"), ["--noEmit"], {
-    cwd: spikeDir,
-    stdio: "inherit",
-  });
+  execFileSync(executable("tsc"), ["--noEmit"], localToolOptions);
   execFileSync(
     executable("jco"),
     [
@@ -57,7 +66,7 @@ if (backend === "starlingmonkey") {
       "--out",
       output,
     ],
-    { cwd: spikeDir, stdio: "inherit" },
+    localToolOptions,
   );
 } else if (process.env.FLOATILE_COMPONENTIZE_QJS_BIN) {
   execFileSync(
@@ -68,7 +77,7 @@ if (backend === "starlingmonkey") {
       "--js",
       resolve(spikeDir, "src/clock-quickjs.js"),
       "--module-root",
-      spikeDir,
+      workspace,
       "--output",
       output,
       "--world",
@@ -86,7 +95,7 @@ if (backend === "starlingmonkey") {
     witPath: resolve(workspace, "wit"),
     jsSource: readFileSync(sourcePath, "utf8"),
     jsPath: sourcePath,
-    moduleRoot: spikeDir,
+    moduleRoot: workspace,
     world: "floatile-widget",
     stubWasi: true,
     optSize: true,

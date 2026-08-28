@@ -19,7 +19,10 @@ pub mod validate;
 pub use error::UiSchemaError;
 pub use ir::{Binding, Component, EmittedEvent, EventSchema, PropValue, StateSchema, UiDocument};
 pub use patch::{MAX_PATCH_BYTES, MAX_STATE_BYTES, MAX_UPDATE_RATE_PER_SEC, merge_patch};
-pub use registry::{ChildrenPolicy, ComponentKind, ComponentSpec, JsonType, PropSchema};
+pub use registry::{
+    ChildrenPolicy, ComponentKind, ComponentSpec, JsonType, PropSchema, RegistryContract,
+    contract as component_registry_contract,
+};
 pub use schema::{JsonSchema, validate_value};
 pub use validate::validate_document;
 

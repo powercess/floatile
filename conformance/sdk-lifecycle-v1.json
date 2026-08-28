@@ -3,6 +3,13 @@
   "engineApiVersion": "1.2.0",
   "vectors": [
     {
+      "id": "start-invalid-input",
+      "callback": "start",
+      "guestError": "invalid-input",
+      "message": "conformance start invalid input",
+      "expectedHostOutcome": "rejected"
+    },
+    {
       "id": "start-rejected",
       "callback": "start",
       "guestError": "rejected",
@@ -10,9 +17,23 @@
       "expectedHostOutcome": "rejected"
     },
     {
+      "id": "start-internal",
+      "callback": "start",
+      "guestError": "internal",
+      "message": null,
+      "expectedHostOutcome": "rejected"
+    },
+    {
       "id": "event-invalid-input",
       "callback": "event",
       "guestError": "invalid-input",
+      "message": "conformance event invalid input",
+      "expectedHostOutcome": "rejected"
+    },
+    {
+      "id": "event-rejected",
+      "callback": "event",
+      "guestError": "rejected",
       "message": "conformance event rejection",
       "expectedHostOutcome": "rejected"
     },
