@@ -1,11 +1,11 @@
-import { now } from "floatile:widget/host-clock@1.0.0";
-import { log } from "floatile:widget/host-log@1.0.0";
-import { schedule } from "floatile:widget/host-timer@1.0.0";
-import { updateState } from "floatile:widget/host-ui@1.0.0";
+import { now } from "floatile:widget/host-clock@1.2.0";
+import { log } from "floatile:widget/host-log@1.2.0";
+import { schedule } from "floatile:widget/host-timer@1.2.0";
+import { updateState } from "floatile:widget/host-ui@1.2.0";
 import type {
   WidgetEvent,
   WidgetInit,
-} from "floatile:widget/widget-contract@1.0.0";
+} from "floatile:widget/widget-contract@1.2.0";
 
 class WidgetInstance {
   private readonly initialState: unknown;

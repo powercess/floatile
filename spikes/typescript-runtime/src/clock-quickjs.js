@@ -3,19 +3,37 @@ import hostLog from "floatile:widget/host-log@1.2.0";
 import hostTimer from "floatile:widget/host-timer@1.2.0";
 import hostUi from "floatile:widget/host-ui@1.2.0";
 
-class WidgetInstance {
-  constructor(init) {
-    // constructor 只建立内存状态，不调用任何 host capability。
-    this.initialState = JSON.parse(init.initialStateJson);
-    const config = JSON.parse(init.configJson);
-    this.mode = typeof config.mode === "string" ? config.mode : undefined;
-  }
+import {
+  createWidgetContract,
+  defineWidget,
+  WidgetError,
+} from "../../../sdk/typescript/dist/index.js";
 
-  start() {
-    if (this.mode === "loop") {
-      // 安全向量：验证同一 JS runtime 仍受 Wasmtime fuel/epoch 预算约束。
+function conformanceError(config, callback) {
+  const mode = config?.mode;
+  if (mode === `conformance-${callback}-invalid-input`) {
+    return WidgetError.invalidInput(`conformance ${callback} invalid input`);
+  }
+  if (mode === `conformance-${callback}-rejected`) {
+    return WidgetError.rejected(`conformance ${callback} rejection`);
+  }
+  if (mode === `conformance-${callback}-internal`) {
+    return WidgetError.internal();
+  }
+  return undefined;
+}
+
+const clock = defineWidget({
+  state: { running: false, time: "" },
+  view: () => ({ type: "Text" }),
+
+  start(context) {
+    const error = conformanceError(context.config, "start");
+    if (error) throw error;
+    const mode = context.config?.mode;
+    if (mode === "loop") {
       while (true) {
-        this.initialState;
+        context.config;
       }
     }
     try {
@@ -29,12 +47,14 @@ class WidgetInstance {
     } catch {
       // Permission Broker 的 deny 仍由宿主审计。
     }
-  }
+  },
 
-  handleEvent(event) {
+  event(event, context) {
+    const error = conformanceError(context.config, "event");
+    if (error) throw error;
     if (event.tag === "ui" && event.val.name === "start") {
       try {
-        hostUi.updateState(JSON.stringify({ running: true }));
+        context.state.update({ running: true });
       } catch {
         // State 权威校验在宿主；拒绝不回写本地镜像。
       }
@@ -50,7 +70,7 @@ class WidgetInstance {
       const time = `${pad(hour)}:${pad(minute)}:${pad(second)}`;
 
       try {
-        hostUi.updateState(JSON.stringify({ time }));
+        context.state.update({ time });
       } catch {
         // 保持与 Rust clock 的 best-effort State Patch 语义一致。
       }
@@ -65,7 +85,7 @@ class WidgetInstance {
         // 一次性 timer 重新调度失败时停止 tick，但实例存活。
       }
     }
-  }
+  },
 
   stop() {
     try {
@@ -73,7 +93,11 @@ class WidgetInstance {
     } catch {
       // stop 是有预算的尽力清理通知。
     }
-  }
-}
+  },
+});
 
-export const widgetContract = { WidgetInstance };
+export const widgetContract = createWidgetContract(
+  clock,
+  { updateState: (patchJson) => hostUi.updateState(patchJson) },
+  { decodeEvent: (event) => event },
+);

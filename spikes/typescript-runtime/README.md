@@ -35,6 +35,8 @@ pnpm test:quickjs
 `FLOATILE_COMPONENTIZE_QJS_BIN=/path/to/componentize-qjs`；输出固定为
 `clock-typescript-quickjs.wasm`，同一组 Rust host tests 通过
 `FLOATILE_TYPESCRIPT_CLOCK_WASM` 选择组件，不复制行为语义。
+QuickJS 参考时钟消费 `sdk/typescript` 构建产物的 `defineWidget`/`createWidgetContract`，六条共享
+lifecycle error 向量会真实穿过 SDK、adapter 和 Wasmtime host；它不是只做 Node 对象形状测试。
 
 `pnpm measure` 在 release 下串行输出单/10 实例启动、首 tick 与 RSS（CPU 需在外层用
 `time -p`/平台 profiler 采样）。最小 receiver/参数复现位于

@@ -19,6 +19,11 @@ const executable = (name) =>
     process.platform === "win32" ? `${name}.CMD` : name,
   );
 
+execFileSync("pnpm", ["--dir", "sdk/typescript", "build"], {
+  cwd: workspace,
+  stdio: "inherit",
+});
+
 execFileSync(process.execPath, ["scripts/prepare.mjs"], {
   cwd: spikeDir,
   stdio: "inherit",
@@ -68,7 +73,7 @@ if (backend === "starlingmonkey") {
       "--js",
       resolve(spikeDir, "src/clock-quickjs.js"),
       "--module-root",
-      spikeDir,
+      workspace,
       "--output",
       output,
       "--world",
@@ -86,7 +91,7 @@ if (backend === "starlingmonkey") {
     witPath: resolve(workspace, "wit"),
     jsSource: readFileSync(sourcePath, "utf8"),
     jsPath: sourcePath,
-    moduleRoot: spikeDir,
+    moduleRoot: workspace,
     world: "floatile-widget",
     stubWasi: true,
     optSize: true,
