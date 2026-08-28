@@ -25,3 +25,7 @@ PP-M7 切片逐步登记为同目录的版本化向量。
 
 新增语言 SDK 时，第一步必须解析这些文件并拒绝未知 `schemaVersion`、callback、error 或 outcome；
 不能用“等价的本地测试”代替共享向量。
+
+`floatile conformance --json --no-interactive` 会校验 CLI 内嵌的当前 suite 并输出稳定的 schema v1
+报告；language adapter、CI 与 Agent 应消费该命令，而不是依赖仓库路径。`--deny-warnings` 与其他作者
+命令语义一致；当前 suite 没有 warning。

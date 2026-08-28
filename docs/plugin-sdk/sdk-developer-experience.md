@@ -211,6 +211,7 @@ Detected capabilities:
 | `floatile build` | 可复现地产生 `.floatile`，默认不签名 |
 | `floatile inspect` | 显示 manifest、版本轴、权限、预算、entry digest |
 | `floatile migrate` | SDK/UI/manifest 兼容迁移；默认先 dry-run |
+| `floatile conformance` | 校验并输出语言无关的 SDK contract vectors |
 | `floatile instance create/list/get/configure/start/stop/delete` | 按精确安装版本管理持久实例与 desired state |
 
 所有命令必须支持：

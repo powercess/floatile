@@ -5,6 +5,7 @@
 
 pub mod build;
 pub mod check;
+pub mod conformance;
 pub mod dev;
 pub mod inspect;
 pub mod install;
@@ -18,6 +19,7 @@ pub mod test;
 
 pub use build::{BuildError, build_project, package};
 pub use check::{CheckError, CheckPhases, CheckReport, CheckWarning, check_project};
+pub use conformance::{ConformanceError, ConformanceReport, lifecycle_report};
 pub use dev::{BuildStatus, build_once, dev_loop, ensure_project};
 pub use inspect::{InspectError, InspectReport, inspect_package, inspect_package_bytes};
 pub use install::{InstallError, InstalledPackage, install_dir, install_package};
