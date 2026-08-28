@@ -197,6 +197,10 @@ async fn measure_instances(count: u64) {
         .expect("4 秒内应收到每个实例的首个 tick");
     }
     let first_tick = started.elapsed();
+    let stable_started = Instant::now();
+    let stable_before = floatile_platform::process_metrics().ok();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let stable_elapsed = stable_started.elapsed();
     let measured = floatile_platform::process_metrics().ok();
     while let Some(handle) = handles.pop() {
         handle.shutdown().await.expect("shutdown TypeScript clock");
@@ -205,13 +209,21 @@ async fn measure_instances(count: u64) {
     let rss_delta_bytes = baseline
         .zip(measured)
         .map(|(before, after)| after.rss_bytes.saturating_sub(before.rss_bytes));
+    let stable_cpu_delta = stable_before
+        .zip(measured)
+        .map(|(before, after)| after.cpu_time.saturating_sub(before.cpu_time));
+    let stable_cpu_percent =
+        stable_cpu_delta.map(|cpu| 100.0 * cpu.as_secs_f64() / stable_elapsed.as_secs_f64());
     println!(
-        "{{\"instances\":{count},\"componentBytes\":{},\"startupMs\":{},\"allFirstTicksMs\":{},\"rssBytes\":{},\"rssDeltaBytes\":{}}}",
+        "{{\"instances\":{count},\"componentBytes\":{},\"startupMs\":{},\"allFirstTicksMs\":{},\"rssBytes\":{},\"rssDeltaBytes\":{},\"stableSampleMs\":{},\"stableCpuMs\":{},\"stableCpuPercentOneCore\":{}}}",
         wasm.len(),
         startup.as_millis(),
         first_tick.as_millis(),
         rss_bytes.map_or_else(|| "null".into(), |value| value.to_string()),
-        rss_delta_bytes.map_or_else(|| "null".into(), |value| value.to_string())
+        rss_delta_bytes.map_or_else(|| "null".into(), |value| value.to_string()),
+        stable_elapsed.as_millis(),
+        stable_cpu_delta.map_or_else(|| "null".into(), |value| value.as_millis().to_string()),
+        stable_cpu_percent.map_or_else(|| "null".into(), |value| format!("{value:.3}"))
     );
 }
 

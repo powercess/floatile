@@ -41,8 +41,9 @@ lifecycle error 向量会真实穿过 SDK、adapter 和 Wasmtime host；它不�
 墙钟预算和 StoreLimits/peer 隔离。普通 JavaScript 堆分配失败是可捕获异常，不冒充 Wasmtime
 线性内存 trap；内存向量由宿主 StoreLimits 验证。
 
-`pnpm measure` 在 release 下串行输出单/10 实例启动、首 tick 与 RSS（CPU 需在外层用
-`time -p`/平台 profiler 采样）。最小 receiver/参数复现位于
+`pnpm measure` 在 release 下串行输出单/10 实例启动、首 tick、RSS，以及首 tick 后 3 秒窗口的
+进程 CPU 毫秒/单核百分比。Linux 指标汇总所有 `/proc/self/task/*/schedstat`，不是只读调用线程；
+其他平台仍以 `floatile-platform::process_metrics` 的平台实现为准。最小 receiver/参数复现位于
 `repro/quickjs-resource-method/`。QuickJS 对照与资源数据记录在 ADR-0003；在修复尚未发布且
 许可/三平台门未完成前结论仍为 no-go。仓库中的 private TypeScript SDK/UI codegen 只用于推进
 共享契约和测试，CLI TypeScript 模板与可发布 SDK 仍不得启用。

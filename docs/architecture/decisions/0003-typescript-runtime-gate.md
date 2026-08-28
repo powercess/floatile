@@ -126,11 +126,25 @@ spike 同步到当前 `floatile:widget@1.2.0`/`uiApiVersion = 1.6.0`。生成组
 rejection；共享安全向量的 Broker deny、invalid patch、fuel、墙钟预算、StoreLimits 与 peer 存活也由
 同一 TypeScript component 实测通过。
 
-本次数据来自同一 Linux 测试机的一次串行冷运行，保留为候选比较证据，不冒充稳定态 CPU或
-Windows/macOS 证据。固定 SHA 只用于复现未发布修复，不是 Floatile 的生产依赖。
+修正 Linux 进程 CPU 采样为汇总 `/proc/self/task/*/schedstat` 后，同机 release 冷运行与 3 秒稳定窗口为：
+
+- 单实例 startup 154 ms、首 tick 1,167 ms、RSS 增量 88,014,848 B；稳定态 CPU 2 ms / 3,005 ms，
+  即单核 0.077%；
+- 10 实例 startup 1,365 ms、全部首 tick 2,377 ms、RSS 增量 324,501,504 B；稳定态 CPU
+  8 ms / 3,002 ms，即单核 0.284%。
+
+许可预审区分两类闭包：嵌入 component 的 `componentize-qjs-runtime` normal dependency tree 中
+`componentize-qjs` 为 Apache-2.0、`rquickjs`/`rquickjs-core`/`rquickjs-sys` 为 MIT，其余已识别项属于
+仓库现有 allowlist；来自 wasm-tools git SHA 的 `wit-dylib-ffi` 继承 workspace 的
+`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`。但完整 CLI 构建期依赖还经 `ureq` 引入
+CDLA-Permissive-2.0 的 `webpki-roots`，按 Floatile 当前 `deny.toml` 会拒绝。构建工具与最终 component
+的 NOTICE 生成也尚未自动化，因此许可门仍未通过，不新增例外。
+
+这些数据来自同一 Linux 测试机的一次串行冷运行；3 秒窗口是 Linux 稳定态 CPU 候选证据，不替代
+长时压力或 Windows/macOS 证据。固定 SHA 只用于复现未发布修复，不是 Floatile 的生产依赖。
 
 这些数据显著优于本 ADR 的 StarlingMonkey 对照，但尚不改变 no-go 决策：修复未进入上游发布版，
-Windows/macOS 构建、稳定态 CPU、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime
+Windows/macOS 构建及稳定态 CPU、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime
 初始化函数 `init`，虽不增加 host capability，仍需在生产契约门中决定是否允许或由 adapter 隐藏。
 
 ## 后果与下一步
@@ -140,6 +154,6 @@ Windows/macOS 构建、稳定态 CPU、许可/NOTICE 仍未完成；QuickJS comp
 - 代价：P0 的 TypeScript clock 与公共 SDK 继续阻塞。
 - 本 PR：已将 QuickJS 问题最小化为任意 method 参数的 receiver 错位，形成可直接提交上游的修复与
   回归测试，并把 spike 改为 StarlingMonkey/QuickJS 共用同一宿主行为向量。
-- 下一个 PR：在上游合并并发布固定版本后锁定该版本，补 Windows/macOS 构建、稳定态 CPU、
+- 下一个 PR：在上游合并并发布固定版本后锁定该版本，补 Windows/macOS 构建及稳定态 CPU、
   QuickJS/生成 component 的许可与 NOTICE、额外 `init` export 契约处理；全部通过后新建后继 ADR，
   再决定是否启动公共 TypeScript SDK。
