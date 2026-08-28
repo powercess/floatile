@@ -29,7 +29,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -74,6 +74,9 @@ impl Store {
         }
         if current < 6 {
             self.migration_v6()?;
+        }
+        if current < 7 {
+            self.migration_v7()?;
         }
         Ok(())
     }
@@ -252,6 +255,28 @@ impl Store {
         })?;
         tx.commit()
             .map_err(|error| StoreError::Migration(format!("v6 提交失败: {error}")))
+    }
+
+    fn migration_v7(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_installations (
+                transaction_id TEXT PRIMARY KEY,
+                publisher_id   TEXT NOT NULL,
+                plugin_id      TEXT NOT NULL,
+                version        TEXT NOT NULL,
+                signed_digest  BLOB NOT NULL CHECK (length(signed_digest) = 32),
+                install_digest BLOB NOT NULL CHECK (length(install_digest) = 32),
+                staging_name   TEXT NOT NULL,
+                final_relative TEXT NOT NULL,
+                created_at     INTEGER NOT NULL CHECK (created_at >= 0),
+                FOREIGN KEY (publisher_id) REFERENCES publisher_trust(publisher_id)
+            );
+            PRAGMA user_version = 7;",
+        )
+        .map_err(|error| StoreError::Migration(format!("v7 建立可恢复安装意图表失败: {error}")))?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v7 提交失败: {error}")))
     }
 
     /// 布局存储接口。
@@ -1637,6 +1662,43 @@ mod tests {
                 .unwrap();
             assert_eq!(exists, 0, "{table} leaked from failed migration");
         }
+    }
+
+    fn v6_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store.migration_v2().unwrap();
+        store.migration_v3().unwrap();
+        store.migration_v4().unwrap();
+        store.migration_v5().unwrap();
+        store.migration_v6().unwrap();
+        store
+    }
+
+    #[test]
+    fn migration_v7_failure_rolls_back_pending_table_and_version() {
+        let mut store = v6_store();
+        store
+            .conn
+            .execute_batch("CREATE INDEX pending_installations ON layout(instance_id);")
+            .unwrap();
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        let exists: u32 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'pending_installations'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0);
     }
 
     #[test]

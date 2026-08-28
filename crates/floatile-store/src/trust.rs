@@ -62,6 +62,19 @@ pub struct AcceptedPackage {
     pub accepted_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInstallation {
+    pub transaction_id: String,
+    pub publisher_id: String,
+    pub plugin_id: String,
+    pub version: Version,
+    pub signed_digest: [u8; 32],
+    pub install_digest: [u8; 32],
+    pub staging_name: String,
+    pub final_relative: String,
+    pub created_at: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptanceOutcome {
     FirstAccepted,
@@ -370,6 +383,224 @@ impl<'a> PublisherTrustStore<'a> {
             accepted_at: read_time(accepted_at, "accepted_at")?,
         }))
     }
+
+    /// Records a recoverable install intent without advancing the anti-rollback high-water mark.
+    pub fn prepare_install(&self, pending: &PendingInstallation) -> Result<(), TrustPolicyError> {
+        validate_pending(pending)?;
+        self.check_candidate(
+            &pending.publisher_id,
+            &pending.plugin_id,
+            &pending.version,
+            pending.signed_digest,
+        )?;
+        self.conn.execute(
+            "INSERT INTO pending_installations (
+                transaction_id, publisher_id, plugin_id, version, signed_digest,
+                install_digest, staging_name, final_relative, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                pending.transaction_id,
+                pending.publisher_id,
+                pending.plugin_id,
+                pending.version.to_string(),
+                pending.signed_digest.as_slice(),
+                pending.install_digest.as_slice(),
+                pending.staging_name,
+                pending.final_relative,
+                sqlite_time(pending.created_at)?
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Rechecks policy, advances the high-water mark, then removes the recoverable intent.
+    ///
+    /// If the process stops after acceptance but before intent removal, recovery observes an exact
+    /// already-accepted version/digest and can safely remove the stale intent.
+    pub fn finalize_install(
+        &self,
+        transaction_id: &str,
+        accepted_at: u64,
+    ) -> Result<AcceptanceOutcome, TrustPolicyError> {
+        let pending = self
+            .pending_install(transaction_id)?
+            .ok_or_else(|| StoreError::Corrupt("安装意图不存在".to_owned()))?;
+        let outcome = self.accept_package(
+            &pending.publisher_id,
+            &pending.plugin_id,
+            &pending.version,
+            pending.signed_digest,
+            accepted_at,
+        )?;
+        self.conn.execute(
+            "DELETE FROM pending_installations WHERE transaction_id = ?1",
+            [transaction_id],
+        )?;
+        Ok(outcome)
+    }
+
+    pub fn abort_install(&self, transaction_id: &str) -> Result<bool, StoreError> {
+        validate_transaction_id(transaction_id)?;
+        Ok(self.conn.execute(
+            "DELETE FROM pending_installations WHERE transaction_id = ?1",
+            [transaction_id],
+        )? > 0)
+    }
+
+    pub fn pending_install(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Option<PendingInstallation>, StoreError> {
+        validate_transaction_id(transaction_id)?;
+        let row = self
+            .conn
+            .query_row(
+                "SELECT publisher_id, plugin_id, version, signed_digest, install_digest,
+                        staging_name, final_relative, created_at
+                 FROM pending_installations WHERE transaction_id = ?1",
+                [transaction_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|row| row_to_pending(transaction_id, row))
+            .transpose()
+    }
+
+    pub fn pending_installs(&self) -> Result<Vec<PendingInstallation>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT transaction_id, publisher_id, plugin_id, version, signed_digest,
+                    install_digest, staging_name, final_relative, created_at
+             FROM pending_installations ORDER BY transaction_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            let (id, publisher, plugin, version, signed, install, staging, final_path, created) =
+                row?;
+            result.push(row_to_pending(
+                &id,
+                (
+                    publisher, plugin, version, signed, install, staging, final_path, created,
+                ),
+            )?);
+        }
+        Ok(result)
+    }
+
+    fn check_candidate(
+        &self,
+        publisher_id: &str,
+        plugin_id: &str,
+        version: &Version,
+        digest: [u8; 32],
+    ) -> Result<(), TrustPolicyError> {
+        let publisher = self.get(publisher_id)?;
+        match publisher.map(|record| record.state) {
+            None => return Err(TrustPolicyError::UnknownPublisher),
+            Some(TrustState::Revoked) => return Err(TrustPolicyError::RevokedPublisher),
+            Some(TrustState::Active) => {}
+        }
+        if let Some(highest) = self.accepted_package(publisher_id, plugin_id)? {
+            if version < &highest.version {
+                return Err(TrustPolicyError::Rollback {
+                    candidate: version.clone(),
+                    highest: highest.version,
+                });
+            }
+            if version == &highest.version && digest != highest.digest {
+                return Err(TrustPolicyError::SameVersionDifferentDigest);
+            }
+        }
+        Ok(())
+    }
+}
+
+type PendingRow = (
+    String,
+    String,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    String,
+    String,
+    i64,
+);
+
+fn row_to_pending(
+    transaction_id: &str,
+    row: PendingRow,
+) -> Result<PendingInstallation, StoreError> {
+    let (publisher_id, plugin_id, version, signed, install, staging_name, final_relative, created) =
+        row;
+    let pending = PendingInstallation {
+        transaction_id: transaction_id.to_owned(),
+        publisher_id,
+        plugin_id,
+        version: Version::parse(&version)
+            .map_err(|error| StoreError::Corrupt(format!("pending version 非法: {error}")))?,
+        signed_digest: digest_array(signed, "pending signed_digest")?,
+        install_digest: digest_array(install, "pending install_digest")?,
+        staging_name,
+        final_relative,
+        created_at: read_time(created, "pending created_at")?,
+    };
+    validate_pending(&pending)?;
+    Ok(pending)
+}
+
+fn digest_array(bytes: Vec<u8>, field: &str) -> Result<[u8; 32], StoreError> {
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        StoreError::Corrupt(format!("{field} 必须为 32 字节，实际为 {}", bytes.len()))
+    })
+}
+
+fn validate_pending(pending: &PendingInstallation) -> Result<(), StoreError> {
+    validate_transaction_id(&pending.transaction_id)?;
+    validate_publisher_id(&pending.publisher_id)?;
+    validate_plugin_id(&pending.plugin_id)?;
+    if pending.staging_name != format!(".staging-{}", pending.transaction_id)
+        || pending.final_relative != format!("{}/{}", pending.plugin_id, pending.version)
+    {
+        return Err(StoreError::Corrupt(
+            "安装意图包含非规范化相对路径".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_transaction_id(transaction_id: &str) -> Result<(), StoreError> {
+    if transaction_id.is_empty()
+        || transaction_id.len() > 128
+        || !transaction_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(StoreError::Corrupt("安装 transaction id 非法".to_owned()));
+    }
+    Ok(())
 }
 
 fn validate_publisher_id(publisher_id: &str) -> Result<(), StoreError> {
@@ -566,5 +797,100 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    fn pending(version: &str) -> PendingInstallation {
+        PendingInstallation {
+            transaction_id: "123-456".to_owned(),
+            publisher_id: "dev.floatile".to_owned(),
+            plugin_id: "dev.floatile.clock".to_owned(),
+            version: Version::parse(version).unwrap(),
+            signed_digest: [5; 32],
+            install_digest: [6; 32],
+            staging_name: ".staging-123-456".to_owned(),
+            final_relative: format!("dev.floatile.clock/{version}"),
+            created_at: 10,
+        }
+    }
+
+    #[test]
+    fn prepared_install_does_not_advance_watermark_until_finalize() {
+        let store = open(":memory:").unwrap();
+        store
+            .trust()
+            .upsert_key("dev.floatile", [5; 32], TrustState::Active, 1)
+            .unwrap();
+        let pending = pending("1.0.0");
+        store.trust().prepare_install(&pending).unwrap();
+        assert!(
+            store
+                .trust()
+                .accepted_package("dev.floatile", "dev.floatile.clock")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.trust().pending_installs().unwrap(), vec![pending]);
+
+        assert_eq!(
+            store.trust().finalize_install("123-456", 11).unwrap(),
+            AcceptanceOutcome::FirstAccepted
+        );
+        assert!(store.trust().pending_installs().unwrap().is_empty());
+        assert_eq!(
+            store
+                .trust()
+                .accepted_package("dev.floatile", "dev.floatile.clock")
+                .unwrap()
+                .unwrap()
+                .digest,
+            [5; 32]
+        );
+    }
+
+    #[test]
+    fn recovery_clears_intent_if_acceptance_committed_before_cleanup() {
+        let store = open(":memory:").unwrap();
+        store
+            .trust()
+            .upsert_key("dev.floatile", [5; 32], TrustState::Active, 1)
+            .unwrap();
+        let pending = pending("1.0.0");
+        store.trust().prepare_install(&pending).unwrap();
+        store
+            .trust()
+            .accept_package(
+                &pending.publisher_id,
+                &pending.plugin_id,
+                &pending.version,
+                pending.signed_digest,
+                11,
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.trust().finalize_install("123-456", 12).unwrap(),
+            AcceptanceOutcome::AlreadyAccepted
+        );
+        assert!(store.trust().pending_installs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_install_paths_and_abort_are_bounded() {
+        let store = open(":memory:").unwrap();
+        store
+            .trust()
+            .upsert_key("dev.floatile", [5; 32], TrustState::Active, 1)
+            .unwrap();
+        let mut invalid = pending("1.0.0");
+        invalid.final_relative = "../escape".to_owned();
+        assert!(matches!(
+            store.trust().prepare_install(&invalid),
+            Err(TrustPolicyError::Store(StoreError::Corrupt(_)))
+        ));
+
+        let pending = pending("1.0.0");
+        store.trust().prepare_install(&pending).unwrap();
+        assert!(store.trust().abort_install("123-456").unwrap());
+        assert!(store.trust().pending_installs().unwrap().is_empty());
     }
 }
