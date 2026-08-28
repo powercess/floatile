@@ -111,6 +111,15 @@ fn cmd_conformance(args: &[String]) -> ExitCode {
                         vector.expected_host_outcome
                     );
                 }
+                for vector in report.security_contract.vectors {
+                    println!(
+                        "  {} trigger={} outcome={} host-survives={}",
+                        vector.id,
+                        vector.trigger,
+                        vector.expected_host_outcome,
+                        vector.host_survives
+                    );
+                }
             }
             ExitCode::SUCCESS
         }

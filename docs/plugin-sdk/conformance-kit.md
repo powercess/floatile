@@ -29,3 +29,9 @@ PP-M7 切片逐步登记为同目录的版本化向量。
 `floatile conformance --json --no-interactive` 会校验 CLI 内嵌的当前 suite 并输出稳定的 schema v1
 报告；language adapter、CI 与 Agent 应消费该命令，而不是依赖仓库路径。`--deny-warnings` 与其他作者
 命令语义一致；当前 suite 没有 warning。
+
+## 安全与隔离向量
+
+`sdk-security-v1.json` 固定 Broker 默认拒绝、非法 State Patch 原子拒绝、fuel 耗尽、墙钟超时和
+线性内存上限五类宿主结果。每条向量都要求同行实例或后继实例存活；语言 adapter 不得把 trap、超时
+或内存失败降级成业务拒绝，也不得用语言专用 mock 代替真实 Component/host 执行。

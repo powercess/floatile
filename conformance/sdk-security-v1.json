@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "engineApiVersion": "1.2.0",
+  "vectors": [
+    {
+      "id": "broker-deny",
+      "mode": "deny",
+      "trigger": "start",
+      "expectedHostOutcome": "completed",
+      "hostSurvives": true
+    },
+    {
+      "id": "invalid-state-patch",
+      "mode": "bad-patch",
+      "trigger": "start",
+      "expectedHostOutcome": "completed-without-state-update",
+      "hostSurvives": true
+    },
+    {
+      "id": "fuel-exhaustion",
+      "mode": "loop",
+      "trigger": "event",
+      "expectedHostOutcome": "failed",
+      "hostSurvives": true
+    },
+    {
+      "id": "wall-clock-timeout",
+      "mode": "loop",
+      "trigger": "event",
+      "expectedHostOutcome": "timed-out",
+      "hostSurvives": true
+    },
+    {
+      "id": "memory-limit",
+      "mode": "alloc",
+      "trigger": "start",
+      "expectedHostOutcome": "failed",
+      "hostSurvives": true
+    }
+  ]
+}

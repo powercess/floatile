@@ -45,12 +45,55 @@ struct LifecycleVector {
     expected_host_outcome: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecuritySuite {
+    schema_version: u64,
+    engine_api_version: String,
+    vectors: Vec<SecurityVector>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecurityVector {
+    id: String,
+    mode: String,
+    trigger: String,
+    expected_host_outcome: String,
+    host_survives: bool,
+}
+
 fn lifecycle_suite() -> LifecycleSuite {
     serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../conformance/sdk-lifecycle-v1.json"
     )))
     .expect("lifecycle conformance vectors must parse")
+}
+
+fn security_suite() -> &'static SecuritySuite {
+    static SUITE: std::sync::OnceLock<SecuritySuite> = std::sync::OnceLock::new();
+    SUITE.get_or_init(|| {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../conformance/sdk-security-v1.json"
+        )))
+        .expect("security conformance vectors must parse")
+    })
+}
+
+fn security_vector(id: &str) -> &'static SecurityVector {
+    let suite = security_suite();
+    assert_eq!(suite.schema_version, 1);
+    assert_eq!(
+        suite.engine_api_version,
+        floatile_plugin_api::ENGINE_API_VERSION
+    );
+    suite
+        .vectors
+        .iter()
+        .find(|vector| vector.id == id)
+        .unwrap_or_else(|| panic!("missing security vector {id}"))
 }
 
 fn workspace_root() -> PathBuf {
@@ -164,11 +207,20 @@ fn mem_audit_persistence() -> (Arc<Mutex<Store>>, floatile_services::AuditListen
 /// 未声明能力调用 → Broker 拒绝 + 审计落 SQLite + 宿主存活。
 #[tokio::test(flavor = "multi_thread")]
 async fn denied_capability_persists_audit_and_host_survives() {
+    let vector = security_vector("broker-deny");
+    assert_eq!(vector.trigger, "start");
+    assert_eq!(vector.expected_host_outcome, "completed");
+    assert!(vector.host_survives);
     let (store, listener) = mem_audit_persistence();
     let manager = WidgetManager::new()
         .unwrap()
         .with_audit_listener(Some(listener));
-    let handle = spawn_evil(&manager, 1, evil_grants_none(1), json!({"mode": "deny"}));
+    let handle = spawn_evil(
+        &manager,
+        1,
+        evil_grants_none(1),
+        json!({"mode": vector.mode}),
+    );
 
     // 所有未声明能力调用被 Broker 拒绝并被插件吞掉(不中断实例)。
     handle.start().await.expect("deny 模式 start 应成功");
@@ -269,12 +321,19 @@ async fn storage_operation_round_trips_through_guest_contract() {
 /// 超限/类型错误/未知字段 State Patch → 被拒，宿主存活，状态不部分改写。
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_state_patch_rejected_and_host_survives() {
+    let vector = security_vector("invalid-state-patch");
+    assert_eq!(vector.trigger, "start");
+    assert_eq!(
+        vector.expected_host_outcome,
+        "completed-without-state-update"
+    );
+    assert!(vector.host_survives);
     let manager = WidgetManager::new().unwrap();
     let mut handle = spawn_evil(
         &manager,
         2,
         evil_grants_none(2),
-        json!({"mode": "bad-patch"}),
+        json!({"mode": vector.mode}),
     );
     // 三类恶意 patch 全部被宿主拒绝；error 被插件吞掉，实例不中断。
     handle.start().await.expect("bad-patch 模式 start 应成功");
@@ -301,9 +360,18 @@ async fn bad_state_patch_rejected_and_host_survives() {
 /// 无限 CPU 循环 → fuel 耗尽 trap 终止实例；宿主与其他实例存活。
 #[tokio::test(flavor = "multi_thread")]
 async fn infinite_loop_is_fuel_trapped_and_host_survives() {
+    let vector = security_vector("fuel-exhaustion");
+    assert_eq!(vector.trigger, "event");
+    assert_eq!(vector.expected_host_outcome, "failed");
+    assert!(vector.host_survives);
     // 事件触发无限循环;实例共享单一 fuel 预算,循环会耗尽余量并 trap。
     let manager = WidgetManager::new().unwrap();
-    let handle = spawn_evil(&manager, 3, evil_grants_none(3), json!({"mode": "loop"}));
+    let handle = spawn_evil(
+        &manager,
+        3,
+        evil_grants_none(3),
+        json!({"mode": vector.mode}),
+    );
     handle
         .start()
         .await
@@ -331,11 +399,20 @@ async fn infinite_loop_is_fuel_trapped_and_host_survives() {
 /// 超大 fuel 不能绕过墙钟预算；epoch deadline 必须及时终止本实例。
 #[tokio::test(flavor = "multi_thread")]
 async fn infinite_loop_is_wall_clock_timed_out_and_peer_survives() {
+    let vector = security_vector("wall-clock-timeout");
+    assert_eq!(vector.trigger, "event");
+    assert_eq!(vector.expected_host_outcome, "timed-out");
+    assert!(vector.host_survives);
     let manager = WidgetManager::new()
         .unwrap()
         .with_fuel_per_call(u64::MAX)
         .with_call_timeout(Duration::from_millis(25));
-    let handle = spawn_evil(&manager, 11, evil_grants_none(11), json!({"mode": "loop"}));
+    let handle = spawn_evil(
+        &manager,
+        11,
+        evil_grants_none(11),
+        json!({"mode": vector.mode}),
+    );
     handle.start().await.expect("loop 模式 start 应成功");
     let peer = spawn_evil(&manager, 12, evil_grants_none(12), json!({"mode": "deny"}));
     peer.start().await.expect("同一引擎的其他实例应启动");
@@ -372,8 +449,17 @@ async fn infinite_loop_is_wall_clock_timed_out_and_peer_survives() {
 /// 超限线性内存申请 → StoreLimits 终止实例；宿主存活。
 #[tokio::test(flavor = "multi_thread")]
 async fn memory_alloc_over_limit_traps_instance_but_host_survives() {
+    let vector = security_vector("memory-limit");
+    assert_eq!(vector.trigger, "start");
+    assert_eq!(vector.expected_host_outcome, "failed");
+    assert!(vector.host_survives);
     let manager = WidgetManager::new().unwrap(); // 默认每实例 16 MiB 上限
-    let handle = spawn_evil(&manager, 4, evil_grants_none(4), json!({"mode": "alloc"}));
+    let handle = spawn_evil(
+        &manager,
+        4,
+        evil_grants_none(4),
+        json!({"mode": vector.mode}),
+    );
     // start 里申请 64 MiB > 16 MiB 上限 → 实例 trap,start 失败。
     let start_result = handle.start().await;
     assert!(
