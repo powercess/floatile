@@ -264,4 +264,3 @@ export interface SparklineProps {
 export function Sparkline(props: SparklineProps): View {
   return component("Sparkline", props);
 }
-

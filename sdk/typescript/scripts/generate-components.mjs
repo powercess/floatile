@@ -43,6 +43,7 @@ for (const spec of registry.components) {
   source += `  return component(${JSON.stringify(spec.name)}, props);\n`;
   source += "}\n\n";
 }
+source = `${source.trimEnd()}\n`;
 
 if (mode === "--check") {
   const existing = await readFile(output, "utf8");
