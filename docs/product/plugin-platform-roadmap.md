@@ -174,7 +174,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 | PP-M5 | 外部数据平台 | 已完成（自动化契约验证） | Connection、Credential Vault、HTTPS Broker、调度、缓存、重试、限流和连接健康状态 | AI 余额参考插件只使用通用能力，且 secret 不进入 guest、日志、State 或包 | `core`、`store`、`services`、shell、WIT、SDK |
 | PP-M6 | UI 平台 | 已完成（自动化契约验证） | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
 | PP-M7 | SDK 与语言生态 | 进行中 | Rust API 稳定化；在工具链可行后接入 TypeScript；生成文档、迁移指南和 conformance kit | 双语言通过相同 contract vectors、恶意输入和端到端示例；不存在宿主语义分叉 | SDK、plugin API、CLI、CI |
-| PP-M8 | 分发与信任 | 进行中 | publisher/signing、来源与信任、权限 diff、兼容性解析、更新/回滚和可恢复安装 | 安装与升级能解释权限变化和失败原因；篡改/降级/回滚路径有测试 | CLI、core、store、shell、distribution |
+| PP-M8 | 分发与信任 | 已完成（自动化契约验证；公开分发受许可门阻断） | publisher/signing、来源与信任、权限 diff、兼容性解析、更新/回滚和可恢复安装 | 安装与升级能解释权限变化和失败原因；篡改/降级/回滚路径有测试 | CLI、core、store、shell、distribution |
 | PP-M9 | 组合与自动化 | 规划中 | 宿主事件、定时/系统触发、受控 pub/sub、工作流和通知 | 插件间不直接持有句柄；事件有 schema、scope、背压、循环检测和审计 | core、runtime、services、WIT、SDK |
 | PP-M10 | 产品化与发布门禁 | 规划中 | 跨平台交互证据、性能、许可、安装器、更新器、无障碍、崩溃恢复和运维诊断 | 产品目标平台通过发布矩阵；许可 ADR 和分发门禁完成；关键 SLO 有实测证据 | 全仓库 |
 
@@ -223,6 +223,14 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   guest error variant，并由 Rust SDK 与真实 host/WASM 共同消费。`floatile conformance --json`
   为后继语言 adapter 和 CI 输出同一 suite。生成 API 文档、`migrate`、完整行为/恶意输入向量与
   TypeScript SDK 仍未完成，不能据此宣称 PP-M7 退出门通过；
+- PP-M8 已由 ADR-0005 固定 detached DSSE/Ed25519 与宿主持有的 publisher/key trust。CLI 受信安装
+  强制当前信任、撤销、anti-rollback 和权限扩大显式确认；SQLite journal 可恢复 rename 与水位之间的
+  崩溃窗口。显式回滚只重绑 stopped 实例到重新验签、migration 兼容且不恢复旧权限的历史
+  Installation，原因审计与重绑定原子提交且最高水位不降低。Shell 在持久启动和 retry 前按
+  `install.json.trust` 对 trusted 安装重新应用当前 trust，旧元数据默认 unsigned，不发生静默提权。
+  Connection grant 是实例级宿主状态，安装与回滚均保持原绑定不变；任何后续换绑仍走 PP-M5 独立授权。
+  全 workspace 自动化、`wasm32-wasip2` SDK、advisories/bans/sources 已通过；Windows/macOS/Wayland
+  分发实测属于 PP-M10，公开产物继续由 NFR-LEGAL-01 与 Slint license gate 阻断；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。
 
@@ -243,7 +251,8 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
 9. `feat(cli): complete the Rust plugin author loop`（PP-M4）；
 10. `feat(connections): add host-owned connection and credential references`（PP-M5）；
 11. `feat(http): implement the first bounded HTTPS Broker vertical slice`（PP-M5）；
-12. `feat(examples): add an AI balance monitor reference plugin`（PP-M5/PP-M6）。
+12. `feat(examples): add an AI balance monitor reference plugin`（PP-M5/PP-M6）；
+13. `feat(distribution): enforce package signing, trusted upgrades and explicit rollback`（PP-M8，已落地）。
 
 这是依赖顺序，不是要求一个 PR 同时完成整个里程碑。每个 PR 必须是一条可审查、可回退、包含失败
 路径和联动文档的纵向切片。
