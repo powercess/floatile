@@ -3,9 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types tests/*.test.ts"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "pnpm run build && tsc --noEmit",
+    "test": "pnpm run build && node --test --experimental-strip-types tests/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

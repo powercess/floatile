@@ -1,3 +1,3 @@
-export * from "./view.ts";
-export * from "./widget.ts";
-export * from "./generated/components.ts";
+export * from "./view.js";
+export * from "./widget.js";
+export * from "./generated/components.js";

@@ -1,4 +1,4 @@
-import type { JsonValue, View } from "./view.ts";
+import type { JsonValue, View } from "./view.js";
 
 export type WidgetErrorKind = "invalid-input" | "rejected" | "internal";
 

@@ -12,5 +12,7 @@ node sdk/typescript/scripts/generate-components.mjs \
 ```
 
 `pnpm typecheck` verifies generated props and author-facing bindings. `pnpm test` checks that builders emit the
-same canonical `widget.ftui` component shape consumed by the Rust SDK and host validator. This package does not
-select or bundle a JavaScript runtime and is not authorized for registry publication.
+same canonical `widget.ftui` component shape consumed by the Rust SDK and host validator. `pnpm build` emits ESM
+JavaScript plus `.d.ts`/declaration maps to `dist/`; CI compiles that author-consumable boundary in addition to
+checking the source. This package does not select or bundle a JavaScript runtime and is not authorized for
+registry publication.

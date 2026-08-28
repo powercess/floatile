@@ -1,6 +1,6 @@
 // Generated from floatile-ui-schema 1.6.0; do not edit.
-import { component } from "../view.ts";
-import type { Bindable, JsonValue, View } from "../view.ts";
+import { component } from "../view.js";
+import type { Bindable, JsonValue, View } from "../view.js";
 
 export const UI_API_VERSION = "1.6.0" as const;
 

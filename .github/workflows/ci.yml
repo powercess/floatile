@@ -93,6 +93,7 @@ jobs:
           node sdk/typescript/scripts/generate-components.mjs target/floatile-ui-registry.json sdk/typescript/src/generated/components.ts --check
           pnpm --dir sdk/typescript typecheck
           pnpm --dir sdk/typescript test
+          pnpm --dir sdk/typescript build
       - name: Build WASI guest (hermetic integration tests)
         # 集成测试读取 target/wasm32-wasip2/debug 下的组件；先构建保证干净
         # checkout 上测试不依赖执行顺序或测试内并发构建。

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { WidgetError, lowerWidgetError } from "../src/index.ts";
+import { WidgetError, lowerWidgetError } from "../dist/index.js";
 
 interface LifecycleVector {
   readonly id: string;

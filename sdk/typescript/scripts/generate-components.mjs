@@ -19,8 +19,8 @@ const scalar = (types) => [...new Set(types.map((type) => {
 }))].join(" | ");
 
 let source = `// Generated from floatile-ui-schema ${registry.uiApiVersion}; do not edit.\n`;
-source += 'import { component } from "../view.ts";\n';
-source += 'import type { Bindable, JsonValue, View } from "../view.ts";\n\n';
+source += 'import { component } from "../view.js";\n';
+source += 'import type { Bindable, JsonValue, View } from "../view.js";\n\n';
 source += `export const UI_API_VERSION = ${JSON.stringify(registry.uiApiVersion)} as const;\n\n`;
 for (const spec of registry.components) {
   if (spec.kind !== "element") continue;

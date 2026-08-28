@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Column, Text, state } from "../src/index.ts";
+import { Column, Text, state } from "../dist/index.js";
 
 test("generated builders emit canonical Floatile UI IR", () => {
   const view = Column({
