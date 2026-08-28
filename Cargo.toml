@@ -66,6 +66,8 @@ wit-bindgen = "0.60"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 parking_lot = "0.12"
 sha2 = "0.10"
+base64 = "0.22"
+ed25519-dalek = "2.2"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
