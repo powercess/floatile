@@ -1,6 +1,6 @@
 # SDK Conformance Kit
 
-> 状态：Implemented（Rust SDK 与 host runtime 自动化验证；TypeScript 尚未实现）
+> 状态：Implemented（Rust SDK、TypeScript 作者层与 host runtime 自动化验证；TypeScript runtime 尚未实现）
 > 范围：PP-M7、FR-PLUGIN-01、F11、NFR-MAINT-01
 
 `conformance/` 保存语言无关、版本化的 JSON 向量。Rust SDK、未来 TypeScript SDK 与宿主 runtime
@@ -25,6 +25,11 @@ PP-M7 切片逐步登记为同目录的版本化向量。
 
 新增语言 SDK 时，第一步必须解析这些文件并拒绝未知 `schemaVersion`、callback、error 或 outcome；
 不能用“等价的本地测试”代替共享向量。
+
+private `@floatile/sdk` 作者层已直接消费 lifecycle 与 security JSON：六种 lifecycle error 映射到同一
+WIT variant，未知 JavaScript 异常只降为无 payload 的 `internal`，不会泄漏异常文本；五类 security
+vector 保留为 adapter/runtime 的强制 host-survival 门。真实 TypeScript Component 执行仍未通过，不能
+把作者层解析测试等同于 runtime 证据。
 
 `floatile conformance --json --no-interactive` 会校验 CLI 内嵌的当前 suite 并输出稳定的 schema v1
 报告；language adapter、CI 与 Agent 应消费该命令，而不是依赖仓库路径。`--deny-warnings` 与其他作者
