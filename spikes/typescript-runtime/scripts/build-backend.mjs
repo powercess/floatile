@@ -19,6 +19,11 @@ const executable = (name) =>
     process.platform === "win32" ? `${name}.CMD` : name,
   );
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const localToolOptions = {
+  cwd: spikeDir,
+  shell: process.platform === "win32",
+  stdio: "inherit",
+};
 
 execFileSync(pnpm, ["--dir", "sdk/typescript", "build"], {
   cwd: workspace,
@@ -42,14 +47,11 @@ execFileSync(
     "--strict",
     "--quiet",
   ],
-  { cwd: spikeDir, stdio: "inherit" },
+  localToolOptions,
 );
 
 if (backend === "starlingmonkey") {
-  execFileSync(executable("tsc"), ["--noEmit"], {
-    cwd: spikeDir,
-    stdio: "inherit",
-  });
+  execFileSync(executable("tsc"), ["--noEmit"], localToolOptions);
   execFileSync(
     executable("jco"),
     [
@@ -64,7 +66,7 @@ if (backend === "starlingmonkey") {
       "--out",
       output,
     ],
-    { cwd: spikeDir, stdio: "inherit" },
+    localToolOptions,
   );
 } else if (process.env.FLOATILE_COMPONENTIZE_QJS_BIN) {
   execFileSync(
