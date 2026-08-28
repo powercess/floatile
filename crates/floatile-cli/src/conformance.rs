@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(report.suite, "sdk-lifecycle-v1");
         assert_eq!(report.contract.schema_version, 1);
         assert_eq!(report.contract.engine_api_version, "1.2.0");
-        assert_eq!(report.contract.vectors.len(), 3);
+        assert_eq!(report.contract.vectors.len(), 6);
         Ok(())
     }
 }

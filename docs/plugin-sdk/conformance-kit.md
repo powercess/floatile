@@ -18,7 +18,7 @@
 - `message`：该 variant 携带的稳定测试 payload，`internal` 为 `null`；
 - `expectedHostOutcome`：宿主错误分类，不是语言专用异常名。
 
-当前向量覆盖 `invalid-input`、`rejected` 与 `internal` 全部 WIT guest error。runtime 使用真实
+当前向量覆盖 `start/event × invalid-input/rejected/internal` 的完整组合。runtime 使用真实
 WASM Component 执行同一批向量，必须把它们分类为 guest `Rejected`，并证明随后仍可启动和停止同行
 实例。trap、fuel、epoch timeout、内存、Broker deny、Operation 和 State Patch 的既有安全测试将在后续
 PP-M7 切片逐步登记为同目录的版本化向量。

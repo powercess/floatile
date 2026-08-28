@@ -77,8 +77,8 @@ impl Widget for Evil {
     }
 
     fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult {
-        if self.mode == "conformance-start-rejected" {
-            return Err(WidgetError::Rejected("conformance start rejection".into()));
+        if let Some(error) = conformance_error(&self.mode, "start") {
+            return Err(error);
         }
         match self.mode.as_str() {
             // loop 不进 start:让实例先成功启动,测试再以事件触发无限循环,fuel 才 trap。
@@ -96,13 +96,8 @@ impl Widget for Evil {
     }
 
     fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>) -> WidgetResult {
-        if self.mode == "conformance-event-invalid-input" {
-            return Err(WidgetError::InvalidInput(
-                "conformance event rejection".into(),
-            ));
-        }
-        if self.mode == "conformance-event-internal" {
-            return Err(WidgetError::Internal);
+        if let Some(error) = conformance_error(&self.mode, "event") {
+            return Err(error);
         }
         match event {
             EvilEvent::Trigger => match self.mode.as_str() {
@@ -119,6 +114,20 @@ impl Widget for Evil {
             }
         }
         Ok(())
+    }
+}
+
+fn conformance_error(mode: &str, callback: &str) -> Option<WidgetError> {
+    let error = mode.strip_prefix(&format!("conformance-{callback}-"))?;
+    match error {
+        "invalid-input" => Some(WidgetError::InvalidInput(format!(
+            "conformance {callback} invalid input"
+        ))),
+        "rejected" => Some(WidgetError::Rejected(format!(
+            "conformance {callback} rejection"
+        ))),
+        "internal" => Some(WidgetError::Internal),
+        _ => None,
     }
 }
 
