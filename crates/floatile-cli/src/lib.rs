@@ -10,6 +10,7 @@ pub mod dev;
 pub mod inspect;
 pub mod install;
 pub mod instance;
+pub mod migrate;
 pub mod output;
 pub mod package;
 pub mod preview;
@@ -31,11 +32,12 @@ pub use instance::{
     InstanceCommandError, InstanceView, configure_instance, create_instance, delete_instance,
     get_instance, list_instances, rollback_instance, set_instance_desired_state,
 };
+pub use migrate::{MigrationError, MigrationReport, migrate_project};
 pub use output::{CommandErrorReport, CommandWarning, OUTPUT_SCHEMA_VERSION};
 pub use package::{PackageError, PackageLimits, ValidatedPackage, validate_package};
 pub use preview::{PreviewError, PreviewReport, PreviewSession, preview_project};
 pub use project::{
-    ProjectConfig, ProjectError, generate_manifest, generate_template, parse_floatile_toml,
+    ProjectConfig, ProjectError, SdkCfg, generate_manifest, generate_template, parse_floatile_toml,
 };
 pub use run::{RunError, RunReport, default_run_paths, run_project};
 pub use test::{

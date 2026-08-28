@@ -22,6 +22,8 @@ use serde::Deserialize;
 pub struct ProjectConfig {
     pub plugin: PluginCfg,
     #[serde(default)]
+    pub sdk: SdkCfg,
+    #[serde(default)]
     pub widget: WidgetCfg,
     #[serde(default)]
     pub permissions: BTreeMap<String, PermissionCfg>,
@@ -29,6 +31,31 @@ pub struct ProjectConfig {
     pub http_templates: Vec<HttpTemplateDecl>,
     #[serde(default)]
     pub publisher: Option<PublisherCfg>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SdkCfg {
+    #[serde(default = "default_sdk_language")]
+    pub language: String,
+    #[serde(default = "default_sdk_version")]
+    pub version: String,
+}
+
+impl Default for SdkCfg {
+    fn default() -> Self {
+        Self {
+            language: default_sdk_language(),
+            version: default_sdk_version(),
+        }
+    }
+}
+
+fn default_sdk_language() -> String {
+    "rust".to_owned()
+}
+
+fn default_sdk_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -208,8 +235,8 @@ pub fn generate_manifest(config: &ProjectConfig) -> Result<Manifest, ProjectErro
         config: None,
         storage: None,
         build: Some(BuildMeta {
-            sdk: "rust".into(),
-            sdk_version: "0.1.0".into(),
+            sdk: config.sdk.language.clone(),
+            sdk_version: config.sdk.version.clone(),
         }),
     };
     validate_manifest(&manifest)?;
@@ -225,6 +252,10 @@ pub fn generate_template(dir: &Path, id: &str, name: &str) -> Result<(), Project
         r#"[plugin]
 id = "{id}"
 name = "{name}"
+version = "0.1.0"
+
+[sdk]
+language = "rust"
 version = "0.1.0"
 
 [widget]
@@ -357,6 +388,8 @@ max_active = 2
     fn parses_floatile_toml() {
         let config = parse_floatile_toml(sample_toml()).unwrap();
         assert_eq!(config.plugin.id, "dev.floatile.clock");
+        assert_eq!(config.sdk.language, "rust");
+        assert_eq!(config.sdk.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(config.widget.default_size, Some([240.0, 120.0]));
     }
 
@@ -366,6 +399,7 @@ max_active = 2
         let manifest = generate_manifest(&config).unwrap();
         assert_eq!(manifest.id.0, "dev.floatile.clock");
         assert_eq!(manifest.engine_api_version, ENGINE_API_VERSION);
+        assert_eq!(manifest.build.as_ref().unwrap().sdk, "rust");
         assert_eq!(manifest.permissions.len(), 1);
         // round-trip 序列化后可再校验。
         let json = serde_json::to_string(&manifest).unwrap();

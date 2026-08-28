@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use floatile_cli::{
-    CommandErrorReport, build, check, conformance, dev, inspect, install, instance, package,
-    preview, project, run, test, trust,
+    CommandErrorReport, build, check, conformance, dev, inspect, install, instance, migrate,
+    package, preview, project, run, test, trust,
 };
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId, PermissionChangeKind};
 
@@ -14,7 +14,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|check|inspect|build|install|trust|instance|dev|test|preview|run|schema|conformance> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|trust|instance|dev|test|preview|run|schema|migrate|conformance> [参数]"
         );
         return ExitCode::from(2);
     }
@@ -32,11 +32,47 @@ fn main() -> ExitCode {
         "preview" => cmd_preview(&args[2..]),
         "run" => cmd_run(&args[2..]),
         "schema" => cmd_schema(&args[2..]),
+        "migrate" => cmd_migrate(&args[2..]),
         "conformance" => cmd_conformance(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn cmd_migrate(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let write = args.iter().any(|argument| argument == "--write");
+    let positionals = match author_positionals(args, &[], &["--write"], 1) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FMIGRATE_ARGUMENT", &detail, json, true),
+    };
+    let project_dir = positionals
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    match migrate::migrate_project(&project_dir, write) {
+        Ok(report) => {
+            if json {
+                println!("{}", serialize_json(&report));
+            } else {
+                println!(
+                    "migrate: PASS mode={} changes={} changed={}",
+                    report.mode,
+                    report.changes.len(),
+                    report.changed
+                );
+                for change in report.changes {
+                    println!(
+                        "  code={} file={} {}",
+                        change.code, change.file, change.description
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => render_basic_error(error.code(), &error.to_string(), json, false),
     }
 }
 

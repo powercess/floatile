@@ -227,7 +227,7 @@ Detected capabilities:
 
 退出码与诊断 code 稳定；日志文本不是自动化接口。
 
-当前已落地：`new/validate/check/dev/test/preview/build/install/trust/run/inspect/instance`；`test` 用
+当前已落地：`new/validate/check/dev/test/preview/build/install/trust/run/inspect/instance/migrate`；`test` 用
 `floatile-runtime::harness` 对已构建包跑无头生命周期冒烟。`instance` 子命令提供单一
 JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`--store`、
 `--config`/`--config-file`与 `--no-interactive`。`inspect` 在输出前复用完整包安全校验，提供 manifest、
@@ -269,7 +269,9 @@ State 更新数和 deny 审计数。当前 `advance_time` 使用真实 Tokio 短
 Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快照，仓库测试要求二者逐字节一致；
 干净目录测试从 `floatile-sdk`、`floatile-sdk-macros` 与 `floatile-ui-schema` 的独立 Cargo 包快照解析
 模板依赖，不使用仓库内部 path。许可 ADR 通过前这些包只用于仓库内可发布性验证，不授权上传 registry。
-`migrate` 仍未实现，属于后续 SDK/API 稳定化工作，不在 PP-M4 Rust 作者闭环范围内。
+`migrate` 使用版本化 JSON 报告且默认只读 dry-run；当前第一条真实迁移将旧项目隐式的 Rust SDK
+选择补成 `[sdk] language/version`，为 Rust/TypeScript 共用项目模型建立显式事实。只有 `--write`
+修改文件，重复执行无变化；缺失、超限、非普通文件或无效 TOML 使用稳定 `FMIGRATE_*` code 拒绝。
 
 ## 8. 诊断格式
 
