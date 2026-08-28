@@ -18,8 +18,9 @@ const executable = (name) =>
     "node_modules/.bin",
     process.platform === "win32" ? `${name}.CMD` : name,
   );
+const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 
-execFileSync("pnpm", ["--dir", "sdk/typescript", "build"], {
+execFileSync(pnpm, ["--dir", "sdk/typescript", "build"], {
   cwd: workspace,
   stdio: "inherit",
 });
