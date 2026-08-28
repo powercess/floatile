@@ -173,7 +173,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 | PP-M4 | Rust 作者闭环 | 已完成（自动化契约与 Xvfb 验证；公开发布受许可门阻断） | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
 | PP-M5 | 外部数据平台 | 已完成（自动化契约验证） | Connection、Credential Vault、HTTPS Broker、调度、缓存、重试、限流和连接健康状态 | AI 余额参考插件只使用通用能力，且 secret 不进入 guest、日志、State 或包 | `core`、`store`、`services`、shell、WIT、SDK |
 | PP-M6 | UI 平台 | 已完成（自动化契约验证） | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
-| PP-M7 | SDK 与语言生态 | 进行中 | Rust API 稳定化；在工具链可行后接入 TypeScript；生成文档、迁移指南和 conformance kit | 双语言通过相同 contract vectors、恶意输入和端到端示例；不存在宿主语义分叉 | SDK、plugin API、CLI、CI |
+| PP-M7 | SDK 与语言生态 | 已完成（自动化契约验证；TypeScript 生产启用受运行时发布与许可门阻断） | Rust API 稳定化；TypeScript 作者 SDK 与候选 adapter；生成文档、迁移指南和 conformance kit | 双语言通过相同 contract vectors、恶意输入和端到端示例；不存在宿主语义分叉 | SDK、plugin API、CLI、CI |
 | PP-M8 | 分发与信任 | 已完成（自动化契约验证；公开分发受许可门阻断） | publisher/signing、来源与信任、权限 diff、兼容性解析、更新/回滚和可恢复安装 | 安装与升级能解释权限变化和失败原因；篡改/降级/回滚路径有测试 | CLI、core、store、shell、distribution |
 | PP-M9 | 组合与自动化 | 规划中 | 宿主事件、定时/系统触发、受控 pub/sub、工作流和通知 | 插件间不直接持有句柄；事件有 schema、scope、背压、循环检测和审计 | core、runtime、services、WIT、SDK |
 | PP-M10 | 产品化与发布门禁 | 规划中 | 跨平台交互证据、性能、许可、安装器、更新器、无障碍、崩溃恢复和运维诊断 | 产品目标平台通过发布矩阵；许可 ADR 和分发门禁完成；关键 SLO 有实测证据 | 全仓库 |
@@ -218,11 +218,15 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   `widget.ftui`，证明参考插件覆盖上述监控 UI 契约且包内不含第三方 `.slint`/HTML；schema、renderer、
   SDK 与 shell 的契约/真实 Slint 无头编译测试均通过。真实屏幕阅读器行为、跨平台视觉与完整无障碍仍属
   PP-M10 环境验收，不把它们误记为 PP-M6 自动化契约证据；
-- PP-M7 已启动 Rust SDK 契约稳定化：`Widget::start/event` 的 `WidgetResult` 与 WIT
-  `widget-error` 对齐，`floatile_sdk::prelude` 定义作者入口；仓库根版本化 lifecycle JSON 覆盖全部
-  guest error variant，并由 Rust SDK 与真实 host/WASM 共同消费。`floatile conformance --json`
-  为后继语言 adapter 和 CI 输出同一 suite。生成 API 文档、`migrate`、完整行为/恶意输入向量与
-  TypeScript SDK 仍未完成，不能据此宣称 PP-M7 退出门通过；
+- PP-M7 已完成 Rust SDK 契约稳定化：`Widget::start/event` 的 `WidgetResult` 与 WIT
+  `widget-error` 对齐，`floatile_sdk::prelude` 定义作者入口；仓库根版本化 lifecycle/security JSON
+  由 Rust SDK、TypeScript SDK 与真实 host/WASM 共同消费。`floatile conformance --json` 输出同一
+  suite；Rust API 文档以 warning-free CI 为门，迁移指南和可恢复、幂等的 `migrate` 已落地。private
+  TypeScript 作者包从 Rust UI Registry 生成类型化 builder，输出 ESM/declarations，并经 lifecycle
+  adapter 生成 WIT 1.2 component；固定 QuickJS 修复候选在 Linux 通过完整行为、恶意输入、Broker
+  deny、fuel/epoch/内存隔离与资源证据，在 Ubuntu/macOS/Windows hosted runner 通过同一组件构建。
+  这满足仓库内双语言同契约退出门，但不等于生产启用：上游修复尚未合并发布、许可/NOTICE 门未过，
+  因此 TypeScript CLI 模板、公共 SDK 和分发继续关闭；
 - PP-M8 已由 ADR-0005 固定 detached DSSE/Ed25519 与宿主持有的 publisher/key trust。CLI 受信安装
   强制当前信任、撤销、anti-rollback 和权限扩大显式确认；SQLite journal 可恢复 rename 与水位之间的
   崩溃窗口。显式回滚只重绑 stopped 实例到重新验签、migration 兼容且不恢复旧权限的历史
@@ -231,7 +235,8 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   Connection grant 是实例级宿主状态，安装与回滚均保持原绑定不变；任何后续换绑仍走 PP-M5 独立授权。
   全 workspace 自动化、`wasm32-wasip2` SDK、advisories/bans/sources 已通过；Windows/macOS/Wayland
   分发实测属于 PP-M10，公开产物继续由 NFR-LEGAL-01 与 Slint license gate 阻断；
-- TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
+- TypeScript runtime 的 ADR-0003 仍是生产 no-go；PP-M7 的作者契约和候选端到端证据已经完成，但
+  runtime 选型、公共发布及分发授权属于必须继续保持关闭的外部门禁；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。
 
 因此最近的 PR 顺序应优先建设通用底座：

@@ -141,10 +141,15 @@ CDLA-Permissive-2.0 的 `webpki-roots`，按 Floatile 当前 `deny.toml` 会拒�
 的 NOTICE 生成也尚未自动化，因此许可门仍未通过，不新增例外。
 
 这些数据来自同一 Linux 测试机的一次串行冷运行；3 秒窗口是 Linux 稳定态 CPU 候选证据，不替代
-长时压力或 Windows/macOS 证据。固定 SHA 只用于复现未发布修复，不是 Floatile 的生产依赖。
+长时压力或 Windows/macOS 资源证据。固定 SHA 只用于复现未发布修复，不是 Floatile 的生产依赖。
+
+GitHub Actions [run 33155960160](https://github.com/powercess/floatile/actions/runs/33155960160)
+又从同一固定 SHA 在 Ubuntu、macOS 和 Windows 构建候选 CLI，并在三个系统生成及校验 Floatile
+TypeScript component；Ubuntu 额外执行上述完整行为和安全向量。该矩阵证明候选的三宿主构建可复现，
+不把 Linux 性能数字外推为另外两个系统的资源结论。
 
 这些数据显著优于本 ADR 的 StarlingMonkey 对照，但尚不改变 no-go 决策：修复未进入上游发布版，
-Windows/macOS 构建及稳定态 CPU、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime
+Windows/macOS 稳定态资源证据、许可/NOTICE 仍未完成；QuickJS component 还额外导出 runtime
 初始化函数 `init`，虽不增加 host capability，仍需在生产契约门中决定是否允许或由 adapter 隐藏。
 
 ## 后果与下一步
@@ -154,6 +159,6 @@ Windows/macOS 构建及稳定态 CPU、许可/NOTICE 仍未完成；QuickJS comp
 - 代价：P0 的 TypeScript clock 与公共 SDK 继续阻塞。
 - 本 PR：已将 QuickJS 问题最小化为任意 method 参数的 receiver 错位，形成可直接提交上游的修复与
   回归测试，并把 spike 改为 StarlingMonkey/QuickJS 共用同一宿主行为向量。
-- 下一个 PR：在上游合并并发布固定版本后锁定该版本，补 Windows/macOS 构建及稳定态 CPU、
+- 下一个 PR：在上游合并并发布固定版本后锁定该版本，补 Windows/macOS 稳定态资源证据、
   QuickJS/生成 component 的许可与 NOTICE、额外 `init` export 契约处理；全部通过后新建后继 ADR，
   再决定是否启动公共 TypeScript SDK。
