@@ -2,7 +2,7 @@
 
 > 状态：Proposed（renderer spike、schema 实现和正反例通过后冻结）
 > 文件：`ui/widget.ftui`
-> 版本：`uiApiVersion = 1.0.0`
+> 版本：`uiApiVersion = 1.6.0`
 > 关联：ADR-0001、FR-PLUGIN-01、F11
 
 `floatile-ui-schema` 已实现 IR 类型、组件 registry v1、State/Event JSON Schema 校验、JSONPath 绑定
@@ -27,7 +27,7 @@ P0 可以使用 canonical JSON 编码，后续可换二进制编码，但 v1 语
 
 ```json
 {
-  "uiApiVersion": "1.0.0",
+  "uiApiVersion": "1.6.0",
   "state": {
     "initial": {
       "time": "--:--:--",
@@ -161,7 +161,7 @@ P0 candidate：
 Layout:       Row Column Stack Grid Scroll
 Content:      Text Icon Image
 Interaction:  Button Toggle
-Data:         Progress Gauge List
+Data:         Badge Progress Gauge List
 Control:      If ForEach
 Extension:    Canvas Path（通过 renderer spike 后再启用）
 ```
@@ -245,7 +245,7 @@ P0 比较：
 - 输出是纯文本：所有字符串字面量经结构化转义，组件名/属性名/回调名由 renderer 生成，
   插件不能定义标识符，杜绝把 IR 原始文本拼进 Slint 语法位置。
 - 组件映射（v1 子集）：Column→`VerticalLayout`、Row→`HorizontalLayout`、Stack/Grid→布局容器；
-  Text/Button/Toggle/Progress/Gauge→宿主基础元素；If→`if` 结构、ForEach→`for` 循环（模板内 item
+  Text/Button/Toggle/Badge/Progress/Gauge→宿主基础元素；If→`if` 结构、ForEach→`for` 循环（模板内 item
   绑定进入独立命名空间）。公共样式 prop（padding/gap/color/opacity 等）映射为受限 Slint 属性。
   Canvas/Path 等未映射组件稳定拒绝（`RNDR_UNSUPPORTED_COMPONENT`）。
 - 输出 `component ClockPluginUI`（非 Window 内容组件，遵循 renderer 中立）+ binding/event 槽位：
@@ -253,6 +253,65 @@ P0 比较：
   （声明事件→生成回调名）供未来 shell renderer 把输入事件转发回 runtime。
 - 恶意 IR（超节点/深度/绑定、未知组件、病态字面量）在 renderer 层拒绝并以固定码
   （`RNDR_*`）返回，不泄漏宿主内部。
+
+### 12.2 UI API 1.1 状态与指标切片
+
+- renderer binding slot 携带 `string`、`boolean` 或 `number` 类型；shell 必须按槽位类型投影权威
+  State，不得把 boolean/number 转成自由文本后交给 Slint 猜测。
+- `Badge` 使用宿主语义 tone：`neutral`、`info`、`success`、`warning`、`danger`；插件不得提供颜色
+  源码。未知 tone 在 schema/CLI/runtime 复验阶段拒绝。
+- `Progress.value` 是 0..100 的 number 语义；renderer 将数值映射为百分比长度，插件不能注入长度
+  表达式。
+- Rust SDK 的 `page_state` 用嵌套 `If` 组合 loading/error/empty/content，固定优先级为
+  loading → error → empty → content；三个判定路径都必须绑定 boolean State。
+
+### 12.3 UI API 1.2 集合布局切片
+
+- `List.items` 可以绑定具有显式 `maxItems <= 256` 的 string array State；renderer 生成受控 Slint
+  model，shell worker 只跨线程传递 `Vec<String>`，并在 UI 线程构造 model。
+- `List` 的动态 `items` 与静态 `children` 互斥，避免重复扩张节点；字面量 items 同样执行项数与类型
+  校验。
+- `Grid.columns` 是 1..=16 的静态布局提示；Rust SDK 提供 `grid`、`list` 和 `list_bind` builder。
+
+### 12.4 UI API 1.3 监控图表切片
+
+- `Sparkline.values` 接受 literal 或 State 绑定的 number array；动态 schema 必须声明
+  `maxItems <= 128`，运行时投影仍复验类型与数量。
+- 每个点按 `0..=100` 归一化显示，越界值只在展示层 clamp，不修改权威 State。
+- `Sparkline.label` 是必填替代文本并映射到 Slint accessibility tree；纯视觉图表不得省略标签。
+- `tone` 只接受 `info|success|warning|danger`，由宿主映射固定主题色，不接受插件绘图源码、CSS、
+  shader 或任意颜色表达式。
+- Rust SDK 提供 `sparkline_bind` builder；AI Balance 参考插件用该组件表达余额利用率趋势。
+
+### 12.5 UI API 1.4 响应式布局切片
+
+- `Responsive.breakpoint` 是 `240..=1920` 的静态逻辑像素阈值；低于阈值时 children 使用纵向布局，
+  否则使用横向布局。
+- 窗口宽度只由宿主 renderer 的 `root.width` 消费，不进入 guest State，也不向插件暴露原生窗口句柄、
+  显示器或平台 API。
+- compact/wide 两个 Slint 分支互斥并复用同一受验证子树；binding/event 槽位去重，运行时最坏节点数
+  仍按单个 children 子树计入预算。
+- Rust SDK 提供 `responsive` builder；AI Balance 参考插件在窄窗口与宽窗口间切换监控内容排列。
+
+### 12.6 UI API 1.5 宿主主题 token 切片
+
+- `Text.colorToken` 只接受 UI schema registry 中的命名 token：`foreground`、`muted`、`accent`、
+  `positive`、`warning`、`danger`；名称与受限颜色值由 guest-safe 单一源定义。
+- `colorToken` 与自定义 `color` 互斥；未知 token、旧 minor 和同时声明两者都在 renderer 前拒绝。
+- renderer 把 token 解析为宿主拥有的颜色字面量，生成的 Slint 不包含插件 token 原文，更不接受 CSS、
+  selector、shader 或 Slint 表达式。
+- P0 使用固定宿主 palette；随系统主题动态切换仍未实现，不得把固定 token 支持描述为动态主题完成。
+- Rust SDK 提供 `with_color_token`；AI Balance 用 `accent` 表达余额主指标。
+
+### 12.7 UI API 1.6 控件无障碍语义切片
+
+- `Toggle`、`Progress`、`Gauge` 在 1.6 文档中必须声明 `accessibilityLabel`；标签可以是受类型校验的
+  string literal 或 State/item binding，不能注入平台无障碍 API。
+- renderer 将 `Toggle` 映射为 `switch` role 与 checked state，将 `Progress`/`Gauge` 映射为
+  `progress-indicator` role、0..100 value range；`Button.label` 同时作为可见文本和无障碍名称。
+- 1.0–1.5 文档不追溯要求新属性，renderer 为旧控件保留组件名 fallback；1.6 起缺失标签在渲染前拒绝。
+- Rust SDK 的 `progress_bind_labeled` 提供显式上下文标签，兼容的 `progress_bind` 使用通用 fallback；
+  AI Balance 参考插件使用显式标签。
 
 ## 13. Contract tests
 

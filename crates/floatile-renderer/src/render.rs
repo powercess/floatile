@@ -20,6 +20,19 @@ pub struct BindingSlot {
     pub path: String,
     /// 生成的宿主属性名(如 `prop_time`)。
     pub prop: String,
+    /// Slint 投影值类型；运行时必须按此类型转换权威 State。
+    pub value_type: BindingValueType,
+}
+
+/// renderer 与 shell 共享的有限 State 投影类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingValueType {
+    String,
+    Boolean,
+    Number,
+    StringList,
+    NumberList,
 }
 
 /// 一个输入事件:声明事件名 → 生成的回调名。
@@ -46,7 +59,15 @@ pub struct RenderedComponent {
 pub fn render_component(doc: &UiDocument) -> Result<RenderedComponent, RendererError> {
     // renderer 独立复验(CLI/runtime 通过不代表本层可跳过)。
     validate_document(doc)?;
-    let mut ctx = Ctx::default();
+    let mut ctx = Ctx {
+        ui_minor: doc
+            .ui_api_version
+            .split('.')
+            .nth(1)
+            .and_then(|minor| minor.parse().ok())
+            .unwrap_or_default(),
+        ..Default::default()
+    };
     let body = render_node(&doc.root, &mut ctx, 0)?;
     let bindings: Vec<BindingSlot> = ctx.bindings.into_values().collect();
     let events: Vec<EventSlot> = ctx.events.values().cloned().collect();
@@ -65,6 +86,7 @@ struct Ctx {
     events: BTreeMap<String, EventSlot>,
     nodes: usize,
     callback_counter: usize,
+    ui_minor: u64,
 }
 
 fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot]) -> String {
@@ -73,7 +95,17 @@ fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot])
     // `export` 让宿主的 `slint!` 能 `import` 本组件并把权威 State 投影到其绑定槽位。
     out.push_str("export component ClockPluginUI inherits Rectangle {\n");
     for slot in bindings {
-        out.push_str(&format!("    in property <string> {}: \"\";\n", slot.prop));
+        let (kind, default) = match slot.value_type {
+            BindingValueType::String => ("string", "\"\""),
+            BindingValueType::Boolean => ("bool", "false"),
+            BindingValueType::Number => ("float", "0"),
+            BindingValueType::StringList => ("[string]", "[]"),
+            BindingValueType::NumberList => ("[float]", "[]"),
+        };
+        out.push_str(&format!(
+            "    in property <{kind}> {}: {default};\n",
+            slot.prop
+        ));
     }
     for slot in callbacks {
         out.push_str(&format!("    callback {};\n", slot.callback));
@@ -108,11 +140,15 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
         "Column" => render_layout(comp, ctx, depth, "VerticalLayout"),
         "Row" => render_layout(comp, ctx, depth, "HorizontalLayout"),
         "Stack" => render_layout(comp, ctx, depth, "StackLayout"),
-        "Grid" => render_layout(comp, ctx, depth, "GridLayout"),
+        "Grid" => render_grid(comp, ctx, depth),
+        "Responsive" => render_responsive(comp, ctx, depth),
+        "List" => render_list(comp, ctx, depth),
+        "Sparkline" => render_sparkline(comp, ctx),
         "Text" => render_text(comp, ctx),
         "Button" => render_button(comp, ctx),
         "Toggle" => render_toggle(comp, ctx),
         "Progress" => render_meter(comp, ctx, false),
+        "Badge" => render_badge(comp, ctx),
         "Gauge" => render_meter(comp, ctx, true),
         "If" => render_if(comp, ctx, depth),
         "ForEach" => render_foreach(comp, ctx, depth),
@@ -120,6 +156,167 @@ fn render_node(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
             kind.to_owned(),
             "renderer 暂不映射该组件;请移除或等待后续切片".to_owned(),
         )),
+    }
+}
+
+/// Responsive:窄窗口纵向、宽窗口横向；分支互斥且复用同一受验证子树。
+fn render_responsive(
+    comp: &Component,
+    ctx: &mut Ctx,
+    depth: usize,
+) -> Result<String, RendererError> {
+    let breakpoint = comp
+        .props
+        .get("breakpoint")
+        .and_then(|value| match value {
+            PropValue::Literal(value) => value.as_f64(),
+            PropValue::Binding(_) => None,
+        })
+        .ok_or_else(|| RendererError::BindingError("Responsive 缺少 breakpoint".to_owned()))?;
+    let mut children = String::new();
+    for child in &comp.children {
+        children.push_str(&render_node(child, ctx, depth + 1)?);
+        children.push('\n');
+    }
+    let props = render_layout_props(comp)?;
+    Ok(format!(
+        "if root.width < {breakpoint}px: VerticalLayout {{\n{props}{children}}}\nif root.width >= {breakpoint}px: HorizontalLayout {{\n{props}{children}}}\n"
+    ))
+}
+
+fn render_sparkline(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    let label = match comp.props.get("label") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            format!(
+                "root.{}",
+                binding_slot(bind, BindingValueType::String, ctx)?.prop
+            )
+        }
+        Some(PropValue::Literal(value)) => encode_string(value.as_str().ok_or_else(|| {
+            RendererError::BindingError("Sparkline.label 必须是 string".to_owned())
+        })?)?,
+        _ => {
+            return Err(RendererError::BindingError(
+                "Sparkline 缺少 label prop".to_owned(),
+            ));
+        }
+    };
+    let color = match comp.props.get("tone") {
+        Some(PropValue::Literal(value)) => match value.as_str() {
+            Some("success") => "#247a45",
+            Some("warning") => "#a86600",
+            Some("danger") => "#a33a3a",
+            Some("info") | None => "#2f6feb",
+            Some(other) => {
+                return Err(RendererError::BindingError(format!(
+                    "Sparkline.tone 不支持 `{other}`"
+                )));
+            }
+        },
+        None => "#2f6feb",
+        Some(PropValue::Binding(_)) => {
+            return Err(RendererError::BindingError(
+                "Sparkline.tone 不允许绑定".to_owned(),
+            ));
+        }
+    };
+    let bars = match comp.props.get("values") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let values = format!(
+                "root.{}",
+                binding_slot(bind, BindingValueType::NumberList, ctx)?.prop
+            );
+            format!(
+                "        for value in {values}: Rectangle {{\n            width: 4px;\n            height: parent.height * ((value < 0 ? 0 : (value > 100 ? 100 : value)) / 100);\n            background: {color};\n        }}\n"
+            )
+        }
+        Some(PropValue::Literal(value)) => {
+            let values = value.as_array().ok_or_else(|| {
+                RendererError::BindingError("Sparkline.values 必须是 number array".to_owned())
+            })?;
+            let mut bars = String::new();
+            for value in values {
+                let value = value.as_f64().ok_or_else(|| {
+                    RendererError::BindingError("Sparkline.values 必须是 number array".to_owned())
+                })?;
+                let value = value.clamp(0.0, 100.0);
+                bars.push_str(&format!(
+                    "        Rectangle {{ width: 4px; height: parent.height * {value} / 100; background: {color}; }}\n"
+                ));
+            }
+            bars
+        }
+        Some(PropValue::Binding(Binding::Item { .. })) | None => {
+            return Err(RendererError::BindingError(
+                "Sparkline.values 缺少受支持的值".to_owned(),
+            ));
+        }
+    };
+    Ok(format!(
+        "Rectangle {{\n    height: 48px;\n    accessible-role: image;\n    accessible-label: {label};\n    HorizontalLayout {{\n        spacing: 2px;\n        alignment: end;\n{bars}    }}\n}}\n"
+    ))
+}
+
+/// Grid:把声明式 columns 转为 Slint 的显式 Row 分组，避免忽略列数语义。
+fn render_grid(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, RendererError> {
+    let columns = comp
+        .props
+        .get("columns")
+        .and_then(|value| match value {
+            PropValue::Literal(value) => value.as_u64(),
+            PropValue::Binding(_) => None,
+        })
+        .unwrap_or(1) as usize;
+    let props = render_layout_props(comp)?;
+    let mut rows = String::new();
+    for row in comp.children.chunks(columns) {
+        rows.push_str("    Row {\n");
+        for child in row {
+            let rendered = render_node(child, ctx, depth + 1)?;
+            for line in rendered.lines() {
+                rows.push_str("        ");
+                rows.push_str(line);
+                rows.push('\n');
+            }
+        }
+        rows.push_str("    }\n");
+    }
+    Ok(format!("GridLayout {{\n{props}{rows}}}\n"))
+}
+
+fn render_list(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, RendererError> {
+    let Some(items) = comp.props.get("items") else {
+        return render_layout(comp, ctx, depth, "VerticalLayout");
+    };
+    if !comp.children.is_empty() {
+        return Err(RendererError::BindingError(
+            "List 使用 items 时不能同时声明静态 children".to_owned(),
+        ));
+    }
+    match items {
+        PropValue::Binding(Binding::State { bind }) => {
+            let slot = binding_slot(bind, BindingValueType::StringList, ctx)?;
+            Ok(format!(
+                "VerticalLayout {{\n    for item in root.{}: Text {{ text: item; }}\n}}\n",
+                slot.prop
+            ))
+        }
+        PropValue::Binding(Binding::Item { .. }) => Err(RendererError::BindingError(
+            "List.items 不支持 ForEach item 绑定".to_owned(),
+        )),
+        PropValue::Literal(value) => {
+            let array = value.as_array().ok_or_else(|| {
+                RendererError::BindingError("List.items 必须是字符串数组".to_owned())
+            })?;
+            let mut children = String::new();
+            for item in array {
+                let text = item.as_str().ok_or_else(|| {
+                    RendererError::BindingError("List.items 必须是字符串数组".to_owned())
+                })?;
+                children.push_str(&format!("    Text {{ text: {}; }}\n", encode_string(text)?));
+            }
+            Ok(format!("VerticalLayout {{\n{children}}}\n"))
+        }
     }
 }
 
@@ -164,7 +361,7 @@ fn render_text(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError>
     };
     match prop {
         PropValue::Binding(Binding::State { bind }) => {
-            let slot = binding_slot(bind, ctx)?;
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
             let mut out = String::from("    Text {\n");
             out.push_str(&format!("        text: root.{0};\n", slot.prop));
             out.push_str(&text_style_props(comp)?);
@@ -192,7 +389,13 @@ fn render_text(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError>
 
 fn text_style_props(comp: &Component) -> Result<String, RendererError> {
     let mut out = String::new();
-    if let Some(PropValue::Literal(v)) = comp.props.get("color")
+    if let Some(PropValue::Literal(v)) = comp.props.get("colorToken")
+        && let Some(token) = v.as_str()
+    {
+        let color = floatile_ui_schema::theme::color_token(token)
+            .ok_or_else(|| RendererError::EncodeError(format!("未知宿主主题 token `{token}`")))?;
+        out.push_str(&format!("        color: {};\n", color.value));
+    } else if let Some(PropValue::Literal(v)) = comp.props.get("color")
         && let Some(s) = v.as_str()
     {
         out.push_str(&format!("        color: {0};\n", color_literal(s)?));
@@ -212,7 +415,7 @@ fn text_style_props(comp: &Component) -> Result<String, RendererError> {
 fn render_button(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
     let label = match comp.props.get("label") {
         Some(PropValue::Binding(Binding::State { bind })) => {
-            let slot = binding_slot(bind, ctx)?;
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
             format!("root.{0}", slot.prop)
         }
         Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
@@ -226,6 +429,8 @@ fn render_button(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererErro
     let callback = event_callback(comp, ctx, "activate")?;
     let callback_name = callback.callback.clone();
     let mut out = String::from("    TouchArea {\n");
+    out.push_str("        accessible-role: button;\n");
+    out.push_str(&format!("        accessible-label: {label};\n"));
     out.push_str("        Rectangle {\n");
     out.push_str("            border-radius: 4px;\n");
     out.push_str("            background: #2a2f3a;\n");
@@ -247,7 +452,7 @@ fn render_button(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererErro
 fn render_toggle(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
     let checked = match comp.props.get("checked") {
         Some(PropValue::Binding(Binding::State { bind })) => {
-            let slot = binding_slot(bind, ctx)?;
+            let slot = binding_slot(bind, BindingValueType::Boolean, ctx)?;
             format!("root.{0}", slot.prop)
         }
         Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
@@ -263,9 +468,15 @@ fn render_toggle(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererErro
             ));
         }
     };
+    let accessibility_label = render_accessibility_label(comp, ctx)?;
     let callback = event_callback(comp, ctx, "toggle")?;
     let callback_name = callback.callback.clone();
     let mut out = String::from("    TouchArea {\n");
+    out.push_str("        accessible-role: switch;\n");
+    out.push_str(&format!(
+        "        accessible-label: {accessibility_label};\n"
+    ));
+    out.push_str(&format!("        accessible-checked: {checked};\n"));
     out.push_str("        Rectangle {\n");
     out.push_str("            border-radius: 2px;\n");
     out.push_str("            border-width: 1px;\n");
@@ -289,8 +500,11 @@ fn tied(checked: String) -> String {
 fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String, RendererError> {
     let value = match comp.props.get("value") {
         Some(PropValue::Binding(Binding::State { bind })) => {
-            let slot = binding_slot(bind, ctx)?;
-            format!("root.{0}", slot.prop)
+            let slot = binding_slot(bind, BindingValueType::Number, ctx)?;
+            format!(
+                "(root.{0} < 0 ? 0 : (root.{0} > 100 ? 100 : root.{0}))",
+                slot.prop
+            )
         }
         Some(PropValue::Binding(Binding::Item { .. })) => {
             return Err(RendererError::BindingError(
@@ -301,7 +515,7 @@ fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String,
             let f = v
                 .as_f64()
                 .ok_or_else(|| RendererError::BindingError("meter value 必须是数字".to_owned()))?;
-            format!("{f}%")
+            format!("{}", f.clamp(0.0, 100.0))
         }
         None => {
             return Err(RendererError::BindingError(
@@ -309,7 +523,15 @@ fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String,
             ));
         }
     };
+    let accessibility_label = render_accessibility_label(comp, ctx)?;
     let mut out = String::from("    Rectangle {\n");
+    out.push_str("        accessible-role: progress-indicator;\n");
+    out.push_str(&format!(
+        "        accessible-label: {accessibility_label};\n"
+    ));
+    out.push_str(&format!("        accessible-value: {value};\n"));
+    out.push_str("        accessible-value-minimum: 0;\n");
+    out.push_str("        accessible-value-maximum: 100;\n");
     out.push_str("        border-radius: 2px;\n");
     out.push_str("        background: #2a2f3a;\n");
     out.push_str("        width: 100%;\n");
@@ -317,11 +539,82 @@ fn render_meter(comp: &Component, ctx: &mut Ctx, _gauge: bool) -> Result<String,
     out.push_str("        Rectangle {\n");
     out.push_str("            border-radius: 2px;\n");
     out.push_str("            background: #4a90e2;\n");
-    out.push_str(&format!("            width: {value};\n"));
+    out.push_str(&format!(
+        "            width: parent.width * ({value} / 100);\n"
+    ));
     out.push_str("            height: 8px;\n");
     out.push_str("        }\n");
     out.push_str("    }\n");
     Ok(out)
+}
+
+fn render_string_prop(
+    comp: &Component,
+    prop: &str,
+    ctx: &mut Ctx,
+) -> Result<String, RendererError> {
+    match comp.props.get(prop) {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
+            Ok(format!("root.{0}", slot.prop))
+        }
+        Some(PropValue::Binding(Binding::Item { item })) => Ok(item.clone()),
+        Some(PropValue::Literal(value)) => encode_string(&value_to_string(value)?),
+        None => Err(RendererError::BindingError(format!(
+            "{} 缺少 {prop} prop",
+            comp.kind
+        ))),
+    }
+}
+
+fn render_accessibility_label(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    if ctx.ui_minor < 6 && !comp.props.contains_key("accessibilityLabel") {
+        return encode_string(&comp.kind);
+    }
+    render_string_prop(comp, "accessibilityLabel", ctx)
+}
+
+/// Badge：宿主语义 tone 映射到固定主题色，不接受插件提供的颜色源码。
+fn render_badge(comp: &Component, ctx: &mut Ctx) -> Result<String, RendererError> {
+    let label = match comp.props.get("label") {
+        Some(PropValue::Binding(Binding::State { bind })) => {
+            let slot = binding_slot(bind, BindingValueType::String, ctx)?;
+            format!("root.{0}", slot.prop)
+        }
+        Some(PropValue::Binding(Binding::Item { item })) => item.clone(),
+        Some(PropValue::Literal(value)) => encode_string(&value_to_string(value)?)?,
+        None => {
+            return Err(RendererError::BindingError(
+                "Badge 缺少 label prop".to_owned(),
+            ));
+        }
+    };
+    let tone = match comp.props.get("tone") {
+        None => "neutral",
+        Some(PropValue::Literal(value)) => value
+            .as_str()
+            .ok_or_else(|| RendererError::BindingError("Badge tone 必须是字符串".to_owned()))?,
+        Some(PropValue::Binding(_)) => {
+            return Err(RendererError::BindingError(
+                "Badge tone 不允许运行时绑定".to_owned(),
+            ));
+        }
+    };
+    let background = match tone {
+        "neutral" => "#3b4351",
+        "info" => "#245ea8",
+        "success" => "#247a45",
+        "warning" => "#8a6418",
+        "danger" => "#9b3030",
+        other => {
+            return Err(RendererError::EncodeError(format!(
+                "Badge tone `{other}` 不在允许集合"
+            )));
+        }
+    };
+    Ok(format!(
+        "    Rectangle {{\n        border-radius: 8px;\n        background: {background};\n        height: 20px;\n        Text {{\n            text: {label};\n            color: white;\n            horizontal-alignment: center;\n            vertical-alignment: center;\n        }}\n    }}\n"
+    ))
 }
 
 /// If:when 布尔绑定 → Slint `if` 结构。
@@ -331,20 +624,18 @@ fn render_if(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, Re
             "If 缺少 when 布尔 State 绑定".to_owned(),
         ));
     };
-    let slot = binding_slot(bind, ctx)?;
+    let slot = binding_slot(bind, BindingValueType::Boolean, ctx)?;
     let Some(then) = &comp.then else {
         return Err(RendererError::BindingError("If 缺少 then 分支".to_owned()));
     };
     let then_text = render_node(then, ctx, depth + 1)?;
     let mut out = String::new();
-    out.push_str(&format!("if root.{0}: {{\n", slot.prop));
+    out.push_str(&format!("if root.{0}: ", slot.prop));
     out.push_str(&then_text);
-    out.push_str("}\n");
     if let Some(els) = &comp.else_ {
         let else_text = render_node(els, ctx, depth + 1)?;
-        out.push_str("else {\n");
+        out.push_str(&format!("if !root.{0}: ", slot.prop));
         out.push_str(&else_text);
-        out.push_str("}\n");
     }
     Ok(out)
 }
@@ -356,7 +647,7 @@ fn render_foreach(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<Strin
             "ForEach 缺少 items 数组 State 绑定".to_owned(),
         ));
     };
-    let slot = binding_slot(bind, ctx)?;
+    let slot = binding_slot(bind, BindingValueType::String, ctx)?;
     let Some(template) = &comp.template else {
         return Err(RendererError::BindingError(
             "ForEach 缺少 template".to_owned(),
@@ -389,9 +680,18 @@ fn item_key(comp: &Component) -> Result<String, RendererError> {
 }
 
 /// 登记一个 State 绑定并返回生成的属性名(同路径复用同一属性)。
-fn binding_slot(bind: &str, ctx: &mut Ctx) -> Result<BindingSlot, RendererError> {
+fn binding_slot(
+    bind: &str,
+    value_type: BindingValueType,
+    ctx: &mut Ctx,
+) -> Result<BindingSlot, RendererError> {
     PathSegments::parse(bind).map_err(|e| RendererError::BindingError(format!("{bind}: {e}")))?;
     if let Some(slot) = ctx.bindings.get(bind) {
+        if slot.value_type != value_type {
+            return Err(RendererError::BindingError(format!(
+                "{bind} 被用于不兼容的投影类型"
+            )));
+        }
         return Ok(slot.clone());
     }
     if ctx.bindings.len() >= MAX_BINDINGS {
@@ -403,6 +703,7 @@ fn binding_slot(bind: &str, ctx: &mut Ctx) -> Result<BindingSlot, RendererError>
     let slot = BindingSlot {
         path: bind.to_owned(),
         prop,
+        value_type,
     };
     ctx.bindings.insert(bind.to_owned(), slot.clone());
     Ok(slot)
@@ -506,7 +807,7 @@ mod tests {
         UiDocument {
             ui_api_version: floatile_ui_schema::UI_API_VERSION.into(),
             state: floatile_ui_schema::ir::StateSchema {
-                initial: json!({"time": "00:00:00", "running": false, "items": []}),
+                initial: json!({"time": "00:00:00", "running": false, "items": [], "trend": []}),
                 schema: floatile_ui_schema::JsonSchema::Object {
                     required: vec![],
                     properties: BTreeMap::from([
@@ -524,6 +825,13 @@ mod tests {
                                 items: Box::new(floatile_ui_schema::JsonSchema::String {
                                     max_length: Some(64),
                                 }),
+                            },
+                        ),
+                        (
+                            "trend".into(),
+                            floatile_ui_schema::JsonSchema::Array {
+                                max_items: Some(16),
+                                items: Box::new(floatile_ui_schema::JsonSchema::Number),
                             },
                         ),
                     ]),
@@ -603,6 +911,7 @@ mod tests {
             vec![BindingSlot {
                 path: "$.time".into(),
                 prop: "prop_time".into(),
+                value_type: BindingValueType::String,
             }]
         );
     }
@@ -646,9 +955,9 @@ mod tests {
 
     #[test]
     fn rejects_registry_but_unmapped_component() {
-        // registry 通过、但 renderer 尚未映射的组件(如 Scroll/List)由 renderer 层拒绝。
+        // registry 通过、但 renderer 尚未映射的组件(如 Scroll)由 renderer 层拒绝。
         let root = Component {
-            kind: "List".into(),
+            kind: "Scroll".into(),
             ..Default::default()
         };
         let err = render_component(&doc(root)).unwrap_err();
@@ -717,11 +1026,11 @@ mod tests {
         };
         let rendered = render_component(&doc(root)).unwrap();
         let src = &rendered.source;
+        assert!(src.contains("if root.prop_running:"), "缺少 if 分支: {src}");
         assert!(
-            src.contains("if root.prop_running: {"),
-            "缺少 if 分支: {src}"
+            src.contains("if !root.prop_running:"),
+            "缺少 else 分支: {src}"
         );
-        assert!(src.contains("else {"), "缺少 else 分支: {src}");
         assert!(
             src.contains("text: root.prop_time;"),
             "then 分支应渲染 time 绑定"
@@ -774,12 +1083,18 @@ mod tests {
     fn renders_toggle_event_slot() {
         let root = Component {
             kind: "Toggle".into(),
-            props: BTreeMap::from([(
-                "checked".into(),
-                PropValue::Binding(Binding::State {
-                    bind: "$.running".into(),
-                }),
-            )]),
+            props: BTreeMap::from([
+                (
+                    "checked".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.running".into(),
+                    }),
+                ),
+                (
+                    "accessibilityLabel".into(),
+                    PropValue::Literal(json!("Timer running")),
+                ),
+            ]),
             events: BTreeMap::from([(
                 "toggle".into(),
                 floatile_ui_schema::ir::EmittedEvent {
@@ -802,6 +1117,17 @@ mod tests {
         );
         let rendered = render_component(&d).unwrap();
         assert!(rendered.source.contains("TouchArea"));
+        assert!(rendered.source.contains("accessible-role: switch"));
+        assert!(
+            rendered
+                .source
+                .contains("accessible-checked: root.prop_running")
+        );
+        assert!(
+            rendered
+                .source
+                .contains("accessible-label: \"Timer running\"")
+        );
         // checked 绑定经受限三元映射为颜色(布尔 → 亮/暗色),无直接属性引用。
         assert!(
             rendered
@@ -815,5 +1141,199 @@ mod tests {
                 callback: "emit_0".into(),
             }]
         );
+    }
+
+    #[test]
+    fn renders_typed_boolean_and_number_slots() {
+        let root = column(vec![
+            Component {
+                kind: "If".into(),
+                when: Some(Binding::State {
+                    bind: "$.running".into(),
+                }),
+                then: Some(Box::new(text_bind("$.time"))),
+                ..Default::default()
+            },
+            Component {
+                kind: "Progress".into(),
+                props: BTreeMap::from([
+                    (
+                        "value".into(),
+                        PropValue::Binding(Binding::State {
+                            bind: "$.percent".into(),
+                        }),
+                    ),
+                    (
+                        "accessibilityLabel".into(),
+                        PropValue::Literal(json!("Timer progress")),
+                    ),
+                ]),
+                ..Default::default()
+            },
+        ]);
+        let mut document = doc(root);
+        if let floatile_ui_schema::JsonSchema::Object { properties, .. } =
+            &mut document.state.schema
+        {
+            properties.insert("percent".into(), floatile_ui_schema::JsonSchema::Number);
+        }
+        document.state.initial["percent"] = json!(42.0);
+        let rendered = render_component(&document).unwrap();
+        assert!(rendered.source.contains("in property <bool> prop_running"));
+        assert!(rendered.source.contains("in property <float> prop_percent"));
+        assert!(
+            rendered
+                .source
+                .contains("accessible-role: progress-indicator")
+        );
+        assert!(
+            rendered
+                .source
+                .contains("accessible-label: \"Timer progress\"")
+        );
+        assert!(rendered.source.contains(
+            "width: parent.width * ((root.prop_percent < 0 ? 0 : (root.prop_percent > 100 ? 100 : root.prop_percent)) / 100)"
+        ));
+    }
+
+    #[test]
+    fn renders_badge_with_host_owned_tone() {
+        let root = Component {
+            kind: "Badge".into(),
+            props: BTreeMap::from([
+                (
+                    "label".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.time".into(),
+                    }),
+                ),
+                ("tone".into(), PropValue::Literal(json!("success"))),
+            ]),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("background: #247a45"));
+        assert!(rendered.source.contains("text: root.prop_time"));
+    }
+
+    #[test]
+    fn rejects_badge_tone_outside_host_palette() {
+        let root = Component {
+            kind: "Badge".into(),
+            props: BTreeMap::from([
+                ("label".into(), PropValue::Literal(json!("unsafe"))),
+                (
+                    "tone".into(),
+                    PropValue::Literal(json!("url(plugin-input)")),
+                ),
+            ]),
+            ..Default::default()
+        };
+        let error = render_component(&doc(root)).unwrap_err();
+        assert_eq!(error.code(), "RNDR_INVALID_IR");
+    }
+
+    #[test]
+    fn renders_bounded_string_list_model() {
+        let root = Component {
+            kind: "List".into(),
+            props: BTreeMap::from([(
+                "items".into(),
+                PropValue::Binding(Binding::State {
+                    bind: "$.items".into(),
+                }),
+            )]),
+            ..Default::default()
+        };
+        let mut document = doc_with_items();
+        document.root = root;
+        let rendered = render_component(&document).unwrap();
+        assert!(
+            rendered
+                .source
+                .contains("in property <[string]> prop_items")
+        );
+        assert!(rendered.source.contains("for item in root.prop_items"));
+        assert_eq!(
+            rendered.bindings[0].value_type,
+            BindingValueType::StringList
+        );
+    }
+
+    #[test]
+    fn renders_grid_columns_as_explicit_rows() {
+        let child = |label: &str| Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([("text".into(), PropValue::Literal(json!(label)))]),
+            ..Default::default()
+        };
+        let root = Component {
+            kind: "Grid".into(),
+            props: BTreeMap::from([("columns".into(), PropValue::Literal(json!(2)))]),
+            children: vec![child("one"), child("two"), child("three")],
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("GridLayout"));
+        assert_eq!(rendered.source.matches("Row {").count(), 2);
+    }
+
+    #[test]
+    fn renders_accessible_bounded_sparkline() {
+        let root = Component {
+            kind: "Sparkline".into(),
+            props: BTreeMap::from([
+                (
+                    "values".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.trend".into(),
+                    }),
+                ),
+                ("label".into(), PropValue::Literal(json!("Usage trend"))),
+                ("tone".into(), PropValue::Literal(json!("info"))),
+            ]),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("in property <[float]> prop_trend"));
+        assert!(rendered.source.contains("accessible-role: image"));
+        assert!(
+            rendered
+                .source
+                .contains("accessible-label: \"Usage trend\"")
+        );
+        assert_eq!(
+            rendered.bindings[0].value_type,
+            BindingValueType::NumberList
+        );
+    }
+
+    #[test]
+    fn renders_responsive_layout_from_host_width() {
+        let root = Component {
+            kind: "Responsive".into(),
+            props: BTreeMap::from([("breakpoint".into(), PropValue::Literal(json!(420)))]),
+            children: vec![text_bind("$.time")],
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("if root.width < 420px"));
+        assert!(rendered.source.contains("if root.width >= 420px"));
+        assert_eq!(rendered.bindings.len(), 1);
+    }
+
+    #[test]
+    fn resolves_named_text_color_from_host_registry() {
+        let root = Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([
+                ("text".into(), PropValue::Literal(json!("balance"))),
+                ("colorToken".into(), PropValue::Literal(json!("accent"))),
+            ]),
+            ..Default::default()
+        };
+        let rendered = render_component(&doc(root)).unwrap();
+        assert!(rendered.source.contains("color: #89b4fa"));
+        assert!(!rendered.source.contains("accent"));
     }
 }

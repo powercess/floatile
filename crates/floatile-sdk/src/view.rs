@@ -35,6 +35,59 @@ pub fn stack(children: Vec<View>) -> View {
     }
 }
 
+/// Grid 容器：列数是受验证的静态布局提示。
+pub fn grid(columns: u32, children: Vec<View>) -> View {
+    let mut props = std::collections::BTreeMap::new();
+    props.insert(
+        "columns".into(),
+        PropValue::Literal(serde_json::json!(columns)),
+    );
+    View {
+        kind: "Grid".into(),
+        props,
+        children,
+        ..Default::default()
+    }
+}
+
+/// 响应式容器：窗口宽度低于 breakpoint 时纵向，否则横向。
+pub fn responsive(breakpoint: f64, children: Vec<View>) -> View {
+    View {
+        kind: "Responsive".into(),
+        props: std::collections::BTreeMap::from([(
+            "breakpoint".into(),
+            PropValue::Literal(serde_json::json!(breakpoint)),
+        )]),
+        children,
+        ..Default::default()
+    }
+}
+
+/// 静态 List 容器。
+pub fn list(children: Vec<View>) -> View {
+    View {
+        kind: "List".into(),
+        children,
+        ..Default::default()
+    }
+}
+
+/// 动态字符串 List：绑定具有显式 `maxItems` 的 string array State。
+pub fn list_bind(path: &str) -> View {
+    let mut props = std::collections::BTreeMap::new();
+    props.insert(
+        "items".into(),
+        PropValue::Binding(Binding::State {
+            bind: path.to_owned(),
+        }),
+    );
+    View {
+        kind: "List".into(),
+        props,
+        ..Default::default()
+    }
+}
+
 /// Text 组件：绑定 State 路径。
 pub fn text_bind(path: &str) -> View {
     let mut props = std::collections::BTreeMap::new();
@@ -79,6 +132,114 @@ pub fn button(label: &str) -> View {
     }
 }
 
+/// Badge 组件：标签绑定 State 路径，tone 只能使用宿主定义的语义值。
+pub fn badge_bind(path: &str, tone: &str) -> View {
+    let mut props = std::collections::BTreeMap::new();
+    props.insert(
+        "label".into(),
+        PropValue::Binding(Binding::State {
+            bind: path.to_owned(),
+        }),
+    );
+    props.insert(
+        "tone".into(),
+        PropValue::Literal(serde_json::Value::String(tone.to_owned())),
+    );
+    View {
+        kind: "Badge".into(),
+        props,
+        ..Default::default()
+    }
+}
+
+/// Progress 组件：绑定 0..=100 的数值 State 路径，并提供无障碍标签。
+pub fn progress_bind_labeled(path: &str, accessibility_label: &str) -> View {
+    let props = std::collections::BTreeMap::from([
+        (
+            "value".into(),
+            PropValue::Binding(Binding::State {
+                bind: path.to_owned(),
+            }),
+        ),
+        (
+            "accessibilityLabel".into(),
+            PropValue::Literal(serde_json::Value::String(accessibility_label.to_owned())),
+        ),
+    ]);
+    View {
+        kind: "Progress".into(),
+        props,
+        ..Default::default()
+    }
+}
+
+/// Progress 兼容构造器；新代码应使用 [`progress_bind_labeled`] 提供上下文标签。
+pub fn progress_bind(path: &str) -> View {
+    progress_bind_labeled(path, "Progress")
+}
+
+/// Sparkline：绑定有界 number array，并提供屏幕阅读器可用的替代标签。
+pub fn sparkline_bind(path: &str, label: &str, tone: &str) -> View {
+    let props = std::collections::BTreeMap::from([
+        (
+            "values".into(),
+            PropValue::Binding(Binding::State {
+                bind: path.to_owned(),
+            }),
+        ),
+        (
+            "label".into(),
+            PropValue::Literal(serde_json::Value::String(label.to_owned())),
+        ),
+        (
+            "tone".into(),
+            PropValue::Literal(serde_json::Value::String(tone.to_owned())),
+        ),
+    ]);
+    View {
+        kind: "Sparkline".into(),
+        props,
+        ..Default::default()
+    }
+}
+
+/// If 控制节点：按 boolean State 绑定选择 then/else 分支。
+pub fn if_bind(path: &str, then_view: View, else_view: Option<View>) -> View {
+    View {
+        kind: "If".into(),
+        when: Some(Binding::State {
+            bind: path.to_owned(),
+        }),
+        then: Some(Box::new(then_view)),
+        else_: else_view.map(Box::new),
+        ..Default::default()
+    }
+}
+
+/// 标准 loading/empty/error/content 四态页面。
+///
+/// 优先级固定为 loading → error → empty → content，避免多个状态同时为真时
+/// 呈现不确定结果。三个路径都必须绑定 boolean State 字段。
+pub fn page_state(
+    loading_path: &str,
+    error_path: &str,
+    empty_path: &str,
+    loading: View,
+    error: View,
+    empty: View,
+    content: View,
+) -> View {
+    if_bind(
+        loading_path,
+        loading,
+        Some(if_bind(
+            error_path,
+            error,
+            Some(if_bind(empty_path, empty, Some(content))),
+        )),
+    )
+}
+
 /// 设置布局 props（padding、gap 等）。
 pub fn with_props(
     mut view: View,
@@ -87,6 +248,15 @@ pub fn with_props(
     for (k, v) in props {
         view.props.insert(k.into(), v);
     }
+    view
+}
+
+/// 为支持该 prop 的组件选择宿主命名颜色 token。
+pub fn with_color_token(mut view: View, token: &str) -> View {
+    view.props.insert(
+        "colorToken".into(),
+        PropValue::Literal(serde_json::Value::String(token.to_owned())),
+    );
     view
 }
 
@@ -105,5 +275,103 @@ pub fn into_document(
         },
         events,
         root,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_state_has_deterministic_priority() {
+        let view = page_state(
+            "$.loading",
+            "$.error",
+            "$.empty",
+            text_literal("loading"),
+            text_literal("error"),
+            text_literal("empty"),
+            text_literal("content"),
+        );
+        assert_eq!(view.kind, "If");
+        assert_eq!(
+            view.when,
+            Some(Binding::State {
+                bind: "$.loading".into()
+            })
+        );
+        let error_branch = view.else_.expect("page state 必须包含 error 分支");
+        assert_eq!(
+            error_branch.when,
+            Some(Binding::State {
+                bind: "$.error".into()
+            })
+        );
+        let empty_branch = error_branch.else_.expect("page state 必须包含 empty 分支");
+        assert_eq!(
+            empty_branch.when,
+            Some(Binding::State {
+                bind: "$.empty".into()
+            })
+        );
+    }
+
+    #[test]
+    fn badge_and_progress_builders_emit_registry_components() {
+        let badge = badge_bind("$.status", "success");
+        assert_eq!(badge.kind, "Badge");
+        let progress = progress_bind("$.percent");
+        assert_eq!(progress.kind, "Progress");
+        assert_eq!(
+            progress.props.get("accessibilityLabel"),
+            Some(&PropValue::Literal(serde_json::json!("Progress")))
+        );
+        let labeled = progress_bind_labeled("$.percent", "Upload completion");
+        assert_eq!(
+            labeled.props.get("accessibilityLabel"),
+            Some(&PropValue::Literal(serde_json::json!("Upload completion")))
+        );
+    }
+
+    #[test]
+    fn list_and_grid_builders_emit_bounded_layout_contract() {
+        let list = list_bind("$.items");
+        assert_eq!(list.kind, "List");
+        let grid = grid(2, vec![text_literal("one"), text_literal("two")]);
+        assert_eq!(grid.kind, "Grid");
+        assert_eq!(
+            grid.props.get("columns"),
+            Some(&PropValue::Literal(serde_json::json!(2)))
+        );
+    }
+
+    #[test]
+    fn sparkline_builder_includes_accessible_label() {
+        let sparkline = sparkline_bind("$.trend", "Usage trend", "info");
+        assert_eq!(sparkline.kind, "Sparkline");
+        assert_eq!(
+            sparkline.props.get("label"),
+            Some(&PropValue::Literal(serde_json::json!("Usage trend")))
+        );
+    }
+
+    #[test]
+    fn responsive_builder_includes_static_breakpoint() {
+        let view = responsive(420.0, vec![text_literal("content")]);
+        assert_eq!(view.kind, "Responsive");
+        assert_eq!(
+            view.props.get("breakpoint"),
+            Some(&PropValue::Literal(serde_json::json!(420.0)))
+        );
+    }
+
+    #[test]
+    fn color_token_builder_uses_named_host_token() {
+        let view = with_color_token(text_literal("balance"), "accent");
+        assert_eq!(
+            view.props.get("colorToken"),
+            Some(&PropValue::Literal(serde_json::json!("accent")))
+        );
     }
 }

@@ -145,14 +145,21 @@ P0 首批组件限定为：
 | 布局 | `Row`、`Column`、`Stack`、`Grid`、`Scroll` |
 | 内容 | `Text`、`Icon`、受限 `Image` |
 | 交互 | `Button`、`Toggle` |
-| 数据 | `Progress`、`Gauge`、`List` |
+| 数据 | `Badge`、`Progress`、`Gauge`、`List` |
 | 控制 | `If`、`ForEach`、State binding、event |
 | 样式 | spacing、size、color token、border、radius、opacity |
 | 动画 | 有限的 enter/exit/value transition |
 | 扩展 | 受预算约束的 `Canvas`/`Path`（可在 P0 后半加入） |
 
 组件属性由机器可读 schema 定义，Rust/TypeScript 类型和文档从同一源生成。P0 不加入 TextInput、
-富文本、WebView、地图、视频、自定义字体和任意 SVG；出现真实需求后单独评审。
+UI API 1.1 提供 `page_state` 组合 loading/error/empty/content，并为 `Badge`、`Progress` 提供 Rust
+builder；boolean/number State 通过类型化 binding slot 投影，不退化为字符串。UI API 1.2 提供
+`grid`、`list`、`list_bind`，动态列表只接受具有显式项数预算的字符串数组；UI API 1.3 增加
+`sparkline_bind`，用有界数值数组和必填可访问标签表达监控趋势；UI API 1.4 增加 `responsive`，按
+宿主窗口逻辑宽度在纵向与横向布局间切换；UI API 1.5 增加 `with_color_token`，插件只能选择
+宿主命名 palette；UI API 1.6 要求 `Toggle`、`Progress`、`Gauge` 提供无障碍标签，并提供
+`progress_bind_labeled` builder。富文本、WebView、地图、
+视频、自定义字体和任意 SVG；出现真实需求后单独评审。
 
 ## 5. Context API
 

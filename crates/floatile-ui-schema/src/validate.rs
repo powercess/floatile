@@ -17,7 +17,7 @@ use crate::{
 
 /// 校验一个完整的 `widget.ftui` 文档。
 pub fn validate_document(doc: &UiDocument) -> Result<(), UiSchemaError> {
-    check_api_version(&doc.ui_api_version)?;
+    let ui_minor = check_api_version(&doc.ui_api_version)?;
     check_ir_size(doc)?;
 
     if doc.events.len() > MAX_EVENT_DECLS {
@@ -40,17 +40,22 @@ pub fn validate_document(doc: &UiDocument) -> Result<(), UiSchemaError> {
         nodes: 0,
         bindings: 0,
         asset_refs: 0,
+        ui_minor,
     };
     validate_component(&doc.root, &doc.state.schema, None, &mut ctx, 1)
 }
 
 /// 校验 uiApiVersion：只接受 major 1（`1` 或 `1.x.y`）。
-fn check_api_version(version: &str) -> Result<(), UiSchemaError> {
-    let major = version.split('.').next().unwrap_or("");
-    if major == "1" {
-        Ok(())
-    } else {
-        Err(UiSchemaError::UnsupportedApiVersion(version.to_owned()))
+fn check_api_version(version: &str) -> Result<u64, UiSchemaError> {
+    let mut parts = version.split('.');
+    if parts.next() != Some("1") {
+        return Err(UiSchemaError::UnsupportedApiVersion(version.to_owned()));
+    }
+    match parts.next() {
+        None => Ok(0),
+        Some(minor) => minor
+            .parse::<u64>()
+            .map_err(|_| UiSchemaError::UnsupportedApiVersion(version.to_owned())),
     }
 }
 
@@ -100,6 +105,7 @@ struct Ctx<'a> {
     nodes: usize,
     bindings: usize,
     asset_refs: usize,
+    ui_minor: u64,
 }
 
 fn validate_component(
@@ -122,6 +128,12 @@ fn validate_component(
         )));
     }
     let spec = registry::find(&comp.kind)?;
+    if spec.introduced_minor > ctx.ui_minor {
+        return Err(UiSchemaError::UnsupportedApiVersion(format!(
+            "{} requires 1.{}.0",
+            comp.kind, spec.introduced_minor
+        )));
+    }
     match spec.kind {
         ComponentKind::If => validate_if(comp, state_schema, ctx, depth),
         ComponentKind::ForEach => validate_foreach(comp, state_schema, ctx, depth),
@@ -160,6 +172,12 @@ fn validate_element(
                 component: comp.kind.clone(),
                 prop: name.clone(),
             })?;
+        if prop.introduced_minor > ctx.ui_minor {
+            return Err(UiSchemaError::UnsupportedApiVersion(format!(
+                "{}.{} requires 1.{}.0",
+                comp.kind, name, prop.introduced_minor
+            )));
+        }
         match value {
             PropValue::Binding(binding) => {
                 if !prop.allow_binding {
@@ -190,8 +208,28 @@ fn validate_element(
             });
         }
     }
+    if ctx.ui_minor >= 6
+        && matches!(comp.kind.as_str(), "Toggle" | "Progress" | "Gauge")
+        && !comp.props.contains_key("accessibilityLabel")
+    {
+        return Err(UiSchemaError::MissingProp {
+            component: comp.kind.clone(),
+            prop: "accessibilityLabel".to_owned(),
+        });
+    }
+    if comp.props.contains_key("color") && comp.props.contains_key("colorToken") {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: format!("{}.color", comp.kind),
+            expected: vec!["color or colorToken, not both".to_owned()],
+        });
+    }
 
     // 子组件策略。
+    if comp.kind == "List" && comp.props.contains_key("items") && !comp.children.is_empty() {
+        return Err(UiSchemaError::InvalidChildren(
+            "List 使用 items 时不能同时声明静态 children".to_owned(),
+        ));
+    }
     match spec.children {
         ChildrenPolicy::Forbidden => {
             if !comp.children.is_empty() {
@@ -258,10 +296,10 @@ fn validate_binding(
     component: &str,
     prop_name: &str,
 ) -> Result<(), UiSchemaError> {
-    let target_type = match binding {
+    let target_schema = match binding {
         Binding::State { bind } => {
             let segs = path::PathSegments::parse(bind)?;
-            path::json_type(path::resolve(state_schema, segs.segments())?).to_owned()
+            path::resolve(state_schema, segs.segments())?
         }
         Binding::Item { item } => {
             let item_schema = item_schema.ok_or_else(|| {
@@ -270,13 +308,44 @@ fn validate_binding(
                 ))
             })?;
             if item == "value" {
-                path::json_type(item_schema).to_owned()
+                item_schema
             } else {
                 let segs = path::PathSegments::parse(&format!("$.{item}"))?;
-                path::json_type(path::resolve(item_schema, segs.segments())?).to_owned()
+                path::resolve(item_schema, segs.segments())?
             }
         }
     };
+    if component == "List" && prop_name == "items" {
+        match target_schema {
+            JsonSchema::Array {
+                max_items: Some(max_items),
+                items,
+            } if *max_items <= crate::MAX_LIST_ITEMS
+                && matches!(items.as_ref(), JsonSchema::String { .. }) => {}
+            _ => {
+                return Err(UiSchemaError::BindingTypeMismatch(format!(
+                    "List.items 必须绑定 maxItems <= {} 的 string array",
+                    crate::MAX_LIST_ITEMS
+                )));
+            }
+        }
+    }
+    if component == "Sparkline" && prop_name == "values" {
+        match target_schema {
+            JsonSchema::Array {
+                max_items: Some(max_items),
+                items,
+            } if *max_items <= crate::MAX_CHART_POINTS
+                && matches!(items.as_ref(), JsonSchema::Number | JsonSchema::Integer) => {}
+            _ => {
+                return Err(UiSchemaError::BindingTypeMismatch(format!(
+                    "Sparkline.values 必须绑定 maxItems <= {} 的 number array",
+                    crate::MAX_CHART_POINTS
+                )));
+            }
+        }
+    }
+    let target_type = path::json_type(target_schema).to_owned();
     let allowed = prop.types.iter().any(|t| {
         t.name() == target_type || (matches!(t, JsonType::Number) && target_type == "integer")
     });
@@ -410,7 +479,7 @@ mod tests {
 
     fn valid_doc() -> UiDocument {
         UiDocument {
-            ui_api_version: "1.0.0".into(),
+            ui_api_version: crate::UI_API_VERSION.into(),
             state: StateSchema {
                 initial: json!({"time": "--:--:--", "running": false, "zones": []}),
                 schema: clock_schema(),
@@ -735,10 +804,205 @@ mod tests {
     }
 
     #[test]
+    fn contract_vector_component_minor_gate() {
+        let badge = Component {
+            kind: "Badge".into(),
+            props: BTreeMap::from([("label".into(), PropValue::Literal(json!("ok")))]),
+            ..Default::default()
+        };
+        let mut old = with_single(badge.clone());
+        old.ui_api_version = "1.0.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+        let mut current = with_single(badge);
+        current.ui_api_version = "1.1.0".into();
+        assert!(validate_document(&current).is_ok());
+    }
+
+    #[test]
+    fn contract_vector_list_items_minor_and_budget_gate() {
+        let list = Component {
+            kind: "List".into(),
+            props: BTreeMap::from([(
+                "items".into(),
+                PropValue::Binding(Binding::State {
+                    bind: "$.zones".into(),
+                }),
+            )]),
+            ..Default::default()
+        };
+        let mut old = with_single(list.clone());
+        old.ui_api_version = "1.1.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+        let current = with_single(list.clone());
+        assert!(validate_document(&current).is_ok());
+
+        let mut unbounded = with_single(list);
+        if let JsonSchema::Object { properties, .. } = &mut unbounded.state.schema {
+            properties.insert(
+                "zones".into(),
+                JsonSchema::Array {
+                    max_items: None,
+                    items: Box::new(JsonSchema::String {
+                        max_length: Some(64),
+                    }),
+                },
+            );
+        }
+        assert!(matches!(
+            validate_document(&unbounded),
+            Err(UiSchemaError::BindingTypeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn contract_vector_sparkline_requires_bounded_numbers_and_label() {
+        let sparkline = Component {
+            kind: "Sparkline".into(),
+            props: BTreeMap::from([
+                (
+                    "values".into(),
+                    PropValue::Binding(Binding::State {
+                        bind: "$.trend".into(),
+                    }),
+                ),
+                ("label".into(), PropValue::Literal(json!("Usage trend"))),
+            ]),
+            ..Default::default()
+        };
+        let mut current = with_single(sparkline.clone());
+        if let JsonSchema::Object { properties, .. } = &mut current.state.schema {
+            properties.insert(
+                "trend".into(),
+                JsonSchema::Array {
+                    max_items: Some(16),
+                    items: Box::new(JsonSchema::Number),
+                },
+            );
+        }
+        current.state.initial["trend"] = json!([]);
+        assert!(validate_document(&current).is_ok());
+
+        let mut old = current.clone();
+        old.ui_api_version = "1.2.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+
+        let mut missing_label = current;
+        missing_label.root.children[0].props.remove("label");
+        assert!(matches!(
+            validate_document(&missing_label),
+            Err(UiSchemaError::MissingProp { .. })
+        ));
+    }
+
+    #[test]
+    fn contract_vector_responsive_minor_and_breakpoint_gate() {
+        let responsive = Component {
+            kind: "Responsive".into(),
+            props: BTreeMap::from([("breakpoint".into(), PropValue::Literal(json!(420)))]),
+            children: vec![text(PropValue::Literal(json!("content")))],
+            ..Default::default()
+        };
+        assert!(validate_document(&with_single(responsive.clone())).is_ok());
+
+        let mut old = with_single(responsive.clone());
+        old.ui_api_version = "1.3.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+
+        let mut invalid = with_single(responsive);
+        invalid.root.children[0]
+            .props
+            .insert("breakpoint".into(), PropValue::Literal(json!(120)));
+        assert!(matches!(
+            validate_document(&invalid),
+            Err(UiSchemaError::InvalidPropType { .. })
+        ));
+    }
+
+    #[test]
+    fn contract_vector_theme_token_minor_and_name_gate() {
+        let themed = text(PropValue::Literal(json!("balance")));
+        let mut current = with_single(themed.clone());
+        current.root.children[0]
+            .props
+            .insert("colorToken".into(), PropValue::Literal(json!("accent")));
+        assert!(validate_document(&current).is_ok());
+
+        let mut old = current.clone();
+        old.ui_api_version = "1.4.0".into();
+        assert!(matches!(
+            validate_document(&old),
+            Err(UiSchemaError::UnsupportedApiVersion(_))
+        ));
+
+        current.root.children[0]
+            .props
+            .insert("colorToken".into(), PropValue::Literal(json!("plugin-css")));
+        assert!(matches!(
+            validate_document(&current),
+            Err(UiSchemaError::InvalidPropType { .. })
+        ));
+    }
+
+    #[test]
+    fn contract_vector_control_accessibility_label_minor_gate() {
+        for kind in ["Toggle", "Progress", "Gauge"] {
+            let value_prop = if kind == "Toggle" { "checked" } else { "value" };
+            let value = if kind == "Toggle" {
+                json!(true)
+            } else {
+                json!(42)
+            };
+            let control = Component {
+                kind: kind.into(),
+                props: BTreeMap::from([
+                    (value_prop.into(), PropValue::Literal(value)),
+                    (
+                        "accessibilityLabel".into(),
+                        PropValue::Literal(json!(format!("{kind} status"))),
+                    ),
+                ]),
+                ..Default::default()
+            };
+            assert!(validate_document(&with_single(control.clone())).is_ok());
+
+            let mut old = with_single(control.clone());
+            old.ui_api_version = "1.5.0".into();
+            assert!(matches!(
+                validate_document(&old),
+                Err(UiSchemaError::UnsupportedApiVersion(_))
+            ));
+
+            let mut legacy = with_single(control.clone());
+            legacy.ui_api_version = "1.5.0".into();
+            legacy.root.children[0].props.remove("accessibilityLabel");
+            assert!(validate_document(&legacy).is_ok());
+
+            let mut missing = with_single(control);
+            missing.root.children[0].props.remove("accessibilityLabel");
+            assert!(matches!(
+                validate_document(&missing),
+                Err(UiSchemaError::MissingProp { prop, .. }) if prop == "accessibilityLabel"
+            ));
+        }
+    }
+
+    #[test]
     fn contract_vector_positive_components() {
         // 正例:registry 元素组件结构合法。
         for kind in [
-            "Text", "Button", "Toggle", "Progress", "Gauge", "Icon", "Image",
+            "Text", "Button", "Toggle", "Progress", "Badge", "Gauge", "Icon", "Image",
         ] {
             let root = Component {
                 kind: kind.into(),

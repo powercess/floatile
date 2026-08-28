@@ -57,6 +57,8 @@ pub struct PropSchema {
     pub types: &'static [JsonType],
     /// 是否允许 State/Item 绑定（如 `Text.text`、`Toggle.checked`）。
     pub allow_binding: bool,
+    /// 首次引入该 prop 的 UI API 1.x minor。
+    pub introduced_minor: u64,
     pub optional: bool,
 }
 
@@ -80,6 +82,8 @@ pub enum ComponentKind {
 #[derive(Debug, Clone)]
 pub struct ComponentSpec {
     pub name: &'static str,
+    /// 首次引入该组件的 UI API 1.x minor。
+    pub introduced_minor: u64,
     pub props: Vec<PropSchema>,
     pub input_events: &'static [&'static str],
     pub children: ChildrenPolicy,
@@ -102,48 +106,56 @@ const COMMON_ELEMENT_PROPS: &[PropSchema] = &[
         name: "padding",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "gap",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "width",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "height",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "opacity",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "radius",
         types: &[JsonType::Number],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "color",
         types: &[JsonType::String],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
     PropSchema {
         name: "border",
         types: &[JsonType::String],
         allow_binding: false,
+        introduced_minor: 0,
         optional: true,
     },
 ];
@@ -168,11 +180,26 @@ fn build_registry() -> Vec<ComponentSpec> {
             name: "columns",
             types: &[JsonType::Integer],
             allow_binding: false,
+            introduced_minor: 0,
             optional: true,
         }],
         &[],
     );
     element(&mut specs, "Scroll", ChildrenPolicy::Many, &[], &[]);
+    element_since(
+        &mut specs,
+        "Responsive",
+        4,
+        ChildrenPolicy::Many,
+        &[PropSchema {
+            name: "breakpoint",
+            types: &[JsonType::Number],
+            allow_binding: false,
+            introduced_minor: 4,
+            optional: false,
+        }],
+        &[],
+    );
 
     element(
         &mut specs,
@@ -183,12 +210,21 @@ fn build_registry() -> Vec<ComponentSpec> {
                 name: "text",
                 types: &[JsonType::String],
                 allow_binding: true,
+                introduced_minor: 0,
                 optional: false,
             },
             PropSchema {
                 name: "style",
                 types: &[JsonType::String],
                 allow_binding: false,
+                introduced_minor: 0,
+                optional: true,
+            },
+            PropSchema {
+                name: "colorToken",
+                types: &[JsonType::String],
+                allow_binding: false,
+                introduced_minor: 5,
                 optional: true,
             },
         ],
@@ -203,12 +239,14 @@ fn build_registry() -> Vec<ComponentSpec> {
                 name: "name",
                 types: &[JsonType::String],
                 allow_binding: true,
+                introduced_minor: 0,
                 optional: false,
             },
             PropSchema {
                 name: "size",
                 types: &[JsonType::Number],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
         ],
@@ -223,18 +261,21 @@ fn build_registry() -> Vec<ComponentSpec> {
                 name: "asset",
                 types: &[JsonType::String],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: false,
             },
             PropSchema {
                 name: "width",
                 types: &[JsonType::Number],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
             PropSchema {
                 name: "height",
                 types: &[JsonType::Number],
                 allow_binding: false,
+                introduced_minor: 0,
                 optional: true,
             },
         ],
@@ -249,6 +290,7 @@ fn build_registry() -> Vec<ComponentSpec> {
             name: "label",
             types: &[JsonType::String],
             allow_binding: true,
+            introduced_minor: 0,
             optional: false,
         }],
         &["activate"],
@@ -257,12 +299,22 @@ fn build_registry() -> Vec<ComponentSpec> {
         &mut specs,
         "Toggle",
         ChildrenPolicy::Forbidden,
-        &[PropSchema {
-            name: "checked",
-            types: &[JsonType::Boolean],
-            allow_binding: true,
-            optional: false,
-        }],
+        &[
+            PropSchema {
+                name: "checked",
+                types: &[JsonType::Boolean],
+                allow_binding: true,
+                introduced_minor: 0,
+                optional: false,
+            },
+            PropSchema {
+                name: "accessibilityLabel",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 6,
+                optional: true,
+            },
+        ],
         &["toggle"],
     );
 
@@ -270,31 +322,117 @@ fn build_registry() -> Vec<ComponentSpec> {
         &mut specs,
         "Progress",
         ChildrenPolicy::Forbidden,
-        &[PropSchema {
-            name: "value",
-            types: &[JsonType::Number],
-            allow_binding: true,
-            optional: false,
-        }],
+        &[
+            PropSchema {
+                name: "value",
+                types: &[JsonType::Number],
+                allow_binding: true,
+                introduced_minor: 0,
+                optional: false,
+            },
+            PropSchema {
+                name: "accessibilityLabel",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 6,
+                optional: true,
+            },
+        ],
+        &[],
+    );
+    element_since(
+        &mut specs,
+        "Badge",
+        1,
+        ChildrenPolicy::Forbidden,
+        &[
+            PropSchema {
+                name: "label",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 0,
+                optional: false,
+            },
+            PropSchema {
+                name: "tone",
+                types: &[JsonType::String],
+                allow_binding: false,
+                introduced_minor: 0,
+                optional: true,
+            },
+        ],
         &[],
     );
     element(
         &mut specs,
         "Gauge",
         ChildrenPolicy::Forbidden,
+        &[
+            PropSchema {
+                name: "value",
+                types: &[JsonType::Number],
+                allow_binding: true,
+                introduced_minor: 0,
+                optional: false,
+            },
+            PropSchema {
+                name: "accessibilityLabel",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 6,
+                optional: true,
+            },
+        ],
+        &[],
+    );
+    element(
+        &mut specs,
+        "List",
+        ChildrenPolicy::Many,
         &[PropSchema {
-            name: "value",
-            types: &[JsonType::Number],
+            name: "items",
+            types: &[JsonType::Array],
             allow_binding: true,
-            optional: false,
+            introduced_minor: 2,
+            optional: true,
         }],
         &[],
     );
-    element(&mut specs, "List", ChildrenPolicy::Many, &[], &[]);
+    element_since(
+        &mut specs,
+        "Sparkline",
+        3,
+        ChildrenPolicy::Forbidden,
+        &[
+            PropSchema {
+                name: "values",
+                types: &[JsonType::Array],
+                allow_binding: true,
+                introduced_minor: 3,
+                optional: false,
+            },
+            PropSchema {
+                name: "label",
+                types: &[JsonType::String],
+                allow_binding: true,
+                introduced_minor: 3,
+                optional: false,
+            },
+            PropSchema {
+                name: "tone",
+                types: &[JsonType::String],
+                allow_binding: false,
+                introduced_minor: 3,
+                optional: true,
+            },
+        ],
+        &[],
+    );
 
     // 控制组件（Canvas/Path 在 renderer spike 通过前不启用）。
     specs.push(ComponentSpec {
         name: "If",
+        introduced_minor: 0,
         props: Vec::new(),
         input_events: &[],
         children: ChildrenPolicy::Forbidden,
@@ -302,6 +440,7 @@ fn build_registry() -> Vec<ComponentSpec> {
     });
     specs.push(ComponentSpec {
         name: "ForEach",
+        introduced_minor: 0,
         props: Vec::new(),
         input_events: &[],
         children: ChildrenPolicy::Forbidden,
@@ -317,11 +456,23 @@ fn element(
     props: &[PropSchema],
     events: &'static [&'static str],
 ) {
+    element_since(out, name, 0, children, props, events);
+}
+
+fn element_since(
+    out: &mut Vec<ComponentSpec>,
+    name: &'static str,
+    introduced_minor: u64,
+    children: ChildrenPolicy,
+    props: &[PropSchema],
+    events: &'static [&'static str],
+) {
     let mut all = Vec::with_capacity(COMMON_ELEMENT_PROPS.len() + props.len());
     all.extend_from_slice(COMMON_ELEMENT_PROPS);
     all.extend_from_slice(props);
     out.push(ComponentSpec {
         name,
+        introduced_minor,
         props: all,
         input_events: events,
         children,
@@ -354,6 +505,85 @@ pub fn validate_literal(
             expected,
         });
     }
+    if spec.name == "Badge"
+        && prop.name == "tone"
+        && let Some(value) = json.as_str()
+        && !["neutral", "info", "success", "warning", "danger"].contains(&value)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Badge.tone".to_owned(),
+            expected: vec!["neutral|info|success|warning|danger".to_owned()],
+        });
+    }
+    if spec.name == "List"
+        && prop.name == "items"
+        && let Some(items) = json.as_array()
+        && (items.len() > crate::MAX_LIST_ITEMS || items.iter().any(|item| !item.is_string()))
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "List.items".to_owned(),
+            expected: vec![format!(
+                "string array with at most {} items",
+                crate::MAX_LIST_ITEMS
+            )],
+        });
+    }
+    if spec.name == "Sparkline"
+        && prop.name == "values"
+        && let Some(items) = json.as_array()
+        && (items.len() > crate::MAX_CHART_POINTS
+            || items.iter().any(|item| item.as_f64().is_none()))
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Sparkline.values".to_owned(),
+            expected: vec![format!(
+                "number array with at most {} points",
+                crate::MAX_CHART_POINTS
+            )],
+        });
+    }
+    if spec.name == "Sparkline"
+        && prop.name == "tone"
+        && let Some(value) = json.as_str()
+        && !["info", "success", "warning", "danger"].contains(&value)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Sparkline.tone".to_owned(),
+            expected: vec!["info|success|warning|danger".to_owned()],
+        });
+    }
+    if spec.name == "Grid"
+        && prop.name == "columns"
+        && let Some(columns) = json.as_u64()
+        && !(1..=16).contains(&columns)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Grid.columns".to_owned(),
+            expected: vec!["integer from 1 through 16".to_owned()],
+        });
+    }
+    if spec.name == "Responsive"
+        && prop.name == "breakpoint"
+        && let Some(breakpoint) = json.as_f64()
+        && !(240.0..=1920.0).contains(&breakpoint)
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: "Responsive.breakpoint".to_owned(),
+            expected: vec!["number from 240 through 1920".to_owned()],
+        });
+    }
+    if prop.name == "colorToken"
+        && let Some(token) = json.as_str()
+        && crate::theme::color_token(token).is_none()
+    {
+        return Err(UiSchemaError::InvalidPropType {
+            prop: format!("{}.colorToken", spec.name),
+            expected: crate::theme::COLOR_TOKENS
+                .iter()
+                .map(|token| token.name.to_owned())
+                .collect(),
+        });
+    }
     Ok(())
 }
 
@@ -366,7 +596,7 @@ mod tests {
     fn registry_has_expected_v1_components() {
         for name in [
             "Row", "Column", "Stack", "Grid", "Scroll", "Text", "Icon", "Image", "Button",
-            "Toggle", "Progress", "Gauge", "List", "If", "ForEach",
+            "Toggle", "Progress", "Badge", "Gauge", "List", "If", "ForEach",
         ] {
             assert!(find(name).is_ok(), "missing component {name}");
         }

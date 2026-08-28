@@ -172,7 +172,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 | PP-M3 | Capability Registry 单源 | 已完成（自动化契约验证） | 统一 capability 元数据，生成/校验 manifest、Broker、SDK 映射与 contract vectors | 注册表/WIT/manifest/CLI/Broker 动态覆盖测试；恶意插件和配额测试证明默认拒绝 | `core`、`services`、plugin API、SDK、CLI |
 | PP-M4 | Rust 作者闭环 | 已完成（自动化契约与 Xvfb 验证；公开发布受许可门阻断） | 可发布方式待许可决定的 SDK 解析、生成模板修复、dev/test/preview/build/install/run/inspect | 干净目录中的示例插件无需仓库私有路径即可完成全流程；JSON 契约有测试 | SDK、CLI、runtime、shell、docs |
 | PP-M5 | 外部数据平台 | 已完成（自动化契约验证） | Connection、Credential Vault、HTTPS Broker、调度、缓存、重试、限流和连接健康状态 | AI 余额参考插件只使用通用能力，且 secret 不进入 guest、日志、State 或包 | `core`、`store`、`services`、shell、WIT、SDK |
-| PP-M6 | UI 平台 | 规划中 | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
+| PP-M6 | UI 平台 | 已完成（自动化契约验证） | loading/empty/error、列表/网格、badge、progress、sparkline/chart、主题与响应式布局 | 参考插件无需第三方 Slint/HTML 即可表达监控型 UI；预算和无障碍语义有契约 | UI schema、renderer、SDK、shell |
 | PP-M7 | SDK 与语言生态 | 规划中 | Rust API 稳定化；在工具链可行后接入 TypeScript；生成文档、迁移指南和 conformance kit | 双语言通过相同 contract vectors、恶意输入和端到端示例；不存在宿主语义分叉 | SDK、plugin API、CLI、CI |
 | PP-M8 | 分发与信任 | 规划中 | publisher/signing、来源与信任、权限 diff、兼容性解析、更新/回滚和可恢复安装 | 安装与升级能解释权限变化和失败原因；篡改/降级/回滚路径有测试 | CLI、core、store、shell、distribution |
 | PP-M9 | 组合与自动化 | 规划中 | 宿主事件、定时/系统触发、受控 pub/sub、工作流和通知 | 插件间不直接持有句柄；事件有 schema、scope、背压、循环检测和审计 | core、runtime、services、WIT、SDK |
@@ -180,7 +180,7 @@ exit code。生成项目必须只依赖可获得的 SDK，并能从干净目录�
 
 ### 7.1 当前基线与最近顺序
 
-截至 2026-08-27，仓库已具备统一 UI IR、WIT 形状、Wasmtime actor、基础 capability 类型与 Broker、
+截至 2026-08-28，仓库已具备统一 UI IR、WIT 形状、Wasmtime actor、基础 capability 类型与 Broker、
 部分宿主服务、Rust SDK、包校验/安装和第三方运行时窗口等基础。PP-M1 已打通自动化的
 持久多实例生命周期：`floatile instance` 提供创建、枚举、读取、配置、启停和删除；
 CLI 与 shell 共用安装目录 digest/身份/Config schema 复验；shell 后台监督器在不阻塞 Slint
@@ -213,6 +213,11 @@ Config Schema 表单、observed 状态和手动 retry；Linux X11/Xvfb 已自动
   runtime。包扫描、host/guest 契约、Broker 恶意路径及全 workspace 门禁证明 secret 不进入 guest、日志、
   State 或包。平台 Keyring、完整连接管理产品入口和真实 provider 人工网络证据属于后续增强与环境证据，
   不改变 PP-M5 通用能力退出门的完成状态；
+- PP-M6 已通过 UI API 1.1–1.6 交付状态页组合、有界列表/网格、badge/progress、受预算约束的
+  sparkline、响应式容器、宿主主题 token 与控件无障碍语义。AI Balance 的真实包验收会读取并复验
+  `widget.ftui`，证明参考插件覆盖上述监控 UI 契约且包内不含第三方 `.slint`/HTML；schema、renderer、
+  SDK 与 shell 的契约/真实 Slint 无头编译测试均通过。真实屏幕阅读器行为、跨平台视觉与完整无障碍仍属
+  PP-M10 环境验收，不把它们误记为 PP-M6 自动化契约证据；
 - TypeScript runtime 的 ADR-0003 spike 结论是 no-go，不能把语言目标标记为完成；
 - 设置、连接管理、权限解释和开发诊断还没有完整产品入口。
 
