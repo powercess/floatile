@@ -13,6 +13,7 @@ use floatile_core::{
 use rusqlite::{Connection, OptionalExtension};
 
 pub mod installation;
+pub mod trust;
 
 /// 持久化错误。
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +29,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 8;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -70,6 +71,15 @@ impl Store {
         }
         if current < 5 {
             self.migration_v5()?;
+        }
+        if current < 6 {
+            self.migration_v6()?;
+        }
+        if current < 7 {
+            self.migration_v7()?;
+        }
+        if current < 8 {
+            self.migration_v8()?;
         }
         Ok(())
     }
@@ -213,6 +223,88 @@ impl Store {
             .map_err(|error| StoreError::Migration(format!("v5 提交失败: {error}")))
     }
 
+    fn migration_v6(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS publisher_trust (
+                publisher_id TEXT PRIMARY KEY,
+                state        TEXT NOT NULL CHECK (state IN ('active','revoked')),
+                updated_at   INTEGER NOT NULL CHECK (updated_at >= 0)
+            );
+            CREATE TABLE IF NOT EXISTS publisher_keys (
+                publisher_id TEXT NOT NULL,
+                key_id       TEXT NOT NULL,
+                public_key   BLOB NOT NULL CHECK (length(public_key) = 32),
+                state        TEXT NOT NULL CHECK (state IN ('active','revoked')),
+                updated_at   INTEGER NOT NULL CHECK (updated_at >= 0),
+                PRIMARY KEY (publisher_id, key_id),
+                FOREIGN KEY (publisher_id) REFERENCES publisher_trust(publisher_id)
+            );
+            CREATE TABLE IF NOT EXISTS accepted_packages (
+                publisher_id TEXT NOT NULL,
+                plugin_id    TEXT NOT NULL,
+                version      TEXT NOT NULL,
+                digest       BLOB NOT NULL CHECK (length(digest) = 32),
+                accepted_at  INTEGER NOT NULL CHECK (accepted_at >= 0),
+                PRIMARY KEY (publisher_id, plugin_id),
+                FOREIGN KEY (publisher_id) REFERENCES publisher_trust(publisher_id)
+            );
+            PRAGMA user_version = 6;",
+        )
+        .map_err(|error| {
+            StoreError::Migration(format!(
+                "v6 建立 publisher trust 与 anti-rollback 表失败: {error}"
+            ))
+        })?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v6 提交失败: {error}")))
+    }
+
+    fn migration_v7(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_installations (
+                transaction_id TEXT PRIMARY KEY,
+                publisher_id   TEXT NOT NULL,
+                plugin_id      TEXT NOT NULL,
+                version        TEXT NOT NULL,
+                signed_digest  BLOB NOT NULL CHECK (length(signed_digest) = 32),
+                install_digest BLOB NOT NULL CHECK (length(install_digest) = 32),
+                staging_name   TEXT NOT NULL,
+                final_relative TEXT NOT NULL,
+                created_at     INTEGER NOT NULL CHECK (created_at >= 0),
+                FOREIGN KEY (publisher_id) REFERENCES publisher_trust(publisher_id)
+            );
+            PRAGMA user_version = 7;",
+        )
+        .map_err(|error| StoreError::Migration(format!("v7 建立可恢复安装意图表失败: {error}")))?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v7 提交失败: {error}")))
+    }
+
+    fn migration_v8(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS installation_rollbacks (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id   INTEGER NOT NULL,
+                plugin_id     TEXT NOT NULL,
+                from_version  TEXT NOT NULL,
+                from_digest   BLOB NOT NULL CHECK (length(from_digest) = 32),
+                target_version TEXT NOT NULL,
+                target_digest BLOB NOT NULL CHECK (length(target_digest) = 32),
+                reason        TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 512),
+                rolled_back_at INTEGER NOT NULL CHECK (rolled_back_at >= 0)
+            );
+            CREATE INDEX IF NOT EXISTS installation_rollbacks_instance
+                ON installation_rollbacks(instance_id, id);
+            PRAGMA user_version = 8;",
+        )
+        .map_err(|error| StoreError::Migration(format!("v8 建立显式回滚审计表失败: {error}")))?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v8 提交失败: {error}")))
+    }
+
     /// 布局存储接口。
     pub fn layout(&self) -> LayoutStore<'_> {
         LayoutStore { conn: &self.conn }
@@ -234,6 +326,11 @@ impl Store {
     /// 宿主外部数据连接及其实例授权接口。只持久化不透明 CredentialRef，不保存 secret。
     pub fn connections(&self) -> ConnectionStore<'_> {
         ConnectionStore { conn: &self.conn }
+    }
+
+    /// 宿主持有的 publisher trust、签名 key 与 anti-rollback 状态接口。
+    pub fn trust(&self) -> trust::PublisherTrustStore<'_> {
+        trust::PublisherTrustStore::new(&self.conn)
     }
 }
 
@@ -555,6 +652,70 @@ impl<'a> InstanceStore<'a> {
              WHERE instance_id = ?3 AND updated_at <= ?2",
             rusqlite::params![desired_state.as_str(), updated_at, instance_id],
         )?;
+        Ok(changed == 1)
+    }
+
+    /// Atomically rebinds a stopped instance to a verified historical installation and audits it.
+    pub fn rollback_installation(
+        &self,
+        instance_id: InstanceId,
+        current: &InstallationRef,
+        target: &InstallationRef,
+        reason: &str,
+        updated_at: u64,
+    ) -> Result<bool, StoreError> {
+        if reason.is_empty() || reason.len() > 512 {
+            return Err(StoreError::Corrupt(
+                "rollback reason 必须为 1..=512 字节".to_owned(),
+            ));
+        }
+        current
+            .validate()
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        target
+            .validate()
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        let instance_id_sql = sqlite_i64(instance_id.0, "instance_id")?;
+        let updated_at_sql = sqlite_i64(updated_at, "updated_at")?;
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE plugin_instances
+             SET installation_version = ?1, installation_digest = ?2, updated_at = ?3
+             WHERE instance_id = ?4
+               AND plugin_id = ?5
+               AND installation_version = ?6
+               AND installation_digest = ?7
+               AND desired_state = 'stopped'
+               AND updated_at <= ?3",
+            rusqlite::params![
+                target.version(),
+                target.digest().as_bytes().as_slice(),
+                updated_at_sql,
+                instance_id_sql,
+                current.plugin().0,
+                current.version(),
+                current.digest().as_bytes().as_slice(),
+            ],
+        )?;
+        if changed == 1 {
+            tx.execute(
+                "INSERT INTO installation_rollbacks (
+                    instance_id, plugin_id, from_version, from_digest,
+                    target_version, target_digest, reason, rolled_back_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    instance_id_sql,
+                    current.plugin().0,
+                    current.version(),
+                    current.digest().as_bytes().as_slice(),
+                    target.version(),
+                    target.digest().as_bytes().as_slice(),
+                    reason,
+                    updated_at_sql,
+                ],
+            )?;
+        }
+        tx.commit()?;
         Ok(changed == 1)
     }
 
@@ -1292,6 +1453,15 @@ mod tests {
         .unwrap()
     }
 
+    fn historical_installation() -> InstallationRef {
+        InstallationRef::new(
+            PluginId("dev.floatile.clock".into()),
+            "1.0.0",
+            InstallationDigest::from_bytes([0x19; 32]),
+        )
+        .unwrap()
+    }
+
     fn config(label: &str) -> InstanceConfig {
         InstanceConfig::new(serde_json::json!({ "label": label })).unwrap()
     }
@@ -1333,6 +1503,65 @@ mod tests {
             )
             .unwrap();
         assert_eq!(instance.id(), InstanceId(2));
+    }
+
+    #[test]
+    fn rollback_rebinds_stopped_instance_and_appends_audit_atomically() {
+        let store = open(":memory:").unwrap();
+        let instance = store
+            .instances()
+            .create(
+                &installation(),
+                &config("rollback"),
+                InstanceDesiredState::Stopped,
+                10,
+            )
+            .unwrap();
+        assert!(
+            store
+                .instances()
+                .rollback_installation(
+                    instance.id(),
+                    instance.installation(),
+                    &historical_installation(),
+                    "regression in 1.2.3",
+                    11,
+                )
+                .unwrap()
+        );
+        let restored = store.instances().get(instance.id()).unwrap().unwrap();
+        assert_eq!(restored.installation(), &historical_installation());
+        let count: u32 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM installation_rollbacks", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+
+        store
+            .instances()
+            .set_desired_state(instance.id(), InstanceDesiredState::Running, 12)
+            .unwrap();
+        assert!(
+            !store
+                .instances()
+                .rollback_installation(
+                    instance.id(),
+                    &historical_installation(),
+                    &installation(),
+                    "must stop first",
+                    13,
+                )
+                .unwrap()
+        );
+        let count: u32 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM installation_rollbacks", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -1553,6 +1782,107 @@ mod tests {
             )
             .unwrap();
         assert_eq!(allocator_exists, 0);
+    }
+
+    fn v5_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store.migration_v2().unwrap();
+        store.migration_v3().unwrap();
+        store.migration_v4().unwrap();
+        store.migration_v5().unwrap();
+        store
+    }
+
+    #[test]
+    fn migration_v6_failure_rolls_back_all_trust_tables_and_version() {
+        let mut store = v5_store();
+        store
+            .conn
+            .execute_batch("CREATE INDEX publisher_trust ON layout(instance_id);")
+            .unwrap();
+
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        for table in ["publisher_trust", "accepted_packages"] {
+            let exists: u32 = store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 0, "{table} leaked from failed migration");
+        }
+    }
+
+    fn v6_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut store = Store { conn };
+        store.migration_v1().unwrap();
+        store.migration_v2().unwrap();
+        store.migration_v3().unwrap();
+        store.migration_v4().unwrap();
+        store.migration_v5().unwrap();
+        store.migration_v6().unwrap();
+        store
+    }
+
+    #[test]
+    fn migration_v7_failure_rolls_back_pending_table_and_version() {
+        let mut store = v6_store();
+        store
+            .conn
+            .execute_batch("CREATE INDEX pending_installations ON layout(instance_id);")
+            .unwrap();
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        let exists: u32 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'pending_installations'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0);
+    }
+
+    #[test]
+    fn migration_v8_failure_rolls_back_audit_table_and_version() {
+        let mut store = v6_store();
+        store.migration_v7().unwrap();
+        store
+            .conn
+            .execute_batch("CREATE INDEX installation_rollbacks ON layout(instance_id);")
+            .unwrap();
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        let exists: u32 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'installation_rollbacks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0);
     }
 
     #[test]

@@ -1213,6 +1213,7 @@ mod tests {
             ui_api_version: "1.0.0".to_owned(),
             installed_at: 1,
             source: "test".to_owned(),
+            trust: floatile_core::install::InstallationTrust::Unsigned,
             files: files
                 .iter()
                 .map(|(name, bytes)| (name.clone(), hex_encode(&file_digest(bytes))))

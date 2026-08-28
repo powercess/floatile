@@ -6,15 +6,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use floatile_cli::{
     CommandErrorReport, build, check, conformance, dev, inspect, install, instance, package,
-    preview, project, run, test,
+    preview, project, run, test, trust,
 };
-use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
+use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId, PermissionChangeKind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|preview|run|schema|conformance> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|trust|instance|dev|test|preview|run|schema|conformance> [参数]"
         );
         return ExitCode::from(2);
     }
@@ -25,6 +25,7 @@ fn main() -> ExitCode {
         "inspect" => cmd_inspect(&args[2..]),
         "build" => cmd_build(&args[2..]),
         "install" => cmd_install(&args[2..]),
+        "trust" => cmd_trust(&args[2..]),
         "instance" => cmd_instance(&args[2..]),
         "dev" => cmd_dev(&args[2..]),
         "test" => cmd_test(&args[2..]),
@@ -36,6 +37,52 @@ fn main() -> ExitCode {
             eprintln!("未知命令: {other}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn cmd_trust(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    let positionals = match author_positionals(args, &["--db"], &[], 3) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FTRUST_ARGUMENT", &detail, json, true),
+    };
+    let database = match opts_database(args) {
+        Ok(database) => database,
+        Err(detail) => return render_basic_error("FTRUST_ARGUMENT", &detail, json, true),
+    };
+    let result = match positionals.as_slice() {
+        ["show", publisher] => trust::show(&database, publisher),
+        ["add-key", publisher, public_key] => {
+            trust::add_key(&database, publisher, public_key, unix_timestamp())
+        }
+        ["revoke-key", publisher, public_key] => {
+            trust::revoke_key(&database, publisher, public_key, unix_timestamp())
+        }
+        ["revoke-publisher", publisher] => {
+            trust::revoke_publisher(&database, publisher, unix_timestamp())
+        }
+        _ => {
+            return render_basic_error(
+                "FTRUST_ARGUMENT",
+                "用法: trust <show|add-key|revoke-key|revoke-publisher> <publisher> [public-key-hex] [--db PATH]",
+                json,
+                true,
+            );
+        }
+    };
+    match result {
+        Ok(view) => {
+            if json {
+                println!("{}", serialize_json(&view));
+            } else {
+                println!("trust: {} state={}", view.publisher_id, view.state);
+                for key in view.keys {
+                    println!("  key={} state={}", key.key_id, key.state);
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => render_basic_error(error.code(), &error.to_string(), json, false),
     }
 }
 
@@ -312,6 +359,21 @@ fn cmd_instance(args: &[String]) -> ExitCode {
         }),
         "delete" => instance_id(&options)
             .and_then(|id| instance::delete_instance(&database, id).map(InstanceOutput::Deleted)),
+        "rollback" => instance_id(&options).and_then(|id| {
+            let version = options.version.as_deref().ok_or_else(|| {
+                instance::InstanceCommandError::InvalidArguments(
+                    "rollback 需要 --version".to_owned(),
+                )
+            })?;
+            let reason = options.reason.as_deref().ok_or_else(|| {
+                instance::InstanceCommandError::InvalidArguments(
+                    "rollback 需要 --reason".to_owned(),
+                )
+            })?;
+            let store = options.plugin_store()?;
+            instance::rollback_instance(&database, &store, id, version, reason, unix_timestamp())
+                .map(InstanceOutput::One)
+        }),
         _ => {
             print_instance_usage();
             return ExitCode::from(2);
@@ -450,6 +512,7 @@ struct InstanceCliOptions {
     config_file: Option<PathBuf>,
     database: Option<PathBuf>,
     store: Option<PathBuf>,
+    reason: Option<String>,
     json: bool,
     start: bool,
 }
@@ -463,7 +526,7 @@ impl InstanceCliOptions {
                 "--json" => parsed.json = true,
                 "--no-interactive" => {}
                 "--start" => parsed.start = true,
-                "--version" | "--config" | "--config-file" | "--db" | "--store" => {
+                "--version" | "--config" | "--config-file" | "--db" | "--store" | "--reason" => {
                     let name = args[index].as_str();
                     index += 1;
                     let value = args.get(index).ok_or_else(|| format!("{name} 缺少值"))?;
@@ -475,6 +538,8 @@ impl InstanceCliOptions {
                         parsed.config_file = Some(PathBuf::from(value));
                     } else if name == "--db" {
                         parsed.database = Some(PathBuf::from(value));
+                    } else if name == "--reason" {
+                        parsed.reason = Some(value.clone());
                     } else {
                         parsed.store = Some(PathBuf::from(value));
                     }
@@ -555,7 +620,7 @@ fn unix_timestamp() -> u64 {
 
 fn print_instance_usage() {
     eprintln!(
-        "用法:\n  floatile instance create <plugin-id> --version <semver> [--config <JSON>|--config-file <path>] [--start] [--db PATH] [--store PATH] [--json]\n  floatile instance <list|get|start|stop|delete> [instance-id] [--db PATH] [--json]\n  floatile instance configure <instance-id> (--config <JSON>|--config-file <path>) [--db PATH] [--store PATH] [--json]"
+        "用法:\n  floatile instance create <plugin-id> --version <semver> [--config <JSON>|--config-file <path>] [--start] [--db PATH] [--store PATH] [--json]\n  floatile instance <list|get|start|stop|delete> [instance-id] [--db PATH] [--json]\n  floatile instance configure <instance-id> (--config <JSON>|--config-file <path>) [--db PATH] [--store PATH] [--json]\n  floatile instance rollback <instance-id> --version <historical-semver> --reason <text> [--db PATH] [--store PATH] [--json]"
     );
 }
 
@@ -823,7 +888,16 @@ fn cmd_test(args: &[String]) -> ExitCode {
 
 fn cmd_install(args: &[String]) -> ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let positionals = match author_positionals(args, &["--store"], &[], 1) {
+    let require_trusted = args.iter().any(|argument| argument == "--require-trusted");
+    let accept_permissions = args
+        .iter()
+        .any(|argument| argument == "--accept-permissions");
+    let positionals = match author_positionals(
+        args,
+        &["--store", "--db"],
+        &["--require-trusted", "--accept-permissions"],
+        1,
+    ) {
         Ok(positionals) => positionals,
         Err(detail) => return render_basic_error("FINST_ARGUMENT", &detail, json, true),
     };
@@ -844,8 +918,40 @@ fn cmd_install(args: &[String]) -> ExitCode {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "plugin.floatile".to_owned());
-    match install::install_package(&bytes, &store, &source, &package::PackageLimits::default()) {
+    let result = if require_trusted {
+        let database = match opts_database(args) {
+            Ok(database) => database,
+            Err(message) => return render_basic_error("FINST_ARGUMENT", &message, json, true),
+        };
+        if let Some(parent) = database.parent()
+            && !parent.as_os_str().is_empty()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return render_basic_error("FINST_TRUST_STORE", "无法创建信任数据库目录", json, false);
+        }
+        let trust_store = match floatile_store::open(&database) {
+            Ok(store) => store,
+            Err(_) => {
+                return render_basic_error("FINST_TRUST_STORE", "无法打开信任数据库", json, false);
+            }
+        };
+        if let Err(error) = install::recover_trusted_installs(&store, &trust_store) {
+            return render_basic_error(error.code(), error.public_detail().as_ref(), json, false);
+        }
+        install::install_trusted_package(
+            &bytes,
+            &store,
+            &source,
+            &package::PackageLimits::default(),
+            &trust_store,
+            accept_permissions,
+        )
+    } else {
+        install::install_package(&bytes, &store, &source, &package::PackageLimits::default())
+    };
+    match result {
         Ok(installed) => {
+            let upgrade = installed.upgrade.as_ref().map(upgrade_json);
             if json {
                 println!(
                     "{}",
@@ -857,22 +963,76 @@ fn cmd_install(args: &[String]) -> ExitCode {
                             "version": installed.meta.version,
                             "dir": installed.dir.display().to_string(),
                             "digest": installed.meta.digest,
+                            "trust": if require_trusted { "trusted" } else { "unsigned" },
+                            "upgrade": upgrade,
                         }
                     })
                 );
             } else {
                 println!(
-                    "已安装 {} {} -> {} (digest {})",
+                    "已安装 {} {} -> {} (digest {}, trust={})",
                     installed.manifest.id.0,
                     installed.meta.version,
                     installed.dir.display(),
                     &installed.meta.digest[..12],
+                    if require_trusted {
+                        "trusted"
+                    } else {
+                        "unsigned"
+                    },
                 );
+                if let Some(plan) = &installed.upgrade {
+                    println!(
+                        "  upgrade {} -> {} permission_confirmation={}",
+                        plan.current_version, plan.candidate_version, plan.requires_confirmation
+                    );
+                    for change in &plan.permissions {
+                        println!("    {} {:?}", change.capability.name(), change.kind);
+                    }
+                }
             }
             ExitCode::SUCCESS
         }
-        Err(error) => render_basic_error(error.code(), error.public_detail().as_ref(), json, false),
+        Err(error) => {
+            if let install::InstallError::PermissionConfirmationRequired(plan) = &error {
+                let detail = error.public_detail();
+                if json {
+                    let report = CommandErrorReport::new(
+                        error.code(),
+                        detail.as_ref(),
+                        serde_json::json!({ "upgrade": upgrade_json(plan) }),
+                    );
+                    eprintln!("{}", serialize_json(&report));
+                } else {
+                    eprintln!("命令失败: code={} detail={detail}", error.code());
+                    for change in &plan.permissions {
+                        eprintln!("  {} {:?}", change.capability.name(), change.kind);
+                    }
+                }
+                ExitCode::FAILURE
+            } else {
+                render_basic_error(error.code(), error.public_detail().as_ref(), json, false)
+            }
+        }
     }
+}
+
+fn upgrade_json(plan: &floatile_core::UpgradePlan) -> serde_json::Value {
+    serde_json::json!({
+        "currentVersion": plan.current_version.to_string(),
+        "candidateVersion": plan.candidate_version.to_string(),
+        "requiresConfirmation": plan.requires_confirmation,
+        "permissions": plan.permissions.iter().map(|change| serde_json::json!({
+            "capability": change.capability,
+            "change": match change.kind {
+                PermissionChangeKind::Added => "added",
+                PermissionChangeKind::Removed => "removed",
+                PermissionChangeKind::Expanded => "expanded",
+                PermissionChangeKind::Reduced => "reduced",
+                PermissionChangeKind::Unchanged => "unchanged",
+            }
+        })).collect::<Vec<_>>()
+    })
 }
 
 fn cmd_preview(args: &[String]) -> ExitCode {
@@ -1045,4 +1205,17 @@ fn opts_store(args: &[String]) -> Result<PathBuf, String> {
         return Ok(PathBuf::from(dir));
     }
     Err("未指定插件存储：请用 `--store PATH` 或设置环境变量 FLOATTILE_PLUGIN_DIR".to_owned())
+}
+
+/// 解析宿主持久化数据库：优先 `--db PATH`，其次环境变量，最后平台数据目录。
+fn opts_database(args: &[String]) -> Result<PathBuf, String> {
+    if let Some(path) = option_path(args, "--db") {
+        return Ok(path);
+    }
+    if let Some(path) = std::env::var_os("FLOATTILE_DB_PATH").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    floatile_platform::data_dir()
+        .map(|path| path.join("layout.db"))
+        .map_err(|error| error.to_string())
 }

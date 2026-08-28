@@ -11,6 +11,8 @@ publish = false
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
 jsonschema = { workspace = true }
 schemars = { workspace = true }
 semver = { workspace = true }

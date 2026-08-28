@@ -10,7 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
-use floatile_core::install::InstallMeta;
+use floatile_core::distribution::{SIGNATURE_FILE, verify_signature_envelope};
+use floatile_core::install::{InstallMeta, InstallationTrust};
 use floatile_core::instance::InstallationRef;
 use floatile_core::manifest::Manifest;
 use floatile_core::{InstanceDesiredState, InstanceId, PluginInstance};
@@ -84,6 +85,14 @@ pub enum LoadError {
     InvalidManifest(#[from] floatile_core::manifest::ManifestError),
     #[error("实例 Config 契约校验失败: {0}")]
     InvalidConfig(#[from] ConfigValidationError),
+    #[error("受信安装缺少 detached signature.json")]
+    MissingSignature,
+    #[error("受信安装的 publisher 不在宿主 trust store 中")]
+    UnknownPublisher,
+    #[error("受信安装签名校验失败: {0}")]
+    Signature(#[from] floatile_core::SignatureVerificationError),
+    #[error("读取 publisher trust 失败: {0}")]
+    TrustStore(String),
 }
 
 impl LoadError {
@@ -97,6 +106,23 @@ impl LoadError {
             Self::MissingEntrypoint(_) => "FLOAD_MISSING_ENTRYPOINT",
             Self::InvalidManifest(_) => "FLOAD_INVALID_MANIFEST",
             Self::InvalidConfig(error) => error.code(),
+            Self::MissingSignature => "FLOAD_SIGNATURE_MISSING",
+            Self::UnknownPublisher => "FLOAD_PUBLISHER_UNKNOWN",
+            Self::Signature(error) => match error {
+                floatile_core::SignatureVerificationError::PublisherRevoked => {
+                    "FLOAD_PUBLISHER_REVOKED"
+                }
+                floatile_core::SignatureVerificationError::KeyRevoked => "FLOAD_KEY_REVOKED",
+                floatile_core::SignatureVerificationError::UnknownKey => "FLOAD_KEY_UNKNOWN",
+                floatile_core::SignatureVerificationError::DigestMismatch => {
+                    "FLOAD_SIGNATURE_DIGEST"
+                }
+                floatile_core::SignatureVerificationError::InvalidSignature => {
+                    "FLOAD_SIGNATURE_INVALID"
+                }
+                _ => "FLOAD_SIGNATURE_MALFORMED",
+            },
+            Self::TrustStore(_) => "FLOAD_TRUST_STORE",
         }
     }
 }
@@ -150,6 +176,30 @@ pub fn load_runnable_instance(
         return Ok(None);
     };
     installation.validate_config(instance.config())?;
+    let plugin = installed_plugin(installation)?;
+    Ok(Some(RunnableInstance { instance, plugin }))
+}
+
+/// Production load path: trusted installations are re-verified against current host trust.
+/// Explicit unsigned development installations remain marked and use the sandboxed dev path.
+pub fn load_runnable_instance_with_trust(
+    plugin_store: &Path,
+    trust_store: &Store,
+    instance: PluginInstance,
+) -> Result<Option<RunnableInstance>, LoadError> {
+    let reference = instance.installation();
+    let installation = load_reference(plugin_store, reference).map_err(|error| match error {
+        InstallationCatalogError::MetadataMismatch => LoadError::InstallationMismatch {
+            id: reference.plugin().0.clone(),
+            version: reference.version().to_owned(),
+        },
+        other => map_catalog_error(other),
+    })?;
+    let Some(installation) = installation else {
+        return Ok(None);
+    };
+    installation.validate_config(instance.config())?;
+    verify_runtime_trust(&installation, trust_store)?;
     let plugin = installed_plugin(installation)?;
     Ok(Some(RunnableInstance { instance, plugin }))
 }
@@ -219,7 +269,7 @@ pub fn plan_running_instances(
         };
 
         let version = instance.installation().version().to_owned();
-        match load_runnable_instance(plugin_store, instance) {
+        match load_runnable_instance_with_trust(plugin_store, store, instance) {
             Ok(Some(runnable)) => plan.ready.push(runnable),
             Ok(None) => plan.failures.push(InstanceLoadFailure {
                 instance_id,
@@ -236,6 +286,33 @@ pub fn plan_running_instances(
         }
     }
     Ok(plan)
+}
+
+fn verify_runtime_trust(
+    installation: &InstalledInstallation,
+    store: &Store,
+) -> Result<(), LoadError> {
+    if installation.meta.trust == InstallationTrust::Unsigned {
+        return Ok(());
+    }
+    let publisher_id = installation.manifest.publisher.id.as_str();
+    let trust = store
+        .trust()
+        .get(publisher_id)
+        .map_err(|error| LoadError::TrustStore(error.to_string()))?
+        .ok_or(LoadError::UnknownPublisher)?;
+    let mut files = std::collections::BTreeMap::new();
+    for name in installation.meta.files.keys() {
+        let bytes = installation
+            .file(name)
+            .ok_or_else(|| LoadError::Read(format!("安装文件缺失: {name}")))?;
+        files.insert(name.clone(), bytes.to_vec());
+    }
+    let envelope = files
+        .get(SIGNATURE_FILE)
+        .ok_or(LoadError::MissingSignature)?;
+    verify_signature_envelope(envelope, &files, publisher_id, &trust.verifier_binding())?;
+    Ok(())
 }
 
 /// 枚举插件存储下全部已安装插件，每个 id 取最高已安装版本并逐一做 digest 复核。
@@ -298,6 +375,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use floatile_core::install::{content_digest, file_digest, hex_encode};
+    use floatile_store::trust::TrustState;
 
     fn manifest_json() -> String {
         serde_json::json!({
@@ -363,6 +441,7 @@ mod tests {
             ui_api_version: "1.0.0".into(),
             installed_at: 0,
             source: "x.floatile".into(),
+            trust: InstallationTrust::Unsigned,
             files: file_digests.clone(),
             digest: hex_encode(&content_digest(&files)),
         };
@@ -389,6 +468,35 @@ mod tests {
         let bytes = std::fs::read(store.join(id).join(version).join("install.json")).unwrap();
         let meta: InstallMeta = serde_json::from_slice(&bytes).unwrap();
         InstallationRef::from_install_meta(&meta).unwrap()
+    }
+
+    #[test]
+    fn runtime_refuses_trusted_marker_without_signature() {
+        let plugin_store = temp_store("runtime-trust");
+        write_install(&plugin_store, "dev.floatile.clock", "0.2.0", None);
+        let meta_path = plugin_store.join("dev.floatile.clock/0.2.0/install.json");
+        let mut meta: InstallMeta =
+            serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+        meta.trust = InstallationTrust::Trusted;
+        std::fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
+        let reference = InstallationRef::from_install_meta(&meta).unwrap();
+        let store = floatile_store::open(":memory:").unwrap();
+        store
+            .trust()
+            .upsert_key("dev.floatile", [31; 32], TrustState::Active, 1)
+            .unwrap();
+        let instance = PluginInstance::restore(
+            InstanceId(9),
+            reference,
+            floatile_core::InstanceConfig::empty(),
+            InstanceDesiredState::Stopped,
+            0,
+            1,
+            1,
+        )
+        .unwrap();
+        let error = load_runnable_instance_with_trust(&plugin_store, &store, instance).unwrap_err();
+        assert!(matches!(error, LoadError::MissingSignature));
     }
 
     #[test]

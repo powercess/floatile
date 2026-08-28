@@ -1,6 +1,7 @@
 pub mod capability;
 pub mod connection;
 pub mod constants;
+pub mod distribution;
 pub mod install;
 pub mod instance;
 pub mod layout;
@@ -18,6 +19,12 @@ pub use connection::{
     Connection, ConnectionGrant, ConnectionHealth, ConnectionId, ConnectionModelError,
     CredentialRef, MAX_CONNECTION_ACCOUNT_BYTES, MAX_CONNECTION_PROVIDER_BYTES,
     MAX_CREDENTIAL_REF_BYTES,
+};
+pub use distribution::{
+    PACKAGE_DIGEST_PAYLOAD_TYPE, PermissionChange, PermissionChangeKind, RollbackPlan,
+    RollbackPlanError, SIGNATURE_FILE, SignatureVerificationError, TrustedPublisher,
+    TrustedPublisherState, UpgradePlan, UpgradePlanError, dsse_pae, plan_rollback, plan_upgrade,
+    publisher_key_id, signable_content_digest, verify_signature_envelope,
 };
 pub use instance::{
     InstallationDigest, InstallationRef, InstanceConfig, InstanceDesiredState, InstanceModelError,

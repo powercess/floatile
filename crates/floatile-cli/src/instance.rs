@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use floatile_core::{
-    InstanceConfig, InstanceDesiredState, InstanceId, PluginInstance, instance::InstanceModelError,
+    InstanceConfig, InstanceDesiredState, InstanceId, PluginInstance, RollbackPlanError,
+    instance::InstanceModelError, plan_rollback,
 };
 use floatile_store::installation::{
     ConfigValidationError, InstallationCatalogError, InstalledInstallation, load_exact,
@@ -71,6 +72,10 @@ pub enum InstanceCommandError {
     ConcurrentUpdate(u64),
     #[error("无法创建实例数据库目录: {0}")]
     DatabaseDirectory(String),
+    #[error("回滚策略拒绝: {0}")]
+    Rollback(#[from] RollbackPlanError),
+    #[error("历史安装信任校验失败: {0}")]
+    Trust(#[from] crate::install::InstallError),
 }
 
 impl InstanceCommandError {
@@ -88,6 +93,8 @@ impl InstanceCommandError {
             Self::MustBeStopped(_) => "FINSTANCE_MUST_BE_STOPPED",
             Self::ConcurrentUpdate(_) => "FINSTANCE_CONCURRENT_UPDATE",
             Self::DatabaseDirectory(_) => "FINSTANCE_DATABASE_DIRECTORY",
+            Self::Rollback(_) => "FINSTANCE_ROLLBACK_REJECTED",
+            Self::Trust(error) => error.code(),
         }
     }
 }
@@ -195,6 +202,54 @@ pub fn delete_instance(
         return Err(InstanceCommandError::ConcurrentUpdate(instance_id.0));
     }
     Ok(InstanceView::from(&instance))
+}
+
+/// Rebinds a stopped instance to a trusted, verified historical installation.
+pub fn rollback_instance(
+    database: &Path,
+    plugin_store: &Path,
+    instance_id: InstanceId,
+    target_version: &str,
+    reason: &str,
+    unix_ts: u64,
+) -> Result<InstanceView, InstanceCommandError> {
+    if reason.is_empty() || reason.len() > 512 {
+        return Err(InstanceCommandError::InvalidArguments(
+            "rollback 需要 1..=512 字节的 --reason".to_owned(),
+        ));
+    }
+    let store = open_database(database)?;
+    let instance = require_instance(&store, instance_id)?;
+    require_stopped(&instance)?;
+    let current = load_reference(plugin_store, instance.installation())?.ok_or_else(|| {
+        InstanceCommandError::InstallationMissing {
+            id: instance.installation().plugin().0.clone(),
+            version: instance.installation().version().to_owned(),
+        }
+    })?;
+    let target = load_exact(
+        plugin_store,
+        &instance.installation().plugin().0,
+        target_version,
+    )?
+    .ok_or_else(|| InstanceCommandError::InstallationMissing {
+        id: instance.installation().plugin().0.clone(),
+        version: target_version.to_owned(),
+    })?;
+    plan_rollback(&current.manifest, &target.manifest)?;
+    validate_config(&target, instance.config())?;
+    crate::install::verify_trusted_installation(&target, &store)?;
+    let target_ref = target.reference()?;
+    if !store.instances().rollback_installation(
+        instance_id,
+        instance.installation(),
+        &target_ref,
+        reason,
+        unix_ts.max(instance.updated_at()),
+    )? {
+        return Err(InstanceCommandError::ConcurrentUpdate(instance_id.0));
+    }
+    get_from_store(&store, instance_id)
 }
 
 fn validate_config(
@@ -324,6 +379,7 @@ mod tests {
                 ui_api_version: "1.0.0".to_owned(),
                 installed_at: 1,
                 source: "test".to_owned(),
+                trust: floatile_core::install::InstallationTrust::Unsigned,
                 files: files
                     .iter()
                     .map(|(name, bytes)| (name.clone(), hex_encode(&file_digest(bytes))))
