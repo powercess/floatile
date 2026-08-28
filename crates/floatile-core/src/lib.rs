@@ -21,8 +21,9 @@ pub use connection::{
     MAX_CREDENTIAL_REF_BYTES,
 };
 pub use distribution::{
-    PACKAGE_DIGEST_PAYLOAD_TYPE, SIGNATURE_FILE, SignatureVerificationError, TrustedPublisher,
-    TrustedPublisherState, dsse_pae, publisher_key_id, signable_content_digest,
+    PACKAGE_DIGEST_PAYLOAD_TYPE, PermissionChange, PermissionChangeKind, SIGNATURE_FILE,
+    SignatureVerificationError, TrustedPublisher, TrustedPublisherState, UpgradePlan,
+    UpgradePlanError, dsse_pae, plan_upgrade, publisher_key_id, signable_content_digest,
     verify_signature_envelope,
 };
 pub use instance::{

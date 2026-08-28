@@ -68,6 +68,19 @@ pub struct Grants {
 - **实例级收窄**：安装时授予的是「上限」，运行时可被权限管理器收窄，不得放宽。
 - **密钥/凭证永远不进入插件**：插件只能持有 credential reference（`cred://<id>`），由宿主注入（见 HTTP Broker）。
 
+### 2.1 升级权限差异
+
+宿主按 capability 的稳定名称和结构化参数比较当前 manifest 与候选 manifest，并输出确定性的
+`Added | Removed | Expanded | Reduced | Unchanged` 差异：
+
+- 新增 capability，或扩大 key/origin scope、频率、并发、响应大小、超时与存储配额，必须重新确认；
+- 移除 capability 或严格收窄全部 scope/配额可以继续升级，不得借降权恢复旧 grant；
+- 参数一部分收窄但另一部分扩大时，整体按 `Expanded` 处理；未知 capability 或非法参数直接拒绝；
+- 插件 id、publisher 必须保持不变，候选 semver 必须更高，storage migration version 不得倒退。
+
+该差异只决定安装/升级是否需要确认，不替代运行时 `PermissionBroker` 决策。Connection 绑定变化仍
+作为独立授权变化重新确认，不能由相同 manifest permission 掩盖。
+
 ## 3. 决策模型（Check → Decide → Execute）
 
 ```

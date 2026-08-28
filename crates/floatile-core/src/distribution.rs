@@ -4,7 +4,7 @@
 //! signable package bytes were authenticated by a host-trusted publisher key; it never grants a
 //! capability and it does not replace install-time path or resource validation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::install::{content_digest, hex_encode};
+use crate::{CapabilityId, CapabilityParams, Manifest, parse_capability_params};
 
 pub const SIGNATURE_FILE: &str = "signature.json";
 pub const PACKAGE_DIGEST_PAYLOAD_TYPE: &str = "application/vnd.floatile.package-digest.v1";
@@ -57,6 +58,193 @@ pub enum SignatureVerificationError {
     UnknownKey,
     #[error("package signature is invalid")]
     InvalidSignature,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionChangeKind {
+    Added,
+    Removed,
+    Expanded,
+    Reduced,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionChange {
+    pub capability: CapabilityId,
+    pub kind: PermissionChangeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradePlan {
+    pub current_version: semver::Version,
+    pub candidate_version: semver::Version,
+    pub permissions: Vec<PermissionChange>,
+    pub requires_confirmation: bool,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum UpgradePlanError {
+    #[error("upgrade candidate changes plugin id")]
+    PluginMismatch,
+    #[error("upgrade candidate changes publisher")]
+    PublisherMismatch,
+    #[error("upgrade candidate version must be newer")]
+    VersionNotNewer,
+    #[error("upgrade candidate decreases storage migration version")]
+    StorageMigrationRollback,
+    #[error("upgrade manifest contains invalid permission: {0}")]
+    InvalidPermission(String),
+}
+
+/// Builds a deterministic permission and compatibility plan for an in-place upgrade.
+pub fn plan_upgrade(
+    current: &Manifest,
+    candidate: &Manifest,
+) -> Result<UpgradePlan, UpgradePlanError> {
+    if current.id != candidate.id {
+        return Err(UpgradePlanError::PluginMismatch);
+    }
+    if current.publisher.id != candidate.publisher.id {
+        return Err(UpgradePlanError::PublisherMismatch);
+    }
+    let current_version = semver::Version::parse(&current.version)
+        .map_err(|error| UpgradePlanError::InvalidPermission(error.to_string()))?;
+    let candidate_version = semver::Version::parse(&candidate.version)
+        .map_err(|error| UpgradePlanError::InvalidPermission(error.to_string()))?;
+    if candidate_version <= current_version {
+        return Err(UpgradePlanError::VersionNotNewer);
+    }
+    let current_migration = current
+        .storage
+        .as_ref()
+        .map_or(0, |storage| storage.migration_version);
+    let candidate_migration = candidate
+        .storage
+        .as_ref()
+        .map_or(0, |storage| storage.migration_version);
+    if candidate_migration < current_migration {
+        return Err(UpgradePlanError::StorageMigrationRollback);
+    }
+
+    let current_permissions = parsed_permissions(current)?;
+    let candidate_permissions = parsed_permissions(candidate)?;
+    let capabilities: BTreeSet<_> = current_permissions
+        .keys()
+        .chain(candidate_permissions.keys())
+        .copied()
+        .collect();
+    let mut permissions = Vec::with_capacity(capabilities.len());
+    for capability in capabilities {
+        let kind = match (
+            current_permissions.get(&capability),
+            candidate_permissions.get(&capability),
+        ) {
+            (None, Some(_)) => PermissionChangeKind::Added,
+            (Some(_), None) => PermissionChangeKind::Removed,
+            (Some(current), Some(candidate)) if current == candidate => {
+                PermissionChangeKind::Unchanged
+            }
+            (Some(current), Some(candidate)) if params_within(candidate, current) => {
+                PermissionChangeKind::Reduced
+            }
+            (Some(_), Some(_)) => PermissionChangeKind::Expanded,
+            (None, None) => continue,
+        };
+        permissions.push(PermissionChange { capability, kind });
+    }
+    let requires_confirmation = permissions.iter().any(|change| {
+        matches!(
+            change.kind,
+            PermissionChangeKind::Added | PermissionChangeKind::Expanded
+        )
+    });
+    Ok(UpgradePlan {
+        current_version,
+        candidate_version,
+        permissions,
+        requires_confirmation,
+    })
+}
+
+fn parsed_permissions(
+    manifest: &Manifest,
+) -> Result<BTreeMap<CapabilityId, Option<CapabilityParams>>, UpgradePlanError> {
+    manifest
+        .permissions
+        .iter()
+        .map(|permission| {
+            let capability = CapabilityId::from_name(&permission.capability).ok_or_else(|| {
+                UpgradePlanError::InvalidPermission(permission.capability.clone())
+            })?;
+            let params = parse_capability_params(capability, permission.params.as_ref())
+                .map_err(|error| UpgradePlanError::InvalidPermission(error.to_string()))?;
+            Ok((capability, params))
+        })
+        .collect()
+}
+
+fn params_within(candidate: &Option<CapabilityParams>, current: &Option<CapabilityParams>) -> bool {
+    match (candidate, current) {
+        (None, None) => true,
+        (
+            Some(CapabilityParams::Storage {
+                keys: candidate_keys,
+                max_bytes: candidate_bytes,
+            }),
+            Some(CapabilityParams::Storage {
+                keys: current_keys,
+                max_bytes: current_bytes,
+            }),
+        ) => key_scope_within(candidate_keys, current_keys) && candidate_bytes <= current_bytes,
+        (
+            Some(CapabilityParams::Timer {
+                max_per_minute: candidate_rate,
+                max_active: candidate_active,
+            }),
+            Some(CapabilityParams::Timer {
+                max_per_minute: current_rate,
+                max_active: current_active,
+            }),
+        ) => candidate_rate <= current_rate && candidate_active <= current_active,
+        (
+            Some(CapabilityParams::Metrics {
+                sample_rate_hz: candidate_rate,
+            }),
+            Some(CapabilityParams::Metrics {
+                sample_rate_hz: current_rate,
+            }),
+        ) => candidate_rate <= current_rate,
+        (
+            Some(CapabilityParams::Network {
+                origins: candidate_origins,
+                max_requests_per_minute: candidate_requests,
+                max_response_bytes: candidate_bytes,
+                max_timeout_ms: candidate_timeout,
+            }),
+            Some(CapabilityParams::Network {
+                origins: current_origins,
+                max_requests_per_minute: current_requests,
+                max_response_bytes: current_bytes,
+                max_timeout_ms: current_timeout,
+            }),
+        ) => {
+            candidate_origins
+                .iter()
+                .all(|origin| current_origins.contains(origin))
+                && candidate_requests <= current_requests
+                && candidate_bytes <= current_bytes
+                && candidate_timeout <= current_timeout
+        }
+        _ => false,
+    }
+}
+
+fn key_scope_within(candidate: &[String], current: &[String]) -> bool {
+    if current.is_empty() {
+        return true;
+    }
+    !candidate.is_empty() && candidate.iter().all(|key| current.contains(key))
 }
 
 #[derive(Debug, Deserialize)]
@@ -392,6 +580,125 @@ mod tests {
         assert_eq!(
             dsse_pae("text/plain", b"hello"),
             b"DSSEv1 10 text/plain 5 hello"
+        );
+    }
+
+    fn upgrade_manifest(
+        version: &str,
+        permissions: serde_json::Value,
+        migration_version: u64,
+    ) -> Manifest {
+        serde_json::from_value(json!({
+            "manifestVersion": 1,
+            "id": "dev.floatile.clock",
+            "name": "Clock",
+            "version": version,
+            "publisher": { "id": "dev.floatile", "name": "Floatile" },
+            "engineApiVersion": "1.0.0",
+            "uiApiVersion": "1.0.0",
+            "type": "widget",
+            "entrypoints": { "ui": "ui/widget.ftui", "logic": "logic/plugin.wasm" },
+            "sizes": {
+                "default": { "width": 240.0, "height": 120.0 },
+                "min": { "width": 100.0, "height": 60.0 },
+                "max": { "width": 800.0, "height": 600.0 },
+                "resizable": true
+            },
+            "permissions": permissions,
+            "storage": { "migration_version": migration_version }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn upgrade_plan_requires_confirmation_for_added_or_expanded_permissions() {
+        let current = upgrade_manifest(
+            "1.0.0",
+            json!([{
+                "capability": "timer:schedule",
+                "params": { "maxPerMinute": 10, "maxActive": 2 }
+            }]),
+            1,
+        );
+        let candidate = upgrade_manifest(
+            "2.0.0",
+            json!([
+                {
+                    "capability": "timer:schedule",
+                    "params": { "maxPerMinute": 20, "maxActive": 2 }
+                },
+                { "capability": "theme:subscribe" }
+            ]),
+            2,
+        );
+        let plan = plan_upgrade(&current, &candidate).unwrap();
+        assert!(plan.requires_confirmation);
+        assert_eq!(
+            plan.permissions,
+            vec![
+                PermissionChange {
+                    capability: CapabilityId::TimerSchedule,
+                    kind: PermissionChangeKind::Expanded,
+                },
+                PermissionChange {
+                    capability: CapabilityId::ThemeSubscribe,
+                    kind: PermissionChangeKind::Added,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn upgrade_plan_allows_removed_and_strictly_reduced_permissions() {
+        let current = upgrade_manifest(
+            "1.0.0",
+            json!([
+                {
+                    "capability": "storage:read",
+                    "params": { "keys": [], "maxBytes": 4096 }
+                },
+                { "capability": "theme:subscribe" }
+            ]),
+            2,
+        );
+        let candidate = upgrade_manifest(
+            "1.1.0",
+            json!([{
+                "capability": "storage:read",
+                "params": { "keys": ["clock"], "maxBytes": 1024 }
+            }]),
+            2,
+        );
+        let plan = plan_upgrade(&current, &candidate).unwrap();
+        assert!(!plan.requires_confirmation);
+        assert!(plan.permissions.iter().any(|change| {
+            change.capability == CapabilityId::StorageRead
+                && change.kind == PermissionChangeKind::Reduced
+        }));
+        assert!(plan.permissions.iter().any(|change| {
+            change.capability == CapabilityId::ThemeSubscribe
+                && change.kind == PermissionChangeKind::Removed
+        }));
+    }
+
+    #[test]
+    fn upgrade_plan_rejects_identity_version_and_migration_regressions() {
+        let current = upgrade_manifest("2.0.0", json!([]), 2);
+        let old = upgrade_manifest("1.0.0", json!([]), 2);
+        assert_eq!(
+            plan_upgrade(&current, &old),
+            Err(UpgradePlanError::VersionNotNewer)
+        );
+        let migration = upgrade_manifest("3.0.0", json!([]), 1);
+        assert_eq!(
+            plan_upgrade(&current, &migration),
+            Err(UpgradePlanError::StorageMigrationRollback)
+        );
+        let mut publisher = upgrade_manifest("3.0.0", json!([]), 2);
+        publisher.publisher.id = "other.publisher".to_owned();
+        assert_eq!(
+            plan_upgrade(&current, &publisher),
+            Err(UpgradePlanError::PublisherMismatch)
         );
     }
 }
