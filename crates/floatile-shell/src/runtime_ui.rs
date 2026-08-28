@@ -1193,6 +1193,7 @@ mod grants_tests {
                 ui_api_version: "1.0.0".into(),
                 installed_at: 0,
                 source: "clock.floatile".into(),
+                trust: floatile_core::install::InstallationTrust::Unsigned,
                 files: std::collections::BTreeMap::new(),
                 digest: "00".repeat(32),
             },

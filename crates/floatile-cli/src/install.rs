@@ -18,7 +18,9 @@ use floatile_core::distribution::{
     SIGNATURE_FILE, SignatureVerificationError, UpgradePlan, UpgradePlanError, plan_upgrade,
     signable_content_digest, verify_signature_envelope,
 };
-use floatile_core::install::{InstallMeta, content_digest, file_digest, hex_encode};
+use floatile_core::install::{
+    InstallMeta, InstallationTrust, content_digest, file_digest, hex_encode,
+};
 use floatile_core::manifest::Manifest;
 use floatile_store::Store;
 use floatile_store::installation::InstalledInstallation;
@@ -220,7 +222,13 @@ pub fn install_trusted_package(
     let parent = final_dir.parent().unwrap_or(plugin_store);
     fs::create_dir_all(parent)
         .map_err(|error| InstallError::StoreUnavailable(error.to_string()))?;
-    let meta = match write_staging(&staging, &validated, &manifest, source) {
+    let meta = match write_staging(
+        &staging,
+        &validated,
+        &manifest,
+        source,
+        InstallationTrust::Trusted,
+    ) {
         Ok(meta) => meta,
         Err(error) => {
             let _ = fs::remove_dir_all(&staging);
@@ -391,7 +399,13 @@ fn install_validated(
 
     let staging = store.join(format!(".staging-{}", nonce()));
 
-    let meta = match write_staging(&staging, validated, &manifest, source) {
+    let meta = match write_staging(
+        &staging,
+        validated,
+        &manifest,
+        source,
+        InstallationTrust::Unsigned,
+    ) {
         Ok(meta) => meta,
         Err(e) => {
             let _ = fs::remove_dir_all(&staging);
@@ -418,6 +432,7 @@ fn write_staging(
     validated: &ValidatedPackage,
     manifest: &Manifest,
     source: &str,
+    trust: InstallationTrust,
 ) -> Result<InstallMeta, InstallError> {
     let installed_at = now_secs();
 
@@ -435,6 +450,7 @@ fn write_staging(
         ui_api_version: manifest.ui_api_version.clone(),
         installed_at,
         source: source.to_owned(),
+        trust,
         files: file_digests,
         digest: aggregate,
     };
@@ -814,6 +830,7 @@ mod tests {
         )
         .unwrap();
         assert!(installed.dir.join(SIGNATURE_FILE).is_file());
+        assert_eq!(installed.meta.trust, InstallationTrust::Trusted);
         let accepted = trust_store
             .trust()
             .accepted_package("dev.floatile", "dev.floatile.clock")

@@ -18,7 +18,7 @@ use floatile_platform::PlatformCapabilities;
 use floatile_services::{AuditListener, CredentialVault, HttpsService, MemoryCredentialVault};
 use slint::{Timer, TimerMode};
 
-use crate::plugin_manager::{RunnableInstance, load_runnable_instance};
+use crate::plugin_manager::{RunnableInstance, load_runnable_instance_with_trust};
 use crate::runtime_ui::{
     RuntimeUiLifecycleEvent, RuntimeUiSession, compose_instance_https, spawn_runtime_ui_with_https,
 };
@@ -404,7 +404,7 @@ fn prepare_actions(
                     }
                 };
                 let version = instance.installation().version().to_owned();
-                match load_runnable_instance(plugin_store, instance) {
+                match load_runnable_instance_with_trust(plugin_store, store, instance) {
                     Ok(Some(runnable)) => match compose_instance_https(
                         store,
                         runnable.instance.id(),
@@ -637,6 +637,7 @@ mod tests {
             ui_api_version: "0.1.0".to_owned(),
             digest: InstallationDigest::from_bytes([id as u8; 32]).to_string(),
             source: "test.floatile".to_owned(),
+            trust: floatile_core::install::InstallationTrust::Unsigned,
             installed_at: 1,
             files: Default::default(),
         })

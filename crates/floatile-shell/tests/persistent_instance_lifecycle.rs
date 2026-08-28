@@ -86,6 +86,7 @@ fn write_clock_install(root: &Path, wasm: Vec<u8>) -> PathBuf {
         ui_api_version: "1.0.0".to_owned(),
         installed_at: 1,
         source: "xvfb-evidence".to_owned(),
+        trust: floatile_core::install::InstallationTrust::Unsigned,
         files: files
             .iter()
             .map(|(name, bytes)| (name.clone(), hex_encode(&file_digest(bytes))))

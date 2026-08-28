@@ -10,6 +10,14 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallationTrust {
+    #[default]
+    Unsigned,
+    Trusted,
+}
+
 /// 一个已安装插件的可验证元数据（manifest 与摘要快照）。
 ///
 /// 不冗余存放插件内容，只存每条文件的 SHA-256 与覆盖全部规范文件集合的内容摘要，
@@ -28,6 +36,9 @@ pub struct InstallMeta {
     pub installed_at: u64,
     /// 来源包文件名（仅诊断，不参与信任）。
     pub source: String,
+    /// Installation policy used at commit time; runtime re-verifies trusted signatures.
+    #[serde(default)]
+    pub trust: InstallationTrust,
     /// 每条允许文件相对路径 → SHA-256 hex。
     pub files: BTreeMap<String, String>,
     /// 覆盖全部规范文件集合的内容摘要（hex）。
@@ -149,11 +160,17 @@ mod tests {
             ui_api_version: "1.0.0".to_owned(),
             installed_at: 42,
             source: "clock.floatile".to_owned(),
+            trust: InstallationTrust::Unsigned,
             files,
             digest: hex_encode(&[9; 32]),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: InstallMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(back, meta);
+
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        legacy.as_object_mut().unwrap().remove("trust");
+        let legacy: InstallMeta = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.trust, InstallationTrust::Unsigned);
     }
 }

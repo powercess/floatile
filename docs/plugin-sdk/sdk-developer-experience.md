@@ -246,6 +246,10 @@ scope/配额返回 `FINST_PERMISSION_CONFIRMATION` 且零落盘；调用方必�
 `instance rollback <id> --version <historical> --reason <text>` 仅接受 stopped 实例；目标安装先复核
 install digest 与当前 publisher/key trust，且 storage migration 必须相等、旧权限不得重新扩大。实例
 重绑定与原因审计原子提交，最高已接受版本/摘要保持不变。
+`install.json.trust` 固定为 `unsigned | trusted`；旧元数据缺字段按 `unsigned` 读取，不允许静默提升。
+Shell 的持久实例启动与动态 retry 路径会对 `trusted` 安装使用当前 trust store 重新验签，并以稳定
+`FLOAD_*` code 隔离 publisher/key 撤销、未知 key、摘要变化或签名损坏；`unsigned` 仅保留明确标记的
+本地开发降级路径，仍经过 Installation digest、manifest、Config 与 runtime sandbox 校验。
 `check` 按 Component Model 实际保留的 Floatile interface/function imports 与 Capability Registry 比对：
 使用声明能力但 manifest 未声明时以 `FCHECK_CAPABILITY_MISSING` 失败；已声明但未导入时产生
 `FCHECK_CAPABILITY_UNUSED` warning，`--deny-warnings` 可将其提升为失败。固有能力无需写入 manifest；
