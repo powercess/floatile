@@ -16,13 +16,17 @@ pub mod preview;
 pub mod project;
 pub mod run;
 pub mod test;
+pub mod trust;
 
 pub use build::{BuildError, build_project, package};
 pub use check::{CheckError, CheckPhases, CheckReport, CheckWarning, check_project};
 pub use conformance::{ConformanceError, ConformanceReport, lifecycle_report};
 pub use dev::{BuildStatus, build_once, dev_loop, ensure_project};
 pub use inspect::{InspectError, InspectReport, inspect_package, inspect_package_bytes};
-pub use install::{InstallError, InstalledPackage, install_dir, install_package};
+pub use install::{
+    InstallError, InstalledPackage, RecoveryReport, install_dir, install_package,
+    install_trusted_package, recover_trusted_installs,
+};
 pub use instance::{
     InstanceCommandError, InstanceView, configure_instance, create_instance, delete_instance,
     get_instance, list_instances, set_instance_desired_state,

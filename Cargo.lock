@@ -1700,12 +1700,15 @@ dependencies = [
 name = "floatile-cli"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "ed25519-dalek",
  "floatile-core",
  "floatile-platform",
  "floatile-plugin-api",
  "floatile-runtime",
  "floatile-store",
  "floatile-ui-schema",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

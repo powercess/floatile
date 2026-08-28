@@ -120,6 +120,12 @@ impl PublisherTrustRecord {
                 .filter(|key| key.state == TrustState::Active)
                 .map(|key| key.public_key)
                 .collect(),
+            revoked_key_ids: self
+                .keys
+                .iter()
+                .filter(|key| key.state == TrustState::Revoked)
+                .map(|key| key.key_id.clone())
+                .collect(),
         }
     }
 }

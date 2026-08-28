@@ -210,6 +210,8 @@ Detected capabilities:
 | `floatile preview` | 固定 size/DPI/theme/locale 渲染与截图 |
 | `floatile build` | 可复现地产生 `.floatile`，默认不签名 |
 | `floatile inspect` | 显示 manifest、版本轴、权限、预算、entry digest |
+| `floatile install [--require-trusted]` | 开发模式允许显式 unsigned 安装；分发模式强制 publisher trust、签名、撤销与 anti-rollback |
+| `floatile trust add-key/revoke-key/revoke-publisher/show` | 管理宿主持有的 Ed25519 public key 信任；不得接收或显示 private key |
 | `floatile migrate` | SDK/UI/manifest 兼容迁移；默认先 dry-run |
 | `floatile conformance` | 校验并输出语言无关的 SDK contract vectors |
 | `floatile instance create/list/get/configure/start/stop/delete` | 按精确安装版本管理持久实例与 desired state |
@@ -224,7 +226,7 @@ Detected capabilities:
 
 退出码与诊断 code 稳定；日志文本不是自动化接口。
 
-当前已落地：`new/validate/check/dev/test/preview/build/install/run/inspect/instance`；`test` 用
+当前已落地：`new/validate/check/dev/test/preview/build/install/trust/run/inspect/instance`；`test` 用
 `floatile-runtime::harness` 对已构建包跑无头生命周期冒烟。`instance` 子命令提供单一
 JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`--store`、
 `--config`/`--config-file`与 `--no-interactive`。`inspect` 在输出前复用完整包安全校验，提供 manifest、
@@ -233,6 +235,11 @@ JSON 结果、稳定 `FINSTANCE_*`/`FCAT_*`/`FCONFIG_*` code，支持 `--db`、`
 `check` 在自动清理的临时目录中复用正式 build + package validation + inspect 链，返回
 `metadata/wasm/ui/manifest/package` 五阶段、warning 数组和 inspection 结果；支持相同的三个自动化选项，
 JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路径/cargo stderr 的有界描述。
+`install --require-trusted` 从 `--db`/`FLOATTILE_DB_PATH`/平台数据目录读取宿主 trust，强制 detached
+DSSE/Ed25519 验证、publisher/key 撤销和 anti-rollback；默认 `install` 保留 PP-M4 本地开发所需的
+`unsigned` 结果并明确输出 trust 状态。受信安装使用 SQLite pending intent 协调 staging/rename/最高版本
+水位，下一次受信安装会先复核并恢复中断事务。`trust` 命令只接收 32 字节 public key hex，输出 key id
+和状态，不存储或回显 private key。
 `check` 按 Component Model 实际保留的 Floatile interface/function imports 与 Capability Registry 比对：
 使用声明能力但 manifest 未声明时以 `FCHECK_CAPABILITY_MISSING` 失败；已声明但未导入时产生
 `FCHECK_CAPABILITY_UNUSED` warning，`--deny-warnings` 可将其提升为失败。固有能力无需写入 manifest；

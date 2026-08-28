@@ -22,6 +22,7 @@ floatile-store = { workspace = true }
 floatile-ui-schema = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+semver = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
@@ -29,4 +30,6 @@ wasmtime = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
 floatile-plugin-api = { workspace = true }

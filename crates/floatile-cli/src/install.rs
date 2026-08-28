@@ -14,8 +14,14 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use floatile_core::distribution::{
+    SIGNATURE_FILE, SignatureVerificationError, signable_content_digest, verify_signature_envelope,
+};
 use floatile_core::install::{InstallMeta, content_digest, file_digest, hex_encode};
 use floatile_core::manifest::Manifest;
+use floatile_store::Store;
+use floatile_store::trust::{PendingInstallation, TrustPolicyError};
+use semver::Version;
 use thiserror::Error;
 
 use crate::package::{PackageError, PackageLimits, ValidatedPackage, validate_package};
@@ -35,6 +41,18 @@ pub enum InstallError {
     Commit(String),
     #[error("I/O 失败: {0}")]
     Io(String),
+    #[error("包缺少 detached signature.json")]
+    MissingSignature,
+    #[error("找不到 manifest publisher 的宿主信任记录")]
+    UnknownPublisher,
+    #[error("签名验证失败: {0}")]
+    Signature(#[from] SignatureVerificationError),
+    #[error("安装信任策略拒绝: {0}")]
+    TrustPolicy(#[from] TrustPolicyError),
+    #[error("安装已落盘但信任状态尚待恢复: transaction={0}")]
+    RecoveryRequired(String),
+    #[error("恢复安装事务失败: {0}")]
+    Recovery(String),
 }
 
 impl InstallError {
@@ -46,6 +64,25 @@ impl InstallError {
             Self::StagingWrite(_) => "FINST_STAGING_WRITE",
             Self::Commit(_) => "FINST_COMMIT",
             Self::Io(_) => "FINST_IO",
+            Self::MissingSignature => "FINST_SIGNATURE_MISSING",
+            Self::UnknownPublisher => "FINST_PUBLISHER_UNKNOWN",
+            Self::Signature(error) => match error {
+                SignatureVerificationError::PublisherRevoked => "FINST_PUBLISHER_REVOKED",
+                SignatureVerificationError::KeyRevoked => "FINST_KEY_REVOKED",
+                SignatureVerificationError::UnknownKey => "FINST_KEY_UNKNOWN",
+                SignatureVerificationError::DigestMismatch => "FINST_SIGNATURE_DIGEST",
+                SignatureVerificationError::InvalidSignature => "FINST_SIGNATURE_INVALID",
+                _ => "FINST_SIGNATURE_MALFORMED",
+            },
+            Self::TrustPolicy(error) => match error {
+                TrustPolicyError::UnknownPublisher => "FINST_PUBLISHER_UNKNOWN",
+                TrustPolicyError::RevokedPublisher => "FINST_PUBLISHER_REVOKED",
+                TrustPolicyError::Rollback { .. } => "FINST_ROLLBACK",
+                TrustPolicyError::SameVersionDifferentDigest => "FINST_VERSION_REPLACED",
+                TrustPolicyError::Store(_) => "FINST_TRUST_STORE",
+            },
+            Self::RecoveryRequired(_) => "FINST_RECOVERY_REQUIRED",
+            Self::Recovery(_) => "FINST_RECOVERY_FAILED",
         }
     }
 
@@ -59,6 +96,12 @@ impl InstallError {
             Self::StagingWrite(_) => Cow::Borrowed("无法写入安装暂存目录"),
             Self::Commit(_) => Cow::Borrowed("无法原子提交安装"),
             Self::Io(_) => Cow::Borrowed("插件包读取失败"),
+            Self::MissingSignature => Cow::Borrowed("插件包缺少签名"),
+            Self::UnknownPublisher => Cow::Borrowed("插件发布者不受信任"),
+            Self::Signature(_) => Cow::Borrowed("插件签名未通过验证"),
+            Self::TrustPolicy(_) => Cow::Borrowed("插件安装被信任或版本策略拒绝"),
+            Self::RecoveryRequired(_) => Cow::Borrowed("安装需要在下次运行时恢复"),
+            Self::Recovery(_) => Cow::Borrowed("无法安全恢复上次安装事务"),
         }
     }
 }
@@ -69,6 +112,12 @@ pub struct InstalledPackage {
     pub dir: PathBuf,
     pub manifest: Manifest,
     pub meta: InstallMeta,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub finalized: usize,
+    pub aborted: usize,
 }
 
 /// 插件存储根目录下某插件的安装目录：`<store>/<id>/<version>`。
@@ -93,6 +142,180 @@ pub fn install_package(
     limits: &PackageLimits,
 ) -> Result<InstalledPackage, InstallError> {
     let validated = validate_package(bytes, limits)?;
+    install_validated(&validated, store, source)
+}
+
+/// Installs a package only after a detached signature verifies against host-owned publisher trust.
+pub fn install_trusted_package(
+    bytes: &[u8],
+    plugin_store: &Path,
+    source: &str,
+    limits: &PackageLimits,
+    trust_store: &Store,
+) -> Result<InstalledPackage, InstallError> {
+    let validated = validate_package(bytes, limits)?;
+    let publisher_id = validated.manifest.publisher.id.as_str();
+    let trust = trust_store
+        .trust()
+        .get(publisher_id)
+        .map_err(TrustPolicyError::Store)?
+        .ok_or(InstallError::UnknownPublisher)?;
+    let envelope = validated
+        .files
+        .get(SIGNATURE_FILE)
+        .ok_or(InstallError::MissingSignature)?;
+    verify_signature_envelope(
+        envelope,
+        &validated.files,
+        publisher_id,
+        &trust.verifier_binding(),
+    )?;
+
+    let transaction_id = nonce();
+    let staging_name = format!(".staging-{transaction_id}");
+    let staging = plugin_store.join(&staging_name);
+    let manifest = validated.manifest.clone();
+    let final_dir = install_dir(plugin_store, &manifest.id.0, &manifest.version);
+    if final_dir.exists() {
+        return Err(InstallError::AlreadyInstalled {
+            id: manifest.id.0,
+            version: manifest.version,
+        });
+    }
+    let parent = final_dir.parent().unwrap_or(plugin_store);
+    fs::create_dir_all(parent)
+        .map_err(|error| InstallError::StoreUnavailable(error.to_string()))?;
+    let meta = match write_staging(&staging, &validated, &manifest, source) {
+        Ok(meta) => meta,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let version = Version::parse(&manifest.version)
+        .map_err(|error| InstallError::Commit(format!("validated version: {error}")))?;
+    let pending = PendingInstallation {
+        transaction_id: transaction_id.clone(),
+        publisher_id: publisher_id.to_owned(),
+        plugin_id: manifest.id.0.clone(),
+        version,
+        signed_digest: signable_content_digest(&validated.files),
+        install_digest: content_digest(&validated.files),
+        staging_name,
+        final_relative: format!("{}/{}", manifest.id.0, manifest.version),
+        created_at: meta.installed_at,
+    };
+    if let Err(error) = trust_store.trust().prepare_install(&pending) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error.into());
+    }
+    if let Err(error) = fs::rename(&staging, &final_dir) {
+        let _ = fs::remove_dir_all(&staging);
+        let _ = trust_store.trust().abort_install(&transaction_id);
+        return Err(InstallError::Commit(error.to_string()));
+    }
+    if trust_store
+        .trust()
+        .finalize_install(&transaction_id, meta.installed_at)
+        .is_err()
+    {
+        return Err(InstallError::RecoveryRequired(transaction_id));
+    }
+
+    Ok(InstalledPackage {
+        dir: final_dir,
+        manifest,
+        meta,
+    })
+}
+
+/// Reconciles crash-interrupted trusted installs before a new trusted install begins.
+pub fn recover_trusted_installs(
+    plugin_store: &Path,
+    trust_store: &Store,
+) -> Result<RecoveryReport, InstallError> {
+    let mut report = RecoveryReport::default();
+    for pending in trust_store
+        .trust()
+        .pending_installs()
+        .map_err(TrustPolicyError::Store)?
+    {
+        let staging = plugin_store.join(&pending.staging_name);
+        let final_dir = plugin_store.join(&pending.final_relative);
+        match (staging.exists(), final_dir.exists()) {
+            (true, true) => {
+                return Err(InstallError::Recovery(format!(
+                    "transaction {} 同时存在 staging 与 final",
+                    pending.transaction_id
+                )));
+            }
+            (true, false) => {
+                fs::remove_dir_all(&staging)
+                    .map_err(|error| InstallError::Recovery(error.to_string()))?;
+                trust_store
+                    .trust()
+                    .abort_install(&pending.transaction_id)
+                    .map_err(TrustPolicyError::Store)?;
+                report.aborted += 1;
+            }
+            (false, false) => {
+                trust_store
+                    .trust()
+                    .abort_install(&pending.transaction_id)
+                    .map_err(TrustPolicyError::Store)?;
+                report.aborted += 1;
+            }
+            (false, true) => {
+                let installed = floatile_store::installation::load_exact(
+                    plugin_store,
+                    &pending.plugin_id,
+                    &pending.version.to_string(),
+                )
+                .map_err(|error| InstallError::Recovery(error.to_string()))?
+                .ok_or_else(|| InstallError::Recovery("final installation 消失".to_owned()))?;
+                let mut files = BTreeMap::new();
+                for name in installed.meta.files.keys() {
+                    let bytes = installed
+                        .file(name)
+                        .ok_or_else(|| InstallError::Recovery(format!("安装文件缺失: {name}")))?;
+                    files.insert(name.clone(), bytes.to_vec());
+                }
+                if content_digest(&files) != pending.install_digest
+                    || signable_content_digest(&files) != pending.signed_digest
+                {
+                    return Err(InstallError::Recovery(
+                        "恢复安装摘要与 journal 不一致".to_owned(),
+                    ));
+                }
+                let trust = trust_store
+                    .trust()
+                    .get(&pending.publisher_id)
+                    .map_err(TrustPolicyError::Store)?
+                    .ok_or(InstallError::UnknownPublisher)?;
+                let envelope = files
+                    .get(SIGNATURE_FILE)
+                    .ok_or(InstallError::MissingSignature)?;
+                verify_signature_envelope(
+                    envelope,
+                    &files,
+                    &installed.manifest.publisher.id,
+                    &trust.verifier_binding(),
+                )?;
+                trust_store
+                    .trust()
+                    .finalize_install(&pending.transaction_id, now_secs())?;
+                report.finalized += 1;
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn install_validated(
+    validated: &ValidatedPackage,
+    store: &Path,
+    source: &str,
+) -> Result<InstalledPackage, InstallError> {
     let manifest = validated.manifest.clone();
     let id = manifest.id.0.clone();
     let version = manifest.version.clone();
@@ -107,7 +330,7 @@ pub fn install_package(
 
     let staging = store.join(format!(".staging-{}", nonce()));
 
-    let meta = match write_staging(&staging, &validated, &manifest, source) {
+    let meta = match write_staging(&staging, validated, &manifest, source) {
         Ok(meta) => meta,
         Err(e) => {
             let _ = fs::remove_dir_all(&staging);
@@ -213,6 +436,10 @@ fn nonce() -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use ed25519_dalek::{Signer, SigningKey};
+    use floatile_core::distribution::{PACKAGE_DIGEST_PAYLOAD_TYPE, dsse_pae, publisher_key_id};
+    use floatile_store::trust::TrustState;
     use std::io::Cursor;
 
     fn build_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -286,6 +513,46 @@ mod tests {
             ("manifest.json", valid_manifest_json().as_bytes()),
             ("ui/widget.ftui", valid_ui_ir().as_bytes()),
             ("logic/plugin.wasm", wasm.as_slice()),
+        ])
+    }
+
+    fn signed_pkg_bytes(version: &str, signing_key: &SigningKey) -> Vec<u8> {
+        signed_pkg_with_manifest_versions(version, version, signing_key)
+    }
+
+    fn signed_pkg_with_manifest_versions(
+        signed_version: &str,
+        packaged_version: &str,
+        signing_key: &SigningKey,
+    ) -> Vec<u8> {
+        let wasm = real_wasm();
+        let mut manifest: serde_json::Value = serde_json::from_str(&valid_manifest_json()).unwrap();
+        manifest["version"] = serde_json::json!(signed_version);
+        let signed_manifest = manifest.to_string().into_bytes();
+        let ui = valid_ui_ir().into_bytes();
+        let files = BTreeMap::from([
+            ("manifest.json".to_owned(), signed_manifest),
+            ("ui/widget.ftui".to_owned(), ui.clone()),
+            ("logic/plugin.wasm".to_owned(), wasm.clone()),
+        ]);
+        let digest = content_digest(&files);
+        let signature = signing_key.sign(&dsse_pae(PACKAGE_DIGEST_PAYLOAD_TYPE, &digest));
+        let envelope = serde_json::to_vec(&serde_json::json!({
+            "payloadType": PACKAGE_DIGEST_PAYLOAD_TYPE,
+            "payload": STANDARD.encode(digest),
+            "signatures": [{
+                "keyid": publisher_key_id(signing_key.verifying_key().as_bytes()),
+                "sig": STANDARD.encode(signature.to_bytes())
+            }]
+        }))
+        .unwrap();
+        manifest["version"] = serde_json::json!(packaged_version);
+        let packaged_manifest = manifest.to_string().into_bytes();
+        build_zip(&[
+            ("manifest.json", packaged_manifest.as_slice()),
+            ("ui/widget.ftui", ui.as_slice()),
+            ("logic/plugin.wasm", wasm.as_slice()),
+            (SIGNATURE_FILE, envelope.as_slice()),
         ])
     }
 
@@ -423,5 +690,155 @@ mod tests {
             InstallError::Package(PackageError::EntryTooLarge { .. })
         ));
         assert_eq!(fs::read_dir(&store).unwrap().count(), 0, "安装失败应无残留");
+    }
+
+    #[test]
+    fn trusted_install_verifies_signature_and_advances_watermark() {
+        let plugin_store = temp_store("trusted");
+        let trust_store = floatile_store::open(":memory:").unwrap();
+        let signing_key = SigningKey::from_bytes(&[21; 32]);
+        trust_store
+            .trust()
+            .upsert_key(
+                "dev.floatile",
+                signing_key.verifying_key().to_bytes(),
+                TrustState::Active,
+                1,
+            )
+            .unwrap();
+
+        let installed = install_trusted_package(
+            &signed_pkg_bytes("1.0.0", &signing_key),
+            &plugin_store,
+            "signed.floatile",
+            &Default::default(),
+            &trust_store,
+        )
+        .unwrap();
+        assert!(installed.dir.join(SIGNATURE_FILE).is_file());
+        let accepted = trust_store
+            .trust()
+            .accepted_package("dev.floatile", "dev.floatile.clock")
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted.version, Version::parse("1.0.0").unwrap());
+        assert!(trust_store.trust().pending_installs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn trusted_install_rejects_unsigned_tampered_and_downgrade_without_residue() {
+        let plugin_store = temp_store("trusted-reject");
+        let trust_store = floatile_store::open(":memory:").unwrap();
+        let signing_key = SigningKey::from_bytes(&[22; 32]);
+        trust_store
+            .trust()
+            .upsert_key(
+                "dev.floatile",
+                signing_key.verifying_key().to_bytes(),
+                TrustState::Active,
+                1,
+            )
+            .unwrap();
+        assert!(matches!(
+            install_trusted_package(
+                &valid_pkg_bytes(),
+                &plugin_store,
+                "unsigned.floatile",
+                &Default::default(),
+                &trust_store
+            ),
+            Err(InstallError::MissingSignature)
+        ));
+
+        let tampered = signed_pkg_with_manifest_versions("1.0.0", "1.0.1", &signing_key);
+        let tampered_error = install_trusted_package(
+            &tampered,
+            &plugin_store,
+            "tampered.floatile",
+            &Default::default(),
+            &trust_store,
+        )
+        .unwrap_err();
+        assert_eq!(tampered_error.code(), "FINST_SIGNATURE_DIGEST");
+
+        install_trusted_package(
+            &signed_pkg_bytes("2.0.0", &signing_key),
+            &plugin_store,
+            "v2.floatile",
+            &Default::default(),
+            &trust_store,
+        )
+        .unwrap();
+        let downgrade = install_trusted_package(
+            &signed_pkg_bytes("1.0.0", &signing_key),
+            &plugin_store,
+            "v1.floatile",
+            &Default::default(),
+            &trust_store,
+        )
+        .unwrap_err();
+        assert_eq!(downgrade.code(), "FINST_ROLLBACK");
+        assert!(!install_dir(&plugin_store, "dev.floatile.clock", "1.0.0").exists());
+        assert!(trust_store.trust().pending_installs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_aborts_staging_and_finalizes_verified_renamed_install() {
+        let plugin_store = temp_store("trusted-recovery");
+        let trust_store = floatile_store::open(":memory:").unwrap();
+        let signing_key = SigningKey::from_bytes(&[23; 32]);
+        trust_store
+            .trust()
+            .upsert_key(
+                "dev.floatile",
+                signing_key.verifying_key().to_bytes(),
+                TrustState::Active,
+                1,
+            )
+            .unwrap();
+
+        let staged = PendingInstallation {
+            transaction_id: "staged-1".to_owned(),
+            publisher_id: "dev.floatile".to_owned(),
+            plugin_id: "dev.floatile.clock".to_owned(),
+            version: Version::parse("0.5.0").unwrap(),
+            signed_digest: [1; 32],
+            install_digest: [2; 32],
+            staging_name: ".staging-staged-1".to_owned(),
+            final_relative: "dev.floatile.clock/0.5.0".to_owned(),
+            created_at: 2,
+        };
+        fs::create_dir_all(plugin_store.join(&staged.staging_name)).unwrap();
+        trust_store.trust().prepare_install(&staged).unwrap();
+        let report = recover_trusted_installs(&plugin_store, &trust_store).unwrap();
+        assert_eq!(report.aborted, 1);
+        assert!(!plugin_store.join(&staged.staging_name).exists());
+
+        let package = signed_pkg_bytes("1.0.0", &signing_key);
+        let installed = install_trusted_package(
+            &package,
+            &plugin_store,
+            "signed.floatile",
+            &Default::default(),
+            &trust_store,
+        )
+        .unwrap();
+        let validated = validate_package(&package, &Default::default()).unwrap();
+        let renamed = PendingInstallation {
+            transaction_id: "renamed-1".to_owned(),
+            publisher_id: "dev.floatile".to_owned(),
+            plugin_id: "dev.floatile.clock".to_owned(),
+            version: Version::parse("1.0.0").unwrap(),
+            signed_digest: signable_content_digest(&validated.files),
+            install_digest: content_digest(&validated.files),
+            staging_name: ".staging-renamed-1".to_owned(),
+            final_relative: "dev.floatile.clock/1.0.0".to_owned(),
+            created_at: installed.meta.installed_at,
+        };
+        trust_store.trust().prepare_install(&renamed).unwrap();
+        let report = recover_trusted_installs(&plugin_store, &trust_store).unwrap();
+        assert_eq!(report.finalized, 1);
+        assert!(trust_store.trust().pending_installs().unwrap().is_empty());
+        assert!(installed.dir.exists());
     }
 }

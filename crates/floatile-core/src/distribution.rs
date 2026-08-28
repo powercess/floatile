@@ -31,6 +31,8 @@ pub struct TrustedPublisher {
     pub publisher_id: String,
     pub state: TrustedPublisherState,
     pub keys: Vec<[u8; 32]>,
+    /// Host-revoked key identifiers retained to distinguish revocation from an unknown key.
+    pub revoked_key_ids: Vec<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -49,6 +51,8 @@ pub enum SignatureVerificationError {
     PublisherMismatch,
     #[error("package publisher is revoked")]
     PublisherRevoked,
+    #[error("package signing key is revoked")]
+    KeyRevoked,
     #[error("signature envelope does not reference a trusted publisher key")]
     UnknownKey,
     #[error("package signature is invalid")]
@@ -136,6 +140,13 @@ pub fn verify_signature_envelope(
         return Err(SignatureVerificationError::DigestMismatch);
     }
     let pae = dsse_pae(&envelope.payload_type, &payload);
+    if envelope
+        .signatures
+        .iter()
+        .any(|signature| trusted_publisher.revoked_key_ids.contains(&signature.keyid))
+    {
+        return Err(SignatureVerificationError::KeyRevoked);
+    }
     let mut matched_trusted_key = false;
 
     for signature in &envelope.signatures {
@@ -215,6 +226,7 @@ mod tests {
             publisher_id: "dev.floatile".to_owned(),
             state: TrustedPublisherState::Active,
             keys: vec![signing_key.verifying_key().to_bytes()],
+            revoked_key_ids: Vec::new(),
         }
     }
 
@@ -282,6 +294,16 @@ mod tests {
         assert_eq!(
             verify_signature_envelope(&envelope, &files, "dev.floatile", &revoked),
             Err(SignatureVerificationError::PublisherRevoked)
+        );
+
+        let mut revoked_key = trusted(&signing_key);
+        revoked_key.keys.clear();
+        revoked_key
+            .revoked_key_ids
+            .push(publisher_key_id(signing_key.verifying_key().as_bytes()));
+        assert_eq!(
+            verify_signature_envelope(&envelope, &files, "dev.floatile", &revoked_key),
+            Err(SignatureVerificationError::KeyRevoked)
         );
 
         let mut value: serde_json::Value = serde_json::from_slice(&envelope).unwrap();
