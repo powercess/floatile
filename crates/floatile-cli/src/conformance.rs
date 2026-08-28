@@ -115,12 +115,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_lifecycle_suite_is_valid_and_versioned() {
-        let report = lifecycle_report().expect("embedded suite should validate");
+    fn embedded_lifecycle_suite_is_valid_and_versioned() -> Result<(), ConformanceError> {
+        let report = lifecycle_report()?;
         assert_eq!(report.schema_version, OUTPUT_SCHEMA_VERSION);
         assert_eq!(report.suite, "sdk-lifecycle-v1");
         assert_eq!(report.contract.schema_version, 1);
         assert_eq!(report.contract.engine_api_version, "1.2.0");
         assert_eq!(report.contract.vectors.len(), 3);
+        Ok(())
     }
 }
