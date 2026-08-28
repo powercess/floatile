@@ -1,11 +1,9 @@
 //! PP-M5 reference widget: a secret-free AI balance monitor using only generic host capabilities.
 
+use floatile_sdk::host_http;
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
-use floatile_sdk::{
-    Context, FromWidgetEvent, OperationCapability, OperationTerminal, State, Widget, WidgetEvent,
-    host_http, view, view::View,
-};
+use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const CONNECTION_ID: u64 = 1;
@@ -92,11 +90,12 @@ impl Widget for AiBalance {
         )
     }
 
-    fn start(&mut self, ctx: &mut Context<Self>) {
+    fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult {
         self.refresh(ctx);
+        Ok(())
     }
 
-    fn event(&mut self, event: BalanceEvent, ctx: &mut Context<Self>) {
+    fn event(&mut self, event: BalanceEvent, ctx: &mut Context<Self>) -> WidgetResult {
         match event {
             BalanceEvent::Refresh => self.refresh(ctx),
             BalanceEvent::Completed(id, OperationTerminal::Succeeded) => {
@@ -111,6 +110,7 @@ impl Widget for AiBalance {
                 mark_error(ctx, "unavailable");
             }
         }
+        Ok(())
     }
 
     fn stop(&mut self) {}

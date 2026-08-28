@@ -19,10 +19,7 @@
 
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
-use floatile_sdk::{
-    Context, FromWidgetEvent, LogLevel, OperationCapability, OperationTerminal, State, Widget,
-    WidgetEvent, view, view::View,
-};
+use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// State 只携带攻击模式；宿主测试用 `initial_state`(已验证 schema)选择行为。
@@ -79,7 +76,10 @@ impl Widget for Evil {
         self.mode = initial.mode.clone();
     }
 
-    fn start(&mut self, ctx: &mut Context<Self>) {
+    fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult {
+        if self.mode == "conformance-start-rejected" {
+            return Err(WidgetError::Rejected("conformance start rejection".into()));
+        }
         match self.mode.as_str() {
             // loop 不进 start:让实例先成功启动,测试再以事件触发无限循环,fuel 才 trap。
             "deny" => self.deny_call(ctx),
@@ -92,9 +92,18 @@ impl Widget for Evil {
                 let _ = ctx.log(LogLevel::Info, &format!("start mode {mode}"));
             }
         }
+        Ok(())
     }
 
-    fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>) {
+    fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>) -> WidgetResult {
+        if self.mode == "conformance-event-invalid-input" {
+            return Err(WidgetError::InvalidInput(
+                "conformance event rejection".into(),
+            ));
+        }
+        if self.mode == "conformance-event-internal" {
+            return Err(WidgetError::Internal);
+        }
         match event {
             EvilEvent::Trigger => match self.mode.as_str() {
                 "loop" => self.loop_forever(),
@@ -109,6 +118,7 @@ impl Widget for Evil {
                 }
             }
         }
+        Ok(())
     }
 }
 

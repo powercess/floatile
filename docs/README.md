@@ -19,6 +19,7 @@
 | 权限与网络安全 | `security/permission-model.md`、`security/http-broker.md` | 能力、scope、配额、脱敏或网络策略变化 |
 | 插件系统总体架构 | `plugin-sdk/plugin-system-architecture.md` | 数据流、生命周期、实例隔离、语言/runtime 或版本轴变化 |
 | 插件 SDK 与开发体验 | `plugin-sdk/sdk-developer-experience.md` | Rust/TypeScript API、组件、CLI、诊断、测试或 Agent 契约变化 |
+| SDK 一致性向量 | `plugin-sdk/conformance-kit.md`、`../conformance/` | SDK lifecycle、错误、行为或跨语言 conformance 格式变化 |
 | 插件契约 | `plugin-sdk/manifest-v1.md`、`plugin-sdk/wit-api-v1.md`、`plugin-sdk/ui-ir-v1.md` | manifest/WIT/UI IR/包格式变化 |
 | 平台事实 | `platform-matrix/platform-matrix.md` | 获得新的实测证据 |
 | 工程规则 | `development/` | 本地流程、CI、代码或测试规范变化 |

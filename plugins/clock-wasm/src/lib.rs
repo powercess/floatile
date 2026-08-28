@@ -8,9 +8,7 @@
 
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
-use floatile_sdk::{
-    Context, FromWidgetEvent, LogLevel, State, Widget, WidgetEvent, view, view::View,
-};
+use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---- State（derive State 生成 schema + initial）----
@@ -50,7 +48,7 @@ impl Widget for Clock {
         view::column(vec![view::text_bind("$.time")])
     }
 
-    fn start(&mut self, ctx: &mut Context<Self>) {
+    fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult {
         let _ = ctx.log(LogLevel::Info, "clock started");
         match ctx.timer().schedule(1000) {
             Ok(id) => {
@@ -60,9 +58,10 @@ impl Widget for Clock {
                 let _ = ctx.log(LogLevel::Warn, &format!("timer denied: {error:?}"));
             }
         }
+        Ok(())
     }
 
-    fn event(&mut self, event: ClockEvent, ctx: &mut Context<Self>) {
+    fn event(&mut self, event: ClockEvent, ctx: &mut Context<Self>) -> WidgetResult {
         match event {
             ClockEvent::Start => {
                 let _ = ctx.log(LogLevel::Info, "clock start command received");
@@ -82,6 +81,7 @@ impl Widget for Clock {
                 let _ = ctx.timer().schedule(1000);
             }
         }
+        Ok(())
     }
 
     fn stop(&mut self) {

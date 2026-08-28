@@ -46,8 +46,12 @@ mod tests {
         fn view(_: &S) -> crate::view::View {
             crate::view::column(vec![crate::view::text_bind("$.time")])
         }
-        fn start(&mut self, _: &mut Context<Self>) {}
-        fn event(&mut self, _: WidgetEvent, _: &mut Context<Self>) {}
+        fn start(&mut self, _: &mut Context<Self>) -> crate::WidgetResult {
+            Ok(())
+        }
+        fn event(&mut self, _: WidgetEvent, _: &mut Context<Self>) -> crate::WidgetResult {
+            Ok(())
+        }
     }
     impl Default for W {
         fn default() -> Self {
@@ -62,8 +66,12 @@ mod tests {
         fn view(_: &S) -> crate::view::View {
             crate::view::button("Go")
         }
-        fn start(&mut self, _: &mut Context<Self>) {}
-        fn event(&mut self, _: WidgetEvent, _: &mut Context<Self>) {}
+        fn start(&mut self, _: &mut Context<Self>) -> crate::WidgetResult {
+            Ok(())
+        }
+        fn event(&mut self, _: WidgetEvent, _: &mut Context<Self>) -> crate::WidgetResult {
+            Ok(())
+        }
     }
     impl Default for WButton {
         fn default() -> Self {

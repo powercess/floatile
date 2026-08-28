@@ -87,11 +87,11 @@ impl Clock {
         .gap(8)
     }
 
-    fn start(ctx: &mut Context<Self>) -> Result<()> {
+    fn start(ctx: &mut Context<Self>) -> WidgetResult {
         ctx.timer().every("1s", Event::Refresh)
     }
 
-    async fn event(event: Event, ctx: &mut Context<Self>) -> Result<()> {
+    fn event(event: Event, ctx: &mut Context<Self>) -> WidgetResult {
         if matches!(event, Event::Refresh) {
             let time = ctx.clock().local_time();
             ctx.state().update(|state| state.time = time)?;
@@ -103,6 +103,12 @@ impl Clock {
 
 公开 API 可以随原型调整，但以下语义必须一致：组件名、State 字段、event 名、Context capability、
 错误码、默认预算和生命周期顺序。
+
+Rust SDK 的 `Widget::start` 与 `Widget::event` 返回 `WidgetResult`。`WidgetError` 会原样穿过 WIT
+`widget-error` 交给宿主，宿主将其分类为 guest 业务拒绝；SDK 不得吞掉错误，也不得把它伪装成 trap、
+fuel、超时或内存错误。
+插件项目必须优先使用 `floatile_sdk::prelude::*`；crate 根的生成 WIT 模块主要供 adapter 与一致性测试
+使用，不作为普通作者需要理解的入口。prelude 的移除或不兼容改名按 SDK major 变更处理。
 
 ## 3. 项目模板
 
@@ -205,6 +211,7 @@ Detected capabilities:
 | `floatile build` | 可复现地产生 `.floatile`，默认不签名 |
 | `floatile inspect` | 显示 manifest、版本轴、权限、预算、entry digest |
 | `floatile migrate` | SDK/UI/manifest 兼容迁移；默认先 dry-run |
+| `floatile conformance` | 校验并输出语言无关的 SDK contract vectors |
 | `floatile instance create/list/get/configure/start/stop/delete` | 按精确安装版本管理持久实例与 desired state |
 
 所有命令必须支持：
@@ -284,6 +291,9 @@ WidgetHarness::new/plugin()
 TypeScript 提供同名语义。测试默认不启动窗口、不访问真实 SQLite/网络/文件/系统指标。UI golden
 测试由 `floatile preview` 在固定 renderer、字体、DPI 和 theme 下输出 screenshot + 可访问 UI tree；
 平台窗口行为仍需真实平台验收，不能用快照替代。
+
+跨语言 lifecycle 与错误分类使用仓库根 `conformance/` 的版本化 JSON 向量，格式与覆盖状态见
+[`conformance-kit.md`](conformance-kit.md)。Rust/TypeScript 测试不得分别维护同名用例的预期结果。
 
 实现状态（P0）：Rust 侧 `WidgetHarness` 已在 `floatile-runtime::harness` 落地——
 `grant/start/emit_ui/wait_for_state(谓词断言)/advance_time/audit/assert_audit`，所有宿主能力仍走生产

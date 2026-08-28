@@ -28,6 +28,31 @@ use floatile_store::{AuditRecord, Store};
 use floatile_ui_schema::schema::JsonSchema;
 use serde_json::{Value, json};
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LifecycleSuite {
+    schema_version: u64,
+    engine_api_version: String,
+    vectors: Vec<LifecycleVector>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LifecycleVector {
+    id: String,
+    callback: String,
+    message: Option<String>,
+    expected_host_outcome: String,
+}
+
+fn lifecycle_suite() -> LifecycleSuite {
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../conformance/sdk-lifecycle-v1.json"
+    )))
+    .expect("lifecycle conformance vectors must parse")
+}
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -173,6 +198,53 @@ async fn denied_capability_persists_audit_and_host_survives() {
     let handle2 = spawn_evil(&manager2, 9, evil_grants_none(9), json!({"mode": "deny"}));
     handle2.start().await.expect("新实例 start 应成功");
     handle2.shutdown().await.expect("新实例 shutdown 正常");
+}
+
+/// Rust SDK lifecycle errors must cross WIT as business rejections instead of
+/// being swallowed or misclassified as traps.
+#[tokio::test(flavor = "multi_thread")]
+async fn sdk_lifecycle_errors_reach_the_host_as_rejections() {
+    let manager = WidgetManager::new().unwrap();
+    let suite = lifecycle_suite();
+    assert_eq!(suite.schema_version, 1);
+    assert_eq!(
+        suite.engine_api_version,
+        floatile_plugin_api::ENGINE_API_VERSION
+    );
+    for (index, vector) in suite.vectors.iter().enumerate() {
+        let instance = 81 + u64::try_from(index).expect("bounded vector index");
+        let handle = spawn_evil(
+            &manager,
+            instance,
+            evil_grants_none(instance),
+            json!({"mode": format!("conformance-{}", vector.id)}),
+        );
+        let result = if vector.callback == "start" {
+            handle.start().await
+        } else {
+            handle.start().await.expect("event vector should start");
+            handle
+                .handle_event(WidgetEvent::Ui(UiEvent {
+                    name: "trigger".into(),
+                    payload_json: "{}".into(),
+                }))
+                .await
+        };
+        assert_eq!(vector.expected_host_outcome, "rejected");
+        assert!(
+            matches!(result, Err(floatile_runtime::InstanceError::Rejected(ref message))
+                if vector.message.as_ref().is_none_or(|expected| message.contains(expected))),
+            "conformance vector {} should remain a guest rejection, got {result:?}",
+            vector.id
+        );
+    }
+
+    let survivor = spawn_evil(&manager, 89, evil_grants_none(89), json!({"mode": "deny"}));
+    survivor
+        .start()
+        .await
+        .expect("host should survive guest rejection");
+    survivor.shutdown().await.expect("survivor should stop");
 }
 
 /// 正式 WIT Operation：guest submit → metadata completion → typed one-shot take → State 更新。

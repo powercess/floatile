@@ -52,8 +52,7 @@ macro_rules! impl_export_widget {
                         );
                     }
                     let mut ctx = $crate::Context::new();
-                    self.widget.borrow_mut().start(&mut ctx);
-                    Ok(())
+                    self.widget.borrow_mut().start(&mut ctx)
                 }
 
                 fn handle_event(
@@ -69,7 +68,7 @@ macro_rules! impl_export_widget {
                         <<$widget as $crate::Widget>::Event as $crate::FromWidgetEvent>::from_widget_event(event)
                     {
                         let mut ctx = $crate::Context::new();
-                        self.widget.borrow_mut().event(ev, &mut ctx);
+                        self.widget.borrow_mut().event(ev, &mut ctx)?;
                     }
                     Ok(())
                 }

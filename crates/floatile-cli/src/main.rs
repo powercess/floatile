@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use floatile_cli::{
-    CommandErrorReport, build, check, dev, inspect, install, instance, package, preview, project,
-    run, test,
+    CommandErrorReport, build, check, conformance, dev, inspect, install, instance, package,
+    preview, project, run, test,
 };
 use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
 
@@ -14,7 +14,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|preview|run|schema> [参数]"
+            "用法: floatile <new|validate|check|inspect|build|install|instance|dev|test|preview|run|schema|conformance> [参数]"
         );
         return ExitCode::from(2);
     }
@@ -31,10 +31,43 @@ fn main() -> ExitCode {
         "preview" => cmd_preview(&args[2..]),
         "run" => cmd_run(&args[2..]),
         "schema" => cmd_schema(&args[2..]),
+        "conformance" => cmd_conformance(&args[2..]),
         other => {
             eprintln!("未知命令: {other}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn cmd_conformance(args: &[String]) -> ExitCode {
+    let json = args.iter().any(|argument| argument == "--json");
+    if let Err(detail) = author_positionals(args, &[], &[], 0) {
+        return render_basic_error("FCONF_ARGUMENT", &detail, json, true);
+    }
+    match conformance::lifecycle_report() {
+        Ok(report) => {
+            if json {
+                println!("{}", serialize_json(&report));
+            } else {
+                println!(
+                    "conformance: PASS suite={} engine={} vectors={}",
+                    report.suite,
+                    report.contract.engine_api_version,
+                    report.contract.vectors.len()
+                );
+                for vector in report.contract.vectors {
+                    println!(
+                        "  {} callback={} guest-error={} host={}",
+                        vector.id,
+                        vector.callback,
+                        vector.guest_error,
+                        vector.expected_host_outcome
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => render_basic_error(error.code(), &error.to_string(), json, false),
     }
 }
 

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "engineApiVersion": "1.2.0",
+  "vectors": [
+    {
+      "id": "start-rejected",
+      "callback": "start",
+      "guestError": "rejected",
+      "message": "conformance start rejection",
+      "expectedHostOutcome": "rejected"
+    },
+    {
+      "id": "event-invalid-input",
+      "callback": "event",
+      "guestError": "invalid-input",
+      "message": "conformance event rejection",
+      "expectedHostOutcome": "rejected"
+    },
+    {
+      "id": "event-internal",
+      "callback": "event",
+      "guestError": "internal",
+      "message": null,
+      "expectedHostOutcome": "rejected"
+    }
+  ]
+}
