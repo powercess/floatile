@@ -1,4 +1,4 @@
-import type { JsonValue, View } from "./view.js";
+import type { JsonObject, JsonValue, View } from "./view.js";
 
 export type WidgetErrorKind = "invalid-input" | "rejected" | "internal";
 
@@ -35,22 +35,24 @@ export function lowerWidgetError(error: unknown): WitWidgetError {
   return { tag: error.kind, val: error.message };
 }
 
-export interface StateContext<State extends JsonValue> {
+export interface StateContext<State extends JsonObject> {
   update(patch: Partial<State>): void;
 }
 
-export interface WidgetContext<State extends JsonValue> {
+export interface WidgetContext<State extends JsonObject> {
   readonly state: StateContext<State>;
+  readonly config: JsonValue;
 }
 
-export interface WidgetDefinition<State extends JsonValue, Event extends JsonValue> {
+export interface WidgetDefinition<State extends JsonObject, Event> {
   readonly state: State;
   readonly view: (state: Readonly<State>) => View;
-  readonly start?: (context: WidgetContext<State>) => void | Promise<void>;
-  readonly event?: (event: Event, context: WidgetContext<State>) => void | Promise<void>;
+  readonly start?: (context: WidgetContext<State>) => void;
+  readonly event?: (event: Event, context: WidgetContext<State>) => void;
+  readonly stop?: (context: WidgetContext<State>) => void;
 }
 
-export function defineWidget<State extends JsonValue, Event extends JsonValue = JsonValue>(
+export function defineWidget<State extends JsonObject, Event = JsonValue>(
   definition: WidgetDefinition<State, Event>,
 ): WidgetDefinition<State, Event> {
   return Object.freeze(definition);
