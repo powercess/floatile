@@ -19,10 +19,7 @@
 
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
-use floatile_sdk::{
-    Context, FromWidgetEvent, LogLevel, OperationCapability, OperationTerminal, State, Widget,
-    WidgetError, WidgetEvent, WidgetResult, view, view::View,
-};
+use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// State 只携带攻击模式；宿主测试用 `initial_state`(已验证 schema)选择行为。

@@ -107,6 +107,8 @@ impl Clock {
 Rust SDK 的 `Widget::start` 与 `Widget::event` 返回 `WidgetResult`。`WidgetError` 会原样穿过 WIT
 `widget-error` 交给宿主，宿主将其分类为 guest 业务拒绝；SDK 不得吞掉错误，也不得把它伪装成 trap、
 fuel、超时或内存错误。
+插件项目必须优先使用 `floatile_sdk::prelude::*`；crate 根的生成 WIT 模块主要供 adapter 与一致性测试
+使用，不作为普通作者需要理解的入口。prelude 的移除或不兼容改名按 SDK major 变更处理。
 
 ## 3. 项目模板
 

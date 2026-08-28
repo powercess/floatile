@@ -53,6 +53,20 @@ pub mod state;
 pub mod view;
 pub mod widget;
 
+/// Stable author-facing imports for Rust widget projects.
+///
+/// Raw generated WIT modules remain available at the crate root for adapter
+/// and conformance work, while normal plugins should import this prelude.
+pub mod prelude {
+    pub use crate::view;
+    pub use crate::view::View;
+    pub use crate::{
+        Context, FromWidgetEvent, LogLevel, OperationCapability, OperationCompletion,
+        OperationTerminal, State, UiEvent, Widget, WidgetError, WidgetEvent, WidgetResult,
+        impl_export_widget,
+    };
+}
+
 pub use context::Context;
 pub use floatile_sdk_macros::State;
 pub use floatile_ui_schema::{JsonSchema, merge_patch, validate_document};

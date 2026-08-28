@@ -260,8 +260,7 @@ floatile-sdk = "0.1"
 serde = { version = "1", features = ["derive"] }
 "#
     .to_owned();
-    let lib_rs =
-        r#"use floatile_sdk::{Context, LogLevel, State, Widget, WidgetEvent, WidgetResult, view};
+    let lib_rs = r#"use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
@@ -299,7 +298,7 @@ pub fn __floatile_ftui_json() -> String {
     floatile_sdk::build::build_ftui::<MyWidget>(std::collections::BTreeMap::new())
 }
 "#
-        .to_owned();
+    .to_owned();
     let build_ftui_rs = r#"fn main() {
     print!("{}", clock::__floatile_ftui_json());
 }

@@ -1,11 +1,9 @@
 //! PP-M5 reference widget: a secret-free AI balance monitor using only generic host capabilities.
 
+use floatile_sdk::host_http;
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
-use floatile_sdk::{
-    Context, FromWidgetEvent, OperationCapability, OperationTerminal, State, Widget, WidgetEvent,
-    WidgetResult, host_http, view, view::View,
-};
+use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const CONNECTION_ID: u64 = 1;

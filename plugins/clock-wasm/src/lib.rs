@@ -8,9 +8,7 @@
 
 #[cfg(target_arch = "wasm32")]
 use floatile_sdk::impl_export_widget;
-use floatile_sdk::{
-    Context, FromWidgetEvent, LogLevel, State, Widget, WidgetEvent, WidgetResult, view, view::View,
-};
+use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---- State（derive State 生成 schema + initial）----
