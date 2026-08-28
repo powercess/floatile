@@ -15,11 +15,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use floatile_core::distribution::{
-    SIGNATURE_FILE, SignatureVerificationError, signable_content_digest, verify_signature_envelope,
+    SIGNATURE_FILE, SignatureVerificationError, UpgradePlan, UpgradePlanError, plan_upgrade,
+    signable_content_digest, verify_signature_envelope,
 };
 use floatile_core::install::{InstallMeta, content_digest, file_digest, hex_encode};
 use floatile_core::manifest::Manifest;
 use floatile_store::Store;
+use floatile_store::installation::{InstallationCatalogError, load_highest};
 use floatile_store::trust::{PendingInstallation, TrustPolicyError};
 use semver::Version;
 use thiserror::Error;
@@ -53,6 +55,12 @@ pub enum InstallError {
     RecoveryRequired(String),
     #[error("恢复安装事务失败: {0}")]
     Recovery(String),
+    #[error("升级兼容性检查失败: {0}")]
+    Upgrade(#[from] UpgradePlanError),
+    #[error("升级扩大权限，必须显式确认")]
+    PermissionConfirmationRequired(UpgradePlan),
+    #[error("读取当前安装失败: {0}")]
+    InstallationCatalog(#[from] InstallationCatalogError),
 }
 
 impl InstallError {
@@ -83,6 +91,9 @@ impl InstallError {
             },
             Self::RecoveryRequired(_) => "FINST_RECOVERY_REQUIRED",
             Self::Recovery(_) => "FINST_RECOVERY_FAILED",
+            Self::Upgrade(_) => "FINST_UPGRADE_INCOMPATIBLE",
+            Self::PermissionConfirmationRequired(_) => "FINST_PERMISSION_CONFIRMATION",
+            Self::InstallationCatalog(_) => "FINST_INSTALLED_INVALID",
         }
     }
 
@@ -102,6 +113,11 @@ impl InstallError {
             Self::TrustPolicy(_) => Cow::Borrowed("插件安装被信任或版本策略拒绝"),
             Self::RecoveryRequired(_) => Cow::Borrowed("安装需要在下次运行时恢复"),
             Self::Recovery(_) => Cow::Borrowed("无法安全恢复上次安装事务"),
+            Self::Upgrade(_) => Cow::Borrowed("候选包与当前安装不兼容"),
+            Self::PermissionConfirmationRequired(_) => {
+                Cow::Borrowed("升级新增或扩大权限，需要显式确认")
+            }
+            Self::InstallationCatalog(_) => Cow::Borrowed("当前安装未通过完整性校验"),
         }
     }
 }
@@ -112,6 +128,7 @@ pub struct InstalledPackage {
     pub dir: PathBuf,
     pub manifest: Manifest,
     pub meta: InstallMeta,
+    pub upgrade: Option<UpgradePlan>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -152,6 +169,7 @@ pub fn install_trusted_package(
     source: &str,
     limits: &PackageLimits,
     trust_store: &Store,
+    accept_permission_expansion: bool,
 ) -> Result<InstalledPackage, InstallError> {
     let validated = validate_package(bytes, limits)?;
     let publisher_id = validated.manifest.publisher.id.as_str();
@@ -182,6 +200,22 @@ pub fn install_trusted_package(
             version: manifest.version,
         });
     }
+    let upgrade = match load_highest(plugin_store, &manifest.id.0)? {
+        Some(current)
+            if Version::parse(&manifest.version)
+                .map_err(|error| InstallError::Commit(format!("validated version: {error}")))?
+                > Version::parse(&current.manifest.version).map_err(|error| {
+                    InstallError::Commit(format!("installed version passed validation: {error}"))
+                })? =>
+        {
+            let plan = plan_upgrade(&current.manifest, &manifest)?;
+            if plan.requires_confirmation && !accept_permission_expansion {
+                return Err(InstallError::PermissionConfirmationRequired(plan));
+            }
+            Some(plan)
+        }
+        _ => None,
+    };
     let parent = final_dir.parent().unwrap_or(plugin_store);
     fs::create_dir_all(parent)
         .map_err(|error| InstallError::StoreUnavailable(error.to_string()))?;
@@ -226,6 +260,7 @@ pub fn install_trusted_package(
         dir: final_dir,
         manifest,
         meta,
+        upgrade,
     })
 }
 
@@ -347,6 +382,7 @@ fn install_validated(
         dir: final_dir,
         manifest,
         meta,
+        upgrade: None,
     })
 }
 
@@ -518,6 +554,41 @@ mod tests {
 
     fn signed_pkg_bytes(version: &str, signing_key: &SigningKey) -> Vec<u8> {
         signed_pkg_with_manifest_versions(version, version, signing_key)
+    }
+
+    fn signed_pkg_with_permissions(
+        version: &str,
+        permissions: serde_json::Value,
+        signing_key: &SigningKey,
+    ) -> Vec<u8> {
+        let wasm = real_wasm();
+        let mut manifest: serde_json::Value = serde_json::from_str(&valid_manifest_json()).unwrap();
+        manifest["version"] = serde_json::json!(version);
+        manifest["permissions"] = permissions;
+        let manifest = manifest.to_string().into_bytes();
+        let ui = valid_ui_ir().into_bytes();
+        let mut files = BTreeMap::from([
+            ("manifest.json".to_owned(), manifest),
+            ("ui/widget.ftui".to_owned(), ui),
+            ("logic/plugin.wasm".to_owned(), wasm),
+        ]);
+        let digest = content_digest(&files);
+        let signature = signing_key.sign(&dsse_pae(PACKAGE_DIGEST_PAYLOAD_TYPE, &digest));
+        let envelope = serde_json::to_vec(&serde_json::json!({
+            "payloadType": PACKAGE_DIGEST_PAYLOAD_TYPE,
+            "payload": STANDARD.encode(digest),
+            "signatures": [{
+                "keyid": publisher_key_id(signing_key.verifying_key().as_bytes()),
+                "sig": STANDARD.encode(signature.to_bytes())
+            }]
+        }))
+        .unwrap();
+        files.insert(SIGNATURE_FILE.to_owned(), envelope);
+        let entries: Vec<_> = files
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect();
+        build_zip(&entries)
     }
 
     fn signed_pkg_with_manifest_versions(
@@ -713,6 +784,7 @@ mod tests {
             "signed.floatile",
             &Default::default(),
             &trust_store,
+            false,
         )
         .unwrap();
         assert!(installed.dir.join(SIGNATURE_FILE).is_file());
@@ -745,7 +817,8 @@ mod tests {
                 &plugin_store,
                 "unsigned.floatile",
                 &Default::default(),
-                &trust_store
+                &trust_store,
+                false
             ),
             Err(InstallError::MissingSignature)
         ));
@@ -757,6 +830,7 @@ mod tests {
             "tampered.floatile",
             &Default::default(),
             &trust_store,
+            false,
         )
         .unwrap_err();
         assert_eq!(tampered_error.code(), "FINST_SIGNATURE_DIGEST");
@@ -767,6 +841,7 @@ mod tests {
             "v2.floatile",
             &Default::default(),
             &trust_store,
+            false,
         )
         .unwrap();
         let downgrade = install_trusted_package(
@@ -775,11 +850,88 @@ mod tests {
             "v1.floatile",
             &Default::default(),
             &trust_store,
+            false,
         )
         .unwrap_err();
         assert_eq!(downgrade.code(), "FINST_ROLLBACK");
         assert!(!install_dir(&plugin_store, "dev.floatile.clock", "1.0.0").exists());
         assert!(trust_store.trust().pending_installs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn trusted_upgrade_requires_explicit_permission_expansion_confirmation() {
+        let plugin_store = temp_store("trusted-permissions");
+        let trust_store = floatile_store::open(":memory:").unwrap();
+        let signing_key = SigningKey::from_bytes(&[24; 32]);
+        trust_store
+            .trust()
+            .upsert_key(
+                "dev.floatile",
+                signing_key.verifying_key().to_bytes(),
+                TrustState::Active,
+                1,
+            )
+            .unwrap();
+        install_trusted_package(
+            &signed_pkg_bytes("1.0.0", &signing_key),
+            &plugin_store,
+            "v1.floatile",
+            &Default::default(),
+            &trust_store,
+            false,
+        )
+        .unwrap();
+
+        let expanded = signed_pkg_with_permissions(
+            "2.0.0",
+            serde_json::json!([{
+                "capability": "timer:schedule",
+                "params": { "maxPerMinute": 120, "maxActive": 4 }
+            }]),
+            &signing_key,
+        );
+        let rejected = install_trusted_package(
+            &expanded,
+            &plugin_store,
+            "v2.floatile",
+            &Default::default(),
+            &trust_store,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.code(), "FINST_PERMISSION_CONFIRMATION");
+        assert!(!install_dir(&plugin_store, "dev.floatile.clock", "2.0.0").exists());
+        assert!(trust_store.trust().pending_installs().unwrap().is_empty());
+
+        let installed = install_trusted_package(
+            &expanded,
+            &plugin_store,
+            "v2.floatile",
+            &Default::default(),
+            &trust_store,
+            true,
+        )
+        .unwrap();
+        assert!(installed.upgrade.unwrap().requires_confirmation);
+
+        let reduced = signed_pkg_with_permissions(
+            "3.0.0",
+            serde_json::json!([{
+                "capability": "timer:schedule",
+                "params": { "maxPerMinute": 30, "maxActive": 1 }
+            }]),
+            &signing_key,
+        );
+        let installed = install_trusted_package(
+            &reduced,
+            &plugin_store,
+            "v3.floatile",
+            &Default::default(),
+            &trust_store,
+            false,
+        )
+        .unwrap();
+        assert!(!installed.upgrade.unwrap().requires_confirmation);
     }
 
     #[test]
@@ -821,6 +973,7 @@ mod tests {
             "signed.floatile",
             &Default::default(),
             &trust_store,
+            false,
         )
         .unwrap();
         let validated = validate_package(&package, &Default::default()).unwrap();

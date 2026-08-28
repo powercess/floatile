@@ -8,7 +8,7 @@ use floatile_cli::{
     CommandErrorReport, build, check, conformance, dev, inspect, install, instance, package,
     preview, project, run, test, trust,
 };
-use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId};
+use floatile_core::{InstanceConfig, InstanceDesiredState, InstanceId, PermissionChangeKind};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -871,11 +871,18 @@ fn cmd_test(args: &[String]) -> ExitCode {
 fn cmd_install(args: &[String]) -> ExitCode {
     let json = args.iter().any(|a| a == "--json");
     let require_trusted = args.iter().any(|argument| argument == "--require-trusted");
-    let positionals =
-        match author_positionals(args, &["--store", "--db"], &["--require-trusted"], 1) {
-            Ok(positionals) => positionals,
-            Err(detail) => return render_basic_error("FINST_ARGUMENT", &detail, json, true),
-        };
+    let accept_permissions = args
+        .iter()
+        .any(|argument| argument == "--accept-permissions");
+    let positionals = match author_positionals(
+        args,
+        &["--store", "--db"],
+        &["--require-trusted", "--accept-permissions"],
+        1,
+    ) {
+        Ok(positionals) => positionals,
+        Err(detail) => return render_basic_error("FINST_ARGUMENT", &detail, json, true),
+    };
     let Some(path) = positionals.first().map(PathBuf::from) else {
         return render_basic_error("FINST_ARGUMENT", "install 需要包路径", json, true);
     };
@@ -919,12 +926,14 @@ fn cmd_install(args: &[String]) -> ExitCode {
             &source,
             &package::PackageLimits::default(),
             &trust_store,
+            accept_permissions,
         )
     } else {
         install::install_package(&bytes, &store, &source, &package::PackageLimits::default())
     };
     match result {
         Ok(installed) => {
+            let upgrade = installed.upgrade.as_ref().map(upgrade_json);
             if json {
                 println!(
                     "{}",
@@ -937,6 +946,7 @@ fn cmd_install(args: &[String]) -> ExitCode {
                             "dir": installed.dir.display().to_string(),
                             "digest": installed.meta.digest,
                             "trust": if require_trusted { "trusted" } else { "unsigned" },
+                            "upgrade": upgrade,
                         }
                     })
                 );
@@ -953,11 +963,58 @@ fn cmd_install(args: &[String]) -> ExitCode {
                         "unsigned"
                     },
                 );
+                if let Some(plan) = &installed.upgrade {
+                    println!(
+                        "  upgrade {} -> {} permission_confirmation={}",
+                        plan.current_version, plan.candidate_version, plan.requires_confirmation
+                    );
+                    for change in &plan.permissions {
+                        println!("    {} {:?}", change.capability.name(), change.kind);
+                    }
+                }
             }
             ExitCode::SUCCESS
         }
-        Err(error) => render_basic_error(error.code(), error.public_detail().as_ref(), json, false),
+        Err(error) => {
+            if let install::InstallError::PermissionConfirmationRequired(plan) = &error {
+                let detail = error.public_detail();
+                if json {
+                    let report = CommandErrorReport::new(
+                        error.code(),
+                        detail.as_ref(),
+                        serde_json::json!({ "upgrade": upgrade_json(plan) }),
+                    );
+                    eprintln!("{}", serialize_json(&report));
+                } else {
+                    eprintln!("命令失败: code={} detail={detail}", error.code());
+                    for change in &plan.permissions {
+                        eprintln!("  {} {:?}", change.capability.name(), change.kind);
+                    }
+                }
+                ExitCode::FAILURE
+            } else {
+                render_basic_error(error.code(), error.public_detail().as_ref(), json, false)
+            }
+        }
     }
+}
+
+fn upgrade_json(plan: &floatile_core::UpgradePlan) -> serde_json::Value {
+    serde_json::json!({
+        "currentVersion": plan.current_version.to_string(),
+        "candidateVersion": plan.candidate_version.to_string(),
+        "requiresConfirmation": plan.requires_confirmation,
+        "permissions": plan.permissions.iter().map(|change| serde_json::json!({
+            "capability": change.capability,
+            "change": match change.kind {
+                PermissionChangeKind::Added => "added",
+                PermissionChangeKind::Removed => "removed",
+                PermissionChangeKind::Expanded => "expanded",
+                PermissionChangeKind::Reduced => "reduced",
+                PermissionChangeKind::Unchanged => "unchanged",
+            }
+        })).collect::<Vec<_>>()
+    })
 }
 
 fn cmd_preview(args: &[String]) -> ExitCode {

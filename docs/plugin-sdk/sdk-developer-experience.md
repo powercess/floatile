@@ -210,7 +210,7 @@ Detected capabilities:
 | `floatile preview` | 固定 size/DPI/theme/locale 渲染与截图 |
 | `floatile build` | 可复现地产生 `.floatile`，默认不签名 |
 | `floatile inspect` | 显示 manifest、版本轴、权限、预算、entry digest |
-| `floatile install [--require-trusted]` | 开发模式允许显式 unsigned 安装；分发模式强制 publisher trust、签名、撤销与 anti-rollback |
+| `floatile install [--require-trusted] [--accept-permissions]` | 开发模式允许显式 unsigned 安装；分发模式强制 publisher trust、签名、撤销、anti-rollback 与升级权限确认 |
 | `floatile trust add-key/revoke-key/revoke-publisher/show` | 管理宿主持有的 Ed25519 public key 信任；不得接收或显示 private key |
 | `floatile migrate` | SDK/UI/manifest 兼容迁移；默认先 dry-run |
 | `floatile conformance` | 校验并输出语言无关的 SDK contract vectors |
@@ -239,7 +239,9 @@ JSON 失败使用稳定 `FBUILD_*`/`FPAK_*`/`FCHECK_*` code 和不含宿主路�
 DSSE/Ed25519 验证、publisher/key 撤销和 anti-rollback；默认 `install` 保留 PP-M4 本地开发所需的
 `unsigned` 结果并明确输出 trust 状态。受信安装使用 SQLite pending intent 协调 staging/rename/最高版本
 水位，下一次受信安装会先复核并恢复中断事务。`trust` 命令只接收 32 字节 public key hex，输出 key id
-和状态，不存储或回显 private key。
+和状态，不存储或回显 private key。受信升级会比较当前最高安装的 manifest：新增 capability 或扩大
+scope/配额返回 `FINST_PERMISSION_CONFIRMATION` 且零落盘；调用方必须显式传
+`--accept-permissions` 才能继续。纯移除/收窄无需该参数，成功输出包含逐 capability 的 upgrade diff。
 `check` 按 Component Model 实际保留的 Floatile interface/function imports 与 Capability Registry 比对：
 使用声明能力但 manifest 未声明时以 `FCHECK_CAPABILITY_MISSING` 失败；已声明但未导入时产生
 `FCHECK_CAPABILITY_UNUSED` warning，`--deny-warnings` 可将其提升为失败。固有能力无需写入 manifest；
