@@ -326,6 +326,8 @@ load/start/State 更新/shutdown + 宿主存活）并输出稳定 JSON。`advanc
 每个模板包含简短 `AGENTS.md`，只说明项目文件、允许命令和不可编辑生成物。SDK 发布：
 
 - 组件、属性、事件、capability、错误、CLI 输出的版本化 JSON schema；
+- `floatile schema ui <output.json>` 从 `floatile-ui-schema` registry 输出版本化组件/prop/event 契约，
+  TypeScript codegen 不维护平行组件列表；
 - 每个能力一个最小、可编译示例；不提供大而全 demo 作为唯一资料；
 - `floatile check --json --no-interactive` 的确定性输出；
 - `floatile preview --screenshot <path> --ui-tree <path>`；

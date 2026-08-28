@@ -7,11 +7,14 @@
 
 use std::sync::LazyLock;
 
+use serde::Serialize;
+
 use crate::error::UiSchemaError;
 use crate::ir::PropValue;
 
 /// 允许的字面量 JSON 类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum JsonType {
     String,
     Boolean,
@@ -51,7 +54,8 @@ impl JsonType {
 }
 
 /// 单个 prop 的 schema。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PropSchema {
     pub name: &'static str,
     pub types: &'static [JsonType],
@@ -63,7 +67,8 @@ pub struct PropSchema {
 }
 
 /// 子组件策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ChildrenPolicy {
     Forbidden,
     One,
@@ -71,7 +76,8 @@ pub enum ChildrenPolicy {
 }
 
 /// 组件类别。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ComponentKind {
     Element,
     If,
@@ -79,7 +85,8 @@ pub enum ComponentKind {
 }
 
 /// 组件规格。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ComponentSpec {
     pub name: &'static str,
     /// 首次引入该组件的 UI API 1.x minor。
@@ -165,6 +172,23 @@ static REGISTRY: LazyLock<Vec<ComponentSpec>> = LazyLock::new(build_registry);
 
 pub fn components() -> &'static [ComponentSpec] {
     &REGISTRY
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryContract<'a> {
+    pub schema_version: u32,
+    pub ui_api_version: &'static str,
+    pub components: &'a [ComponentSpec],
+}
+
+/// Machine-readable single-source contract consumed by SDK code generators.
+pub fn contract() -> RegistryContract<'static> {
+    RegistryContract {
+        schema_version: 1,
+        ui_api_version: crate::UI_API_VERSION,
+        components: components(),
+    }
 }
 
 fn build_registry() -> Vec<ComponentSpec> {
@@ -627,5 +651,15 @@ mod tests {
         let column = find("Column").unwrap();
         assert!(column.find_prop("padding").is_some());
         assert!(column.find_prop("gap").is_some());
+    }
+
+    #[test]
+    fn machine_contract_serializes_the_registry_source() {
+        let value = serde_json::to_value(contract()).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["uiApiVersion"], crate::UI_API_VERSION);
+        let specs = value["components"].as_array().unwrap();
+        assert_eq!(specs.len(), components().len());
+        assert!(specs.iter().any(|spec| spec["name"] == "Text"));
     }
 }

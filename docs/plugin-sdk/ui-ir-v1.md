@@ -169,7 +169,9 @@ Extension:    Canvas Path（通过 renderer spike 后再启用）
 每个组件条目包含稳定名称、introduced minor、props schema、allowed children/slots、events、accessibility
 要求和 renderer test vector。新增 optional prop/component 可以 bump minor；删除/改语义必须 bump major。
 
-组件 registry 是单一机器源。README、Rust/TypeScript API 或 Slint adapter 中的手写列表不是事实源。
+组件 registry 是单一机器源。`floatile schema ui <output.json>` 机械序列化同一 registry，供
+TypeScript codegen、编辑器和 Agent 消费；README、Rust/TypeScript API 或 Slint adapter 中的手写
+列表不是事实源。
 
 ## 8. Style、theme 与 animation
 

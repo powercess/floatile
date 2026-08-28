@@ -669,18 +669,33 @@ fn print_instance_usage() {
     );
 }
 
-/// `floatile schema <manifest.schema.json>`：由单一源生成并输出 manifest.json 的
-/// 独立 JSON Schema 产物，供外部工具/编辑器校验 manifest，避免手写平行 schema。
+/// 由单一源生成 manifest schema 或 UI component registry，供 SDK/codegen 使用。
 fn cmd_schema(args: &[String]) -> ExitCode {
-    let Some(path) = args.first().map(PathBuf::from) else {
-        eprintln!("用法: floatile schema <manifest.schema.json>");
-        return ExitCode::from(2);
+    let (kind, path) = match args {
+        [path] => ("manifest", PathBuf::from(path)),
+        [kind, path] if matches!(kind.as_str(), "manifest" | "ui") => {
+            (kind.as_str(), PathBuf::from(path))
+        }
+        _ => {
+            eprintln!("用法: floatile schema [manifest|ui] <output.json>");
+            return ExitCode::from(2);
+        }
     };
-    let schema = floatile_core::manifest_json_schema();
-    let text = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_owned());
+    let text = if kind == "ui" {
+        serde_json::to_string_pretty(&floatile_ui_schema::component_registry_contract())
+    } else {
+        serde_json::to_string_pretty(&floatile_core::manifest_json_schema())
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(_) => {
+            eprintln!("schema 序列化失败");
+            return ExitCode::FAILURE;
+        }
+    };
     match std::fs::write(&path, text) {
         Ok(()) => {
-            println!("已写出 manifest JSON Schema 到 {}", path.display());
+            println!("已写出 {kind} schema 到 {}", path.display());
             ExitCode::SUCCESS
         }
         Err(e) => {
