@@ -21,6 +21,7 @@ const jco = resolve(
 const world = execFileSync(jco, ["wit", componentPath], {
   cwd: spikeDir,
   encoding: "utf8",
+  ...(process.platform === "win32" ? { shell: true } : {}),
 });
 
 const imports = [...world.matchAll(/^\s*import\s+([^;]+);$/gm)].map(
