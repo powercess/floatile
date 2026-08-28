@@ -28,6 +28,31 @@ use floatile_store::{AuditRecord, Store};
 use floatile_ui_schema::schema::JsonSchema;
 use serde_json::{Value, json};
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LifecycleSuite {
+    schema_version: u64,
+    engine_api_version: String,
+    vectors: Vec<LifecycleVector>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LifecycleVector {
+    id: String,
+    callback: String,
+    message: Option<String>,
+    expected_host_outcome: String,
+}
+
+fn lifecycle_suite() -> LifecycleSuite {
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../conformance/sdk-lifecycle-v1.json"
+    )))
+    .expect("lifecycle conformance vectors must parse")
+}
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -180,40 +205,41 @@ async fn denied_capability_persists_audit_and_host_survives() {
 #[tokio::test(flavor = "multi_thread")]
 async fn sdk_lifecycle_errors_reach_the_host_as_rejections() {
     let manager = WidgetManager::new().unwrap();
-    let start_error = spawn_evil(
-        &manager,
-        81,
-        evil_grants_none(81),
-        json!({"mode": "guest-start-error"}),
+    let suite = lifecycle_suite();
+    assert_eq!(suite.schema_version, 1);
+    assert_eq!(
+        suite.engine_api_version,
+        floatile_plugin_api::ENGINE_API_VERSION
     );
-    let result = start_error.start().await;
-    assert!(
-        matches!(result, Err(floatile_runtime::InstanceError::Rejected(ref message)) if message.contains("fixture start rejection")),
-        "SDK start error should remain a guest rejection, got {result:?}"
-    );
+    for (index, vector) in suite.vectors.iter().enumerate() {
+        let instance = 81 + u64::try_from(index).expect("bounded vector index");
+        let handle = spawn_evil(
+            &manager,
+            instance,
+            evil_grants_none(instance),
+            json!({"mode": format!("conformance-{}", vector.id)}),
+        );
+        let result = if vector.callback == "start" {
+            handle.start().await
+        } else {
+            handle.start().await.expect("event vector should start");
+            handle
+                .handle_event(WidgetEvent::Ui(UiEvent {
+                    name: "trigger".into(),
+                    payload_json: "{}".into(),
+                }))
+                .await
+        };
+        assert_eq!(vector.expected_host_outcome, "rejected");
+        assert!(
+            matches!(result, Err(floatile_runtime::InstanceError::Rejected(ref message))
+                if vector.message.as_ref().is_none_or(|expected| message.contains(expected))),
+            "conformance vector {} should remain a guest rejection, got {result:?}",
+            vector.id
+        );
+    }
 
-    let event_error = spawn_evil(
-        &manager,
-        82,
-        evil_grants_none(82),
-        json!({"mode": "guest-event-error"}),
-    );
-    event_error
-        .start()
-        .await
-        .expect("event fixture should start");
-    let result = event_error
-        .handle_event(WidgetEvent::Ui(UiEvent {
-            name: "trigger".into(),
-            payload_json: "{}".into(),
-        }))
-        .await;
-    assert!(
-        matches!(result, Err(floatile_runtime::InstanceError::Rejected(ref message)) if message.contains("fixture event rejection")),
-        "SDK event error should remain a guest rejection, got {result:?}"
-    );
-
-    let survivor = spawn_evil(&manager, 83, evil_grants_none(83), json!({"mode": "deny"}));
+    let survivor = spawn_evil(&manager, 89, evil_grants_none(89), json!({"mode": "deny"}));
     survivor
         .start()
         .await

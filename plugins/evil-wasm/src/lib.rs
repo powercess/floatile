@@ -77,8 +77,8 @@ impl Widget for Evil {
     }
 
     fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult {
-        if self.mode == "guest-start-error" {
-            return Err(WidgetError::Rejected("fixture start rejection".into()));
+        if self.mode == "conformance-start-rejected" {
+            return Err(WidgetError::Rejected("conformance start rejection".into()));
         }
         match self.mode.as_str() {
             // loop 不进 start:让实例先成功启动,测试再以事件触发无限循环,fuel 才 trap。
@@ -96,8 +96,13 @@ impl Widget for Evil {
     }
 
     fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>) -> WidgetResult {
-        if self.mode == "guest-event-error" {
-            return Err(WidgetError::InvalidInput("fixture event rejection".into()));
+        if self.mode == "conformance-event-invalid-input" {
+            return Err(WidgetError::InvalidInput(
+                "conformance event rejection".into(),
+            ));
+        }
+        if self.mode == "conformance-event-internal" {
+            return Err(WidgetError::Internal);
         }
         match event {
             EvilEvent::Trigger => match self.mode.as_str() {

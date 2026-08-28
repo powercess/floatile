@@ -291,6 +291,9 @@ TypeScript 提供同名语义。测试默认不启动窗口、不访问真实 SQ
 测试由 `floatile preview` 在固定 renderer、字体、DPI 和 theme 下输出 screenshot + 可访问 UI tree；
 平台窗口行为仍需真实平台验收，不能用快照替代。
 
+跨语言 lifecycle 与错误分类使用仓库根 `conformance/` 的版本化 JSON 向量，格式与覆盖状态见
+[`conformance-kit.md`](conformance-kit.md)。Rust/TypeScript 测试不得分别维护同名用例的预期结果。
+
 实现状态（P0）：Rust 侧 `WidgetHarness` 已在 `floatile-runtime::harness` 落地——
 `grant/start/emit_ui/wait_for_state(谓词断言)/advance_time/audit/assert_audit`，所有宿主能力仍走生产
 deny-by-default Broker；`floatile test` 用它对已构建 `.floatile` 跑无头生命周期冒烟（build→提取→

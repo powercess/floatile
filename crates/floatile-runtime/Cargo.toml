@@ -26,3 +26,4 @@ wasmtime-wasi = { workspace = true }
 [dev-dependencies]
 floatile-platform = { workspace = true }
 floatile-store = { workspace = true }
+serde = { workspace = true }
