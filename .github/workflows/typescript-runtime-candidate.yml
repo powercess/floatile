@@ -62,7 +62,7 @@ jobs:
           node-version: 26.8.0
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@c12ef9fdc5a76b59d9c8fd177c7808157c438508 # v5.0.0
+        uses: pnpm/action-setup@v5
         with:
           version: 11.3.0
 
