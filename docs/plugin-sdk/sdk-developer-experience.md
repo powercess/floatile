@@ -272,6 +272,7 @@ Rust SDK 包内包含由根 `wit/floatile-widget.wit` 机械同步的发行快�
 `migrate` 使用版本化 JSON 报告且默认只读 dry-run；当前第一条真实迁移将旧项目隐式的 Rust SDK
 选择补成 `[sdk] language/version`，为 Rust/TypeScript 共用项目模型建立显式事实。只有 `--write`
 修改文件，重复执行无变化；缺失、超限、非普通文件或无效 TOML 使用稳定 `FMIGRATE_*` code 拒绝。
+版本轴与不可自动迁移边界见 [`migration-guide.md`](migration-guide.md)。
 
 ## 8. 诊断格式
 

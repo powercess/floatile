@@ -70,6 +70,11 @@ jobs:
         run: cargo check --workspace --exclude floatile-clock-wasm --all-targets --locked
       - name: Clippy
         run: cargo clippy --workspace --exclude floatile-clock-wasm --all-targets --locked -- -D warnings
+      - name: Rust SDK API docs
+        if: runner.os == 'Linux'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p floatile-sdk -p floatile-sdk-macros -p floatile-ui-schema --no-deps --locked
       - name: Build WASI guest (hermetic integration tests)
         # 集成测试读取 target/wasm32-wasip2/debug 下的组件；先构建保证干净
         # checkout 上测试不依赖执行顺序或测试内并发构建。
