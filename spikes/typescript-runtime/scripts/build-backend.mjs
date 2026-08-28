@@ -22,6 +22,7 @@ const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 
 execFileSync(pnpm, ["--dir", "sdk/typescript", "build"], {
   cwd: workspace,
+  shell: process.platform === "win32",
   stdio: "inherit",
 });
 
