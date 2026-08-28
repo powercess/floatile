@@ -4,7 +4,13 @@
 //! 导出为 WASM Component。所有 host 能力调用经 `Context` → WIT → Broker 路径。
 
 use crate::view::View;
-use crate::{Context, WidgetEvent};
+use crate::{Context, WidgetError, WidgetEvent};
+
+/// Result returned by fallible widget lifecycle callbacks.
+///
+/// The error crosses the versioned WIT `widget-error` contract, allowing the
+/// host to distinguish a guest rejection from traps and resource limits.
+pub type WidgetResult = Result<(), WidgetError>;
 
 /// 从宿主级 [`WidgetEvent`] 转换为作者定义的事件类型。
 ///
@@ -36,8 +42,8 @@ pub trait Widget: Sized + Default {
     type Event: FromWidgetEvent;
     fn view(state: &Self::State) -> View;
     fn init(&mut self, _initial: &Self::State) {}
-    fn start(&mut self, ctx: &mut Context<Self>);
-    fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>);
+    fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult;
+    fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>) -> WidgetResult;
     fn stop(&mut self) {}
 }
 

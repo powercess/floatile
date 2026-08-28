@@ -175,6 +175,52 @@ async fn denied_capability_persists_audit_and_host_survives() {
     handle2.shutdown().await.expect("新实例 shutdown 正常");
 }
 
+/// Rust SDK lifecycle errors must cross WIT as business rejections instead of
+/// being swallowed or misclassified as traps.
+#[tokio::test(flavor = "multi_thread")]
+async fn sdk_lifecycle_errors_reach_the_host_as_rejections() {
+    let manager = WidgetManager::new().unwrap();
+    let start_error = spawn_evil(
+        &manager,
+        81,
+        evil_grants_none(81),
+        json!({"mode": "guest-start-error"}),
+    );
+    let result = start_error.start().await;
+    assert!(
+        matches!(result, Err(floatile_runtime::InstanceError::Rejected(ref message)) if message.contains("fixture start rejection")),
+        "SDK start error should remain a guest rejection, got {result:?}"
+    );
+
+    let event_error = spawn_evil(
+        &manager,
+        82,
+        evil_grants_none(82),
+        json!({"mode": "guest-event-error"}),
+    );
+    event_error
+        .start()
+        .await
+        .expect("event fixture should start");
+    let result = event_error
+        .handle_event(WidgetEvent::Ui(UiEvent {
+            name: "trigger".into(),
+            payload_json: "{}".into(),
+        }))
+        .await;
+    assert!(
+        matches!(result, Err(floatile_runtime::InstanceError::Rejected(ref message)) if message.contains("fixture event rejection")),
+        "SDK event error should remain a guest rejection, got {result:?}"
+    );
+
+    let survivor = spawn_evil(&manager, 83, evil_grants_none(83), json!({"mode": "deny"}));
+    survivor
+        .start()
+        .await
+        .expect("host should survive guest rejection");
+    survivor.shutdown().await.expect("survivor should stop");
+}
+
 /// 正式 WIT Operation：guest submit → metadata completion → typed one-shot take → State 更新。
 #[tokio::test(flavor = "multi_thread")]
 async fn storage_operation_round_trips_through_guest_contract() {

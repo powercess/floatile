@@ -59,3 +59,4 @@ pub use floatile_ui_schema::{JsonSchema, merge_patch, validate_document};
 pub use state::State;
 pub use widget::FromWidgetEvent;
 pub use widget::Widget;
+pub use widget::WidgetResult;

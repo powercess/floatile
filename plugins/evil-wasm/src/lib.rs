@@ -21,7 +21,7 @@
 use floatile_sdk::impl_export_widget;
 use floatile_sdk::{
     Context, FromWidgetEvent, LogLevel, OperationCapability, OperationTerminal, State, Widget,
-    WidgetEvent, view, view::View,
+    WidgetError, WidgetEvent, WidgetResult, view, view::View,
 };
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +79,10 @@ impl Widget for Evil {
         self.mode = initial.mode.clone();
     }
 
-    fn start(&mut self, ctx: &mut Context<Self>) {
+    fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult {
+        if self.mode == "guest-start-error" {
+            return Err(WidgetError::Rejected("fixture start rejection".into()));
+        }
         match self.mode.as_str() {
             // loop 不进 start:让实例先成功启动,测试再以事件触发无限循环,fuel 才 trap。
             "deny" => self.deny_call(ctx),
@@ -92,9 +95,13 @@ impl Widget for Evil {
                 let _ = ctx.log(LogLevel::Info, &format!("start mode {mode}"));
             }
         }
+        Ok(())
     }
 
-    fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>) {
+    fn event(&mut self, event: Self::Event, ctx: &mut Context<Self>) -> WidgetResult {
+        if self.mode == "guest-event-error" {
+            return Err(WidgetError::InvalidInput("fixture event rejection".into()));
+        }
         match event {
             EvilEvent::Trigger => match self.mode.as_str() {
                 "loop" => self.loop_forever(),
@@ -109,6 +116,7 @@ impl Widget for Evil {
                 }
             }
         }
+        Ok(())
     }
 }
 

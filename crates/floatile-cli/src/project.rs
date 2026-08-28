@@ -260,7 +260,8 @@ floatile-sdk = "0.1"
 serde = { version = "1", features = ["derive"] }
 "#
     .to_owned();
-    let lib_rs = r#"use floatile_sdk::{Context, LogLevel, State, Widget, WidgetEvent, view};
+    let lib_rs =
+        r#"use floatile_sdk::{Context, LogLevel, State, Widget, WidgetEvent, WidgetResult, view};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
@@ -279,12 +280,14 @@ impl Widget for MyWidget {
         view::column(vec![view::text_bind("$.message")])
     }
 
-    fn start(&mut self, ctx: &mut Context<Self>) {
+    fn start(&mut self, ctx: &mut Context<Self>) -> WidgetResult {
         let _ = ctx.timer().schedule(1000);
+        Ok(())
     }
 
-    fn event(&mut self, _event: WidgetEvent, ctx: &mut Context<Self>) {
+    fn event(&mut self, _event: WidgetEvent, ctx: &mut Context<Self>) -> WidgetResult {
         let _ = ctx.log(LogLevel::Info, "event received");
+        Ok(())
     }
 }
 
@@ -296,7 +299,7 @@ pub fn __floatile_ftui_json() -> String {
     floatile_sdk::build::build_ftui::<MyWidget>(std::collections::BTreeMap::new())
 }
 "#
-    .to_owned();
+        .to_owned();
     let build_ftui_rs = r#"fn main() {
     print!("{}", clock::__floatile_ftui_json());
 }

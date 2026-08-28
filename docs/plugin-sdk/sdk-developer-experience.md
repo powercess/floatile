@@ -87,11 +87,11 @@ impl Clock {
         .gap(8)
     }
 
-    fn start(ctx: &mut Context<Self>) -> Result<()> {
+    fn start(ctx: &mut Context<Self>) -> WidgetResult {
         ctx.timer().every("1s", Event::Refresh)
     }
 
-    async fn event(event: Event, ctx: &mut Context<Self>) -> Result<()> {
+    fn event(event: Event, ctx: &mut Context<Self>) -> WidgetResult {
         if matches!(event, Event::Refresh) {
             let time = ctx.clock().local_time();
             ctx.state().update(|state| state.time = time)?;
@@ -103,6 +103,10 @@ impl Clock {
 
 公开 API 可以随原型调整，但以下语义必须一致：组件名、State 字段、event 名、Context capability、
 错误码、默认预算和生命周期顺序。
+
+Rust SDK 的 `Widget::start` 与 `Widget::event` 返回 `WidgetResult`。`WidgetError` 会原样穿过 WIT
+`widget-error` 交给宿主，宿主将其分类为 guest 业务拒绝；SDK 不得吞掉错误，也不得把它伪装成 trap、
+fuel、超时或内存错误。
 
 ## 3. 项目模板
 
