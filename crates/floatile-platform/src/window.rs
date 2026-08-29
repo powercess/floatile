@@ -217,6 +217,24 @@ pub fn remove_window_decorations(window: &winit::window::Window) -> Result<(), P
     }
 }
 
+/// 将 Windows 上的 Widget 标记为无边框工具窗口。
+///
+/// 工具窗口不进入任务栏与 Alt+Tab；管理窗口不得调用此函数。
+pub fn configure_widget_window_role(window: &winit::window::Window) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows_impl::configure_widget_window_role(window)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Err(PlatformError::Unsupported(
+            "Windows widget window role is unavailable on this platform",
+        ))
+    }
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows_impl {
@@ -312,6 +330,55 @@ mod windows_impl {
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         Ok(())
     }
+
+    pub(super) fn configure_widget_window_role(
+        window: &winit::window::Window,
+    ) -> Result<(), PlatformError> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        };
+        use winit::platform::windows::WindowExtWindows;
+
+        remove_window_decorations(window)?;
+        let handle = window
+            .window_handle()
+            .map_err(|e| PlatformError::Platform(format!("window handle unavailable: {e}")))?;
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return Err(PlatformError::Unsupported(
+                "window handle is not a Win32 HWND on Windows",
+            ));
+        };
+        let hwnd: HWND = handle.hwnd.get();
+        let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        let widget_style = widget_ex_style(ex_style);
+        unsafe { SetLastError(0) };
+        let _ = unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, widget_style) };
+        let error = unsafe { GetLastError() };
+        if error != 0 {
+            return Err(PlatformError::Platform(format!(
+                "SetWindowLongPtrW(widget GWL_EXSTYLE) failed: {error}"
+            )));
+        }
+        window.set_skip_taskbar(true);
+        let _ = unsafe {
+            SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            )
+        };
+        Ok(())
+    }
+
+    pub(super) fn widget_ex_style(style: isize) -> isize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_APPWINDOW, WS_EX_TOOLWINDOW};
+
+        ((style as u32 | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW) as isize
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -364,6 +431,16 @@ mod tests {
         assert!(o.transparent);
         assert!(!o.decorations);
         assert!(o.always_on_top);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn widget_role_uses_tool_window_without_app_window() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_APPWINDOW, WS_EX_TOOLWINDOW};
+
+        let style = windows_impl::widget_ex_style(WS_EX_APPWINDOW as isize);
+        assert_eq!(style as u32 & WS_EX_TOOLWINDOW, WS_EX_TOOLWINDOW);
+        assert_eq!(style as u32 & WS_EX_APPWINDOW, 0);
     }
 
     #[test]

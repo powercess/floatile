@@ -33,14 +33,14 @@ use floatile_platform::listen_hotkey;
 use floatile_platform::{Hotkey, HotkeyModifiers};
 use floatile_platform::{
     PlatformError, PlatformKind, SingleInstanceState, WindowOptions, acquire_single_instance,
-    apply_window_options, data_dir, enumerate_monitors, process_metrics, resize_window,
-    set_always_on_top, set_click_through, set_window_position, start_window_drag,
-    to_monitor_layout,
+    apply_window_options, configure_widget_window_role, data_dir, enumerate_monitors,
+    process_metrics, resize_window, set_always_on_top, set_click_through, set_window_position,
+    start_window_drag, to_monitor_layout,
 };
 #[cfg(windows)]
 use floatile_platform::{
     WindowsTrayEvent, WindowsTrayIcon, install_hotkey_message_hook, register_hotkey,
-    remove_window_decorations, unregister_hotkey,
+    unregister_hotkey,
 };
 use floatile_runtime::{WidgetConfig, WidgetManager};
 use floatile_shell::{
@@ -56,6 +56,7 @@ slint::slint! {
     import { ClockPluginUI } from "generated/clock_plugin.slnt";
 
     export component Clock inherits Window {
+        title: "Floatile Widget";
         width: 260px;
         height: 120px;
         background: transparent;
@@ -853,6 +854,7 @@ const KEY_E: u32 = 0x0E;
 #[cfg(windows)]
 const KEY_F12: u32 = 0x7B;
 const SINGLE_INSTANCE_NAME: &str = "Local\\Floatile.DesktopHost";
+const WIDGET_WINDOW_TITLE: &str = "Floatile Widget";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let process_started = Instant::now();
@@ -1008,7 +1010,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     slint::BackendSelector::new()
         .with_winit_window_attributes_hook(move |attrs| {
-            apply_window_options(&window_options, attrs)
+            if attrs.title == WIDGET_WINDOW_TITLE {
+                apply_window_options(&window_options, attrs)
+            } else {
+                attrs
+            }
         })
         .with_winit_event_loop_builder(event_loop_builder)
         .select()?;
@@ -1532,7 +1538,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let controller_for_registration = Arc::clone(&controller);
         let register_timer = Rc::new(Timer::default());
         let timer_for_callback = Rc::clone(&register_timer);
-        let decorations_done = Rc::new(RefCell::new(false));
+        let widget_role_done = Rc::new(RefCell::new(false));
         let hotkey_done = Rc::new(RefCell::new(false));
         let tray_done = Rc::new(RefCell::new(false));
         let tray_icon_for_registration = Rc::clone(&tray_icon);
@@ -1556,21 +1562,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let mut pending = false;
-                if !*decorations_done.borrow() {
+                if !*widget_role_done.borrow() {
                     // winit 0.30 顶层窗口的 with_decorations(false) 不生效，需创建后强制移除；
                     // 首次成功后不再重放，防止隐藏/重现窗口导致频闪。
-                    let deco_result = app
+                    let role_result = app
                         .window()
-                        .with_winit_window(|w: &Window| remove_window_decorations(w))
+                        .with_winit_window(|w: &Window| configure_widget_window_role(w))
                         .unwrap_or(Err(PlatformError::WindowNotReady));
-                    match deco_result {
+                    match role_result {
                         Ok(()) => {
-                            tracing::info!("window decorations removed");
-                            *decorations_done.borrow_mut() = true;
+                            tracing::info!("Windows widget window role applied");
+                            *widget_role_done.borrow_mut() = true;
                         }
                         Err(error) => {
                             pending = true;
-                            tracing::debug!("remove_window_decorations retry: {error}");
+                            tracing::debug!("widget window role retry: {error}");
                         }
                     }
                 }
