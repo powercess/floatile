@@ -10,7 +10,7 @@
 | 语言 | Rust 2024，MSRV 1.97 | 原生跨平台、WASM guest 同语言；工具链固定到 `rust-toolchain.toml`。 |
 | 宿主 UI | Slint 1.17.x + winit 0.30.x | 原生 renderer 与窗口；ADR-0001 规定 Slint 只在宿主内使用，插件不提供 `.slint`。 |
 | 插件 UI | Floatile UI IR v1（`floatile-ui-schema` 已实现） | 版本化静态组件树 + State/Event schema；Rust/TypeScript SDK 同源生成；IR→Slint renderer 路径需 P0 spike。 |
-| 平台 API | windows-sys 0.52.x + x11rb 0.13.x（`randr`、`shape`）+ objc2 0.6.x（`app-kit`/`foundation`）+ mach2 0.6.x | 平台句柄、Windows 窗口操作、X11 compositor/SHAPE/EWMH/RandR/热键探测，以及 macOS NSWindow/NSScreen/进程指标与 Carbon 全局热键；只允许 `floatile-platform` 直接依赖。 |
+| 平台 API | windows-sys 0.52.x + tray-icon 0.24.x + x11rb 0.13.x（`randr`、`shape`）+ objc2 0.6.x（`app-kit`/`foundation`）+ mach2 0.6.x | 平台句柄、Windows 窗口与通知区操作、X11 compositor/SHAPE/EWMH/RandR/热键探测，以及 macOS NSWindow/NSScreen/进程指标与 Carbon 全局热键；只允许 `floatile-platform` 直接依赖。`tray-icon` 本阶段仅在 Windows target 启用并关闭默认 GTK/libxdo features。 |
 | 插件 ABI | WIT + WASM Component Model，guest `wasm32-wasip2` | 版本化接口、无原生句柄；`wit/` 为唯一源。 |
 | 插件 runtime | Wasmtime 47 + wasmtime-wasi p2（S5b 已引入，空 WASI 上下文实现零 ambient） | Component Model、异步调用、fuel 与资源限制；引入时固定兼容版本组。 |
 | TypeScript adapter | private SDK + ADR-0003 no-go runtime | TypeScript 作者契约、Rust Registry 同源 UI builder、WIT 1.2 adapter 与共享 conformance vectors 已实现；componentize-qjs 未发布修复候选已过三系统构建和 Linux 行为/安全/资源门，但上游发布、许可/NOTICE 与额外 `init` export 未决。暂不启用 CLI 模板或公共发布。 |

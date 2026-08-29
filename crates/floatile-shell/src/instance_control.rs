@@ -57,10 +57,12 @@ slint::slint! {
 
     export component PluginControlWindow inherits Window {
         title: "Floatile 插件与实例";
-        width: 900px;
-        height: 620px;
+        preferred-width: 900px;
+        preferred-height: 620px;
+        min-width: 700px;
+        min-height: 480px;
         background: #151922;
-        no-frame: true;
+        no-frame: false;
 
         in property <[InstallationListItem]> installations;
         in property <[InstanceListItem]> instances;
@@ -87,15 +89,7 @@ slint::slint! {
         callback delete-instance;
 
         Rectangle {
-            x: 0px; y: 0px; width: parent.width; height: 46px;
-            background: #202735;
-            Text { x: 18px; y: 12px; text: "Floatile 插件与实例"; color: white; font-size: 17px; font-weight: 700; }
-            close := TouchArea { x: parent.width - 46px; width: 46px; height: 46px; clicked => { root.hide(); } }
-            Text { x: parent.width - 31px; y: 11px; text: "×"; color: #bdc8da; font-size: 20px; }
-        }
-
-        Rectangle {
-            x: 0px; y: 46px; width: 310px; height: parent.height - 46px;
+            x: 0px; y: 0px; width: 310px; height: parent.height;
             background: #1a202b;
             SectionTitle { x: 16px; y: 14px; text: "已安装插件"; }
             ScrollView {
@@ -128,7 +122,7 @@ slint::slint! {
         }
 
         Rectangle {
-            x: 310px; y: 46px; width: parent.width - 310px; height: parent.height - 46px;
+            x: 310px; y: 0px; width: parent.width - 310px; height: parent.height;
             background: #151922;
             Text { x: 22px; y: 18px; width: parent.width - 44px; text: root.selection-title; color: #f0f4fa; font-size: 18px; font-weight: 700; overflow: elide; }
             Text { x: 22px; y: 48px; width: parent.width - 44px; text: root.selection-subtitle; color: #93a2b9; font-size: 12px; overflow: elide; }

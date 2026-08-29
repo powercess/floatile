@@ -54,6 +54,7 @@ slint = { version = "1.17", features = ["backend-winit", "unstable-winit-030"] }
 winit = "0.30"
 x11rb = { version = "0.13", default-features = false, features = ["randr", "shape"] }
 windows-sys = "0.52"
+tray-icon = { version = "0.24.2", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSGraphics", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSDictionary", "NSEnumerator", "NSGeometry", "NSObject", "NSString"] }

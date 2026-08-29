@@ -87,6 +87,25 @@ pub fn start_window_drag(window: &winit::window::Window) -> Result<(), PlatformE
         .map_err(|e| PlatformError::Platform(format!("drag_window: {e}")))
 }
 
+/// 在无边框窗口的自定义拖动交互期间获取或释放鼠标捕获。
+pub fn set_pointer_capture(
+    window: &winit::window::Window,
+    captured: bool,
+) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows_impl::set_pointer_capture(window, captured)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (window, captured);
+        Err(PlatformError::Unsupported(
+            "explicit pointer capture is unavailable on this platform",
+        ))
+    }
+}
+
 /// 调整窗口内容区尺寸（逻辑像素）。
 ///
 /// 尺寸上限以 winit 的 max inner size 为准；调用方应先按 `SizeConstraints` 钳制，
@@ -217,6 +236,24 @@ pub fn remove_window_decorations(window: &winit::window::Window) -> Result<(), P
     }
 }
 
+/// 将 Windows 上的 Widget 标记为无边框工具窗口。
+///
+/// 工具窗口不进入任务栏与 Alt+Tab；管理窗口不得调用此函数。
+pub fn configure_widget_window_role(window: &winit::window::Window) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows_impl::configure_widget_window_role(window)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Err(PlatformError::Unsupported(
+            "Windows widget window role is unavailable on this platform",
+        ))
+    }
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows_impl {
@@ -226,6 +263,46 @@ mod windows_impl {
         GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW,
     };
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    pub(super) fn set_pointer_capture(
+        window: &winit::window::Window,
+        captured: bool,
+    ) -> Result<(), PlatformError> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetCapture, ReleaseCapture, SetCapture,
+        };
+
+        let handle = window
+            .window_handle()
+            .map_err(|e| PlatformError::Platform(format!("window handle unavailable: {e}")))?;
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return Err(PlatformError::Unsupported(
+                "window handle is not a Win32 HWND on Windows",
+            ));
+        };
+        let hwnd: HWND = handle.hwnd.get();
+        if captured {
+            // SAFETY: `hwnd` comes from the live winit Window and Windows retains no Rust pointer.
+            let _ = unsafe { SetCapture(hwnd) };
+            // SAFETY: `GetCapture` only reads the calling GUI thread's capture state.
+            if unsafe { GetCapture() } != hwnd {
+                return Err(PlatformError::Platform(
+                    "SetCapture did not assign pointer capture".to_owned(),
+                ));
+            }
+        } else {
+            // SAFETY: releases capture owned by the current GUI thread.
+            let released = unsafe { ReleaseCapture() };
+            if released == 0 {
+                // SAFETY: reads the calling thread's last-error value.
+                let error = unsafe { GetLastError() };
+                return Err(PlatformError::Platform(format!(
+                    "ReleaseCapture failed: {error}"
+                )));
+            }
+        }
+        Ok(())
+    }
 
     pub(super) fn set_click_through(
         window: &winit::window::Window,
@@ -312,6 +389,55 @@ mod windows_impl {
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         Ok(())
     }
+
+    pub(super) fn configure_widget_window_role(
+        window: &winit::window::Window,
+    ) -> Result<(), PlatformError> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        };
+        use winit::platform::windows::WindowExtWindows;
+
+        remove_window_decorations(window)?;
+        let handle = window
+            .window_handle()
+            .map_err(|e| PlatformError::Platform(format!("window handle unavailable: {e}")))?;
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return Err(PlatformError::Unsupported(
+                "window handle is not a Win32 HWND on Windows",
+            ));
+        };
+        let hwnd: HWND = handle.hwnd.get();
+        let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        let widget_style = widget_ex_style(ex_style);
+        unsafe { SetLastError(0) };
+        let _ = unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, widget_style) };
+        let error = unsafe { GetLastError() };
+        if error != 0 {
+            return Err(PlatformError::Platform(format!(
+                "SetWindowLongPtrW(widget GWL_EXSTYLE) failed: {error}"
+            )));
+        }
+        window.set_skip_taskbar(true);
+        let _ = unsafe {
+            SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            )
+        };
+        Ok(())
+    }
+
+    pub(super) fn widget_ex_style(style: isize) -> isize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_APPWINDOW, WS_EX_TOOLWINDOW};
+
+        ((style as u32 | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW) as isize
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -364,6 +490,16 @@ mod tests {
         assert!(o.transparent);
         assert!(!o.decorations);
         assert!(o.always_on_top);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn widget_role_uses_tool_window_without_app_window() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_APPWINDOW, WS_EX_TOOLWINDOW};
+
+        let style = windows_impl::widget_ex_style(WS_EX_APPWINDOW as isize);
+        assert_eq!(style as u32 & WS_EX_TOOLWINDOW, WS_EX_TOOLWINDOW);
+        assert_eq!(style as u32 & WS_EX_APPWINDOW, 0);
     }
 
     #[test]
