@@ -19,6 +19,8 @@ pub enum MonitorKeySource {
     ConnectorName,
     /// macOS 对 CGDirectDisplayID 分配的稳定 UUID（跨重启稳定）。
     DisplayUuid,
+    /// Windows 显示设备名（例如 `\\.\DISPLAY1`，同一显示拓扑下跨重启稳定）。
+    DisplayDeviceName,
 }
 
 /// 平台显示器描述。
@@ -42,8 +44,8 @@ pub struct MonitorInfo {
 
 /// 枚举当前显示协议的活动显示器。
 ///
-/// Linux X11 走 RandR；macOS 走 NSScreen + CoreGraphics（须在主线程调用）。
-/// 原生 Wayland、Windows 返回显式不支持，不回退到 XWayland 或伪造单显示器。
+/// Linux X11 走 RandR；Windows 走 EnumDisplayMonitors；macOS 走 NSScreen +
+/// CoreGraphics（须在主线程调用）。原生 Wayland 返回显式不支持。
 pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, PlatformError> {
     let kind = probe().kind;
     match kind {
@@ -54,8 +56,11 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, PlatformError> {
         PlatformKind::Wayland => Err(PlatformError::Unsupported(
             "monitor enumeration is not implemented for native Wayland",
         )),
+        #[cfg(windows)]
+        PlatformKind::Windows => windows_impl::enumerate_monitors(),
+        #[cfg(not(windows))]
         PlatformKind::Windows => Err(PlatformError::Unsupported(
-            "monitor enumeration is not implemented for Windows",
+            "Windows monitor enumeration is unavailable on this platform",
         )),
         PlatformKind::Unknown => Err(PlatformError::Unsupported(
             "monitor enumeration requires a supported display protocol",
@@ -68,6 +73,94 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, PlatformError> {
         PlatformKind::MacOS => Err(PlatformError::Unsupported(
             "macOS monitor enumeration is only implemented on macOS",
         )),
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_impl {
+    use super::*;
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
+
+    unsafe extern "system" fn collect_monitor(
+        monitor: HMONITOR,
+        _hdc: HDC,
+        _clip: *mut RECT,
+        data: LPARAM,
+    ) -> BOOL {
+        // SAFETY: `data` is the exclusive Vec pointer passed to EnumDisplayMonitors below and the
+        // callback is invoked synchronously before that Vec is used again.
+        let monitors = unsafe { &mut *(data as *mut Vec<MonitorInfo>) };
+        // SAFETY: zero is a valid initial bit pattern for MONITORINFOEXW; cbSize is set next.
+        let mut info: MONITORINFOEXW = unsafe { std::mem::zeroed() };
+        info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        // SAFETY: `monitor` is provided by EnumDisplayMonitors and `info` has the required size.
+        if unsafe { GetMonitorInfoW(monitor, (&raw mut info).cast::<MONITORINFO>()) } == 0 {
+            return 1;
+        }
+        let end = info
+            .szDevice
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(info.szDevice.len());
+        let name = String::from_utf16_lossy(&info.szDevice[..end]);
+        let rect = info.monitorInfo.rcMonitor;
+        let Ok(width) = u32::try_from(rect.right.saturating_sub(rect.left)) else {
+            return 1;
+        };
+        let Ok(height) = u32::try_from(rect.bottom.saturating_sub(rect.top)) else {
+            return 1;
+        };
+        if width == 0 || height == 0 || name.is_empty() {
+            return 1;
+        }
+        monitors.push(MonitorInfo {
+            key: MonitorKey(format!("windows-device-{name}")),
+            key_source: MonitorKeySource::DisplayDeviceName,
+            name,
+            position: PhysicalPosition {
+                x: rect.left,
+                y: rect.top,
+            },
+            size: PhysicalSize { width, height },
+            physical_size_mm: None,
+            primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+        });
+        1
+    }
+
+    pub(super) fn enumerate_monitors() -> Result<Vec<MonitorInfo>, PlatformError> {
+        let mut monitors: Vec<MonitorInfo> = Vec::new();
+        // SAFETY: callback is synchronous; LPARAM points to `monitors` for the duration of this call.
+        let succeeded = unsafe {
+            EnumDisplayMonitors(
+                0,
+                std::ptr::null(),
+                Some(collect_monitor),
+                (&raw mut monitors) as LPARAM,
+            )
+        };
+        if succeeded == 0 {
+            return Err(PlatformError::Platform(
+                "EnumDisplayMonitors failed".to_owned(),
+            ));
+        }
+        if monitors.is_empty() {
+            return Err(PlatformError::Platform(
+                "Windows reported no active monitors".to_owned(),
+            ));
+        }
+        if !monitors.iter().any(|monitor| monitor.primary)
+            && let Some(first) = monitors.first_mut()
+        {
+            first.primary = true;
+        }
+        Ok(monitors)
     }
 }
 
@@ -284,6 +377,20 @@ mod macos_impl {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_enumerates_an_active_primary_monitor() {
+        let monitors = enumerate_monitors().unwrap();
+        assert!(!monitors.is_empty());
+        assert!(monitors.iter().any(|monitor| monitor.primary));
+        assert!(monitors.iter().all(|monitor| {
+            monitor.size.width > 0
+                && monitor.size.height > 0
+                && !monitor.name.is_empty()
+                && monitor.key_source == MonitorKeySource::DisplayDeviceName
+        }));
+    }
 
     #[test]
     fn to_monitor_layout_scales_physical_to_logical() {

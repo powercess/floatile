@@ -87,6 +87,25 @@ pub fn start_window_drag(window: &winit::window::Window) -> Result<(), PlatformE
         .map_err(|e| PlatformError::Platform(format!("drag_window: {e}")))
 }
 
+/// 在无边框窗口的自定义拖动交互期间获取或释放鼠标捕获。
+pub fn set_pointer_capture(
+    window: &winit::window::Window,
+    captured: bool,
+) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows_impl::set_pointer_capture(window, captured)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (window, captured);
+        Err(PlatformError::Unsupported(
+            "explicit pointer capture is unavailable on this platform",
+        ))
+    }
+}
+
 /// 调整窗口内容区尺寸（逻辑像素）。
 ///
 /// 尺寸上限以 winit 的 max inner size 为准；调用方应先按 `SizeConstraints` 钳制，
@@ -244,6 +263,46 @@ mod windows_impl {
         GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW,
     };
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    pub(super) fn set_pointer_capture(
+        window: &winit::window::Window,
+        captured: bool,
+    ) -> Result<(), PlatformError> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetCapture, ReleaseCapture, SetCapture,
+        };
+
+        let handle = window
+            .window_handle()
+            .map_err(|e| PlatformError::Platform(format!("window handle unavailable: {e}")))?;
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return Err(PlatformError::Unsupported(
+                "window handle is not a Win32 HWND on Windows",
+            ));
+        };
+        let hwnd: HWND = handle.hwnd.get();
+        if captured {
+            // SAFETY: `hwnd` comes from the live winit Window and Windows retains no Rust pointer.
+            let _ = unsafe { SetCapture(hwnd) };
+            // SAFETY: `GetCapture` only reads the calling GUI thread's capture state.
+            if unsafe { GetCapture() } != hwnd {
+                return Err(PlatformError::Platform(
+                    "SetCapture did not assign pointer capture".to_owned(),
+                ));
+            }
+        } else {
+            // SAFETY: releases capture owned by the current GUI thread.
+            let released = unsafe { ReleaseCapture() };
+            if released == 0 {
+                // SAFETY: reads the calling thread's last-error value.
+                let error = unsafe { GetLastError() };
+                return Err(PlatformError::Platform(format!(
+                    "ReleaseCapture failed: {error}"
+                )));
+            }
+        }
+        Ok(())
+    }
 
     pub(super) fn set_click_through(
         window: &winit::window::Window,

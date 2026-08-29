@@ -68,7 +68,7 @@ pub use single_instance::{
 pub use window::{
     PlatformError, WindowOptions, apply_window_options, configure_widget_window_role,
     remove_window_decorations, resize_window, set_always_on_top, set_click_through,
-    set_window_position, start_window_drag,
+    set_pointer_capture, set_window_position, start_window_drag,
 };
 #[cfg(windows)]
 pub use windows_host::{WindowsTrayEvent, WindowsTrayIcon};

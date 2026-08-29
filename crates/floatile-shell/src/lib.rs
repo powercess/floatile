@@ -171,16 +171,25 @@ pub fn is_window_drag_region(
     const CONTROL_RIGHT: f32 = 176.0;
     const CONTROL_TOP: f32 = 8.0;
     const CONTROL_BOTTOM: f32 = 32.0;
-    const RESIZE_HANDLE_SIZE: f32 = 24.0;
-
     let in_control_strip = position.x >= CONTROL_LEFT
         && position.x < CONTROL_RIGHT
         && position.y >= CONTROL_TOP
         && position.y < CONTROL_BOTTOM;
-    let in_resize_handle = position.x >= size.width - RESIZE_HANDLE_SIZE
-        && position.y >= size.height - RESIZE_HANDLE_SIZE;
+    !in_control_strip && !is_window_resize_handle(position, size, mode)
+}
 
-    !in_control_strip && !in_resize_handle
+/// 判断逻辑像素坐标是否命中编辑模式右下角缩放手柄。
+pub fn is_window_resize_handle(
+    position: LogicalPosition,
+    size: LogicalSize,
+    mode: WidgetMode,
+) -> bool {
+    const RESIZE_HANDLE_SIZE: f32 = 24.0;
+    mode == WidgetMode::Edit
+        && position.x >= size.width - RESIZE_HANDLE_SIZE
+        && position.x < size.width
+        && position.y >= size.height - RESIZE_HANDLE_SIZE
+        && position.y < size.height
 }
 
 /// 窗口当前几何快照（虚拟桌面逻辑矩形 + 物理尺寸 + DPI），供持久化构造使用。
@@ -586,6 +595,16 @@ mod tests {
             LogicalPosition { x: 248.0, y: 108.0 },
             size,
             WidgetMode::Edit
+        ));
+        assert!(is_window_resize_handle(
+            LogicalPosition { x: 248.0, y: 108.0 },
+            size,
+            WidgetMode::Edit
+        ));
+        assert!(!is_window_resize_handle(
+            LogicalPosition { x: 248.0, y: 108.0 },
+            size,
+            WidgetMode::Show
         ));
         assert!(!is_window_drag_region(
             LogicalPosition { x: 200.0, y: 60.0 },

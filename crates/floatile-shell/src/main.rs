@@ -34,8 +34,8 @@ use floatile_platform::{Hotkey, HotkeyModifiers};
 use floatile_platform::{
     PlatformError, PlatformKind, SingleInstanceState, WindowOptions, acquire_single_instance,
     apply_window_options, configure_widget_window_role, data_dir, enumerate_monitors,
-    process_metrics, resize_window, set_always_on_top, set_click_through, set_window_position,
-    start_window_drag, to_monitor_layout,
+    process_metrics, resize_window, set_always_on_top, set_click_through, set_pointer_capture,
+    set_window_position, start_window_drag, to_monitor_layout,
 };
 #[cfg(windows)]
 use floatile_platform::{
@@ -57,15 +57,16 @@ slint::slint! {
 
     export component Clock inherits Window {
         title: "Floatile Widget";
-        width: 260px;
-        height: 120px;
+        preferred-width: 260px;
+        preferred-height: 120px;
+        min-width: 120px;
+        min-height: 60px;
+        max-width: 2000px;
+        max-height: 1200px;
         background: transparent;
         no-frame: true;
 
         callback show-mode;
-        callback resize-down(pos-x: float, pos-y: float);
-        callback resize-move(pos-x: float, pos-y: float);
-        callback resize-up;
         callback settings-clicked;
         callback delete-clicked;
 
@@ -197,7 +198,7 @@ slint::slint! {
             }
         }
 
-        if edit-mode: touch := TouchArea {
+        if edit-mode: Rectangle {
             width: 24px;
             height: 24px;
             x: parent.width - 24px;
@@ -212,32 +213,17 @@ slint::slint! {
                 border-color: #4a90e2;
 
                 Text {
-                    text: "⤢";
-                    font-size: 14px;
+                    text: "//";
+                    font-size: 12px;
                     color: white;
+                    horizontal-stretch: 0;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
             }
 
-            pointer-event(event) => {
-                if (event.kind == PointerEventKind.down) {
-                    root.resize-down(touch.mouse-x / 1px, touch.mouse-y / 1px);
-                } else if (event.kind == PointerEventKind.move) {
-                    root.resize-move(touch.mouse-x / 1px, touch.mouse-y / 1px);
-                } else if (event.kind == PointerEventKind.up) {
-                    root.resize-up();
-                }
-            }
         }
     }
-}
-
-/// 缩放手柄拖动状态（逻辑像素，由 Rust 侧跟踪起点）。
-struct ResizeState {
-    active: bool,
-    start_size: LogicalSize,
-    start_pos: (f32, f32),
 }
 struct PerfSampler {
     stop: SyncSender<()>,
@@ -248,6 +234,9 @@ struct RuntimeSession {
     stop: SyncSender<()>,
     worker: JoinHandle<()>,
 }
+
+const PERF_SHUTDOWN_BUDGET: Duration = Duration::from_millis(1_500);
+const RUNTIME_SHUTDOWN_BUDGET: Duration = Duration::from_secs(3);
 
 impl PerfSampler {
     fn start() -> std::io::Result<Self> {
@@ -306,9 +295,50 @@ impl PerfSampler {
     }
 
     fn stop(self) {
-        let _ = self.stop.try_send(());
-        if self.worker.join().is_err() {
-            tracing::warn!(target: "floatile::perf", "process metrics worker panicked");
+        stop_worker_bounded(
+            self.stop,
+            self.worker,
+            PERF_SHUTDOWN_BUDGET,
+            "process metrics",
+        );
+    }
+}
+
+fn stop_worker_bounded(
+    stop: SyncSender<()>,
+    worker: JoinHandle<()>,
+    budget: Duration,
+    worker_name: &'static str,
+) -> bool {
+    let _ = stop.try_send(());
+    let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+    let reaper = std::thread::Builder::new()
+        .name(format!("floatile-{worker_name}-reaper"))
+        .spawn(move || {
+            let joined = worker.join().is_ok();
+            let _ = finished_tx.try_send(joined);
+        });
+    if let Err(error) = reaper {
+        tracing::warn!(%error, worker = worker_name, "shutdown reaper unavailable");
+        return false;
+    }
+    match finished_rx.recv_timeout(budget) {
+        Ok(true) => true,
+        Ok(false) => {
+            tracing::warn!(worker = worker_name, "worker panicked during shutdown");
+            false
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            tracing::warn!(
+                worker = worker_name,
+                ?budget,
+                "worker shutdown budget exhausted"
+            );
+            false
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            tracing::warn!(worker = worker_name, "shutdown reaper disconnected");
+            false
         }
     }
 }
@@ -576,14 +606,6 @@ fn now_hhmmss() -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
-/// 将 Slint 组件读到的逻辑像素尺寸应用到窗口。
-fn apply_size(app: &Clock, size: LogicalSize) {
-    use slint::winit_030::winit::window::Window;
-    let _ = app
-        .window()
-        .with_winit_window(|w: &Window| resize_window(w, size))
-        .unwrap_or(Err(PlatformError::WindowNotReady));
-}
 fn schedule_always_on_top(app: slint::Weak<Clock>, delay: Duration) {
     Timer::single_shot(delay, move || {
         let Some(app) = app.upgrade() else { return };
@@ -1177,12 +1199,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let controller_for_window_events = Arc::clone(&controller);
     let persisted_for_window_events = Arc::clone(&persisted);
     let mut cursor_position = None;
+    let mut window_resize = None::<(winit::dpi::PhysicalPosition<f64>, LogicalSize)>;
+    let size_constraints = SizeConstraints::default();
     app.window()
         .on_winit_window_event(move |slint_window, event| {
             use slint::winit_030::winit::window::Window;
 
             if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
                 cursor_position = Some(*position);
+                if let Some((started_at, started_size)) = window_resize {
+                    let scale_factor = f64::from(slint_window.scale_factor());
+                    let requested = LogicalSize {
+                        width: started_size.width
+                            + ((position.x - started_at.x) / scale_factor) as f32,
+                        height: started_size.height
+                            + ((position.y - started_at.y) / scale_factor) as f32,
+                    };
+                    let clamped = size_constraints.clamp(requested);
+                    let _ = slint_window
+                        .with_winit_window(|window: &Window| resize_window(window, clamped));
+                    return EventResult::PreventDefault;
+                }
+            }
+
+            if matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            ) && window_resize.take().is_some()
+            {
+                let _ = slint_window.with_winit_window(|window: &Window| {
+                    if let Err(error) = set_pointer_capture(window, false) {
+                        tracing::debug!(%error, "pointer capture release skipped");
+                    }
+                    let state = persisted_for_window_events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mode = controller_for_window_events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .mode;
+                    save_layout(window, &state, mode);
+                });
+                return EventResult::PreventDefault;
             }
 
             // 窗口移动/关闭后持久化布局。恢复流程主动移动窗口产生的 Moved 事件
@@ -1232,6 +1294,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         width: physical_size.width as f32 / scale_factor,
                         height: physical_size.height as f32 / scale_factor,
                     };
+
+                    if floatile_shell::is_window_resize_handle(logical_position, logical_size, mode)
+                    {
+                        let _ = slint_window.with_winit_window(|window: &Window| {
+                            if let Err(error) = set_pointer_capture(window, true) {
+                                tracing::warn!(%error, "pointer capture unavailable for resize");
+                            }
+                        });
+                        window_resize = Some((position, logical_size));
+                        tracing::debug!("window resize handle pressed");
+                        return EventResult::PreventDefault;
+                    }
 
                     if floatile_shell::is_window_drag_region(logical_position, logical_size, mode) {
                         match slint_window.with_winit_window(start_window_drag) {
@@ -1357,16 +1431,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     }
 
-    let constraints = SizeConstraints::default();
-    let resize_state = Rc::new(RefCell::new(ResizeState {
-        active: false,
-        start_size: LogicalSize {
-            width: 260.0,
-            height: 120.0,
-        },
-        start_pos: (0.0, 0.0),
-    }));
-
     // 展示模式按钮：切换模式并持久化。
     let weak = app.as_weak();
     let ctrl = Arc::clone(&controller);
@@ -1427,53 +1491,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(app) = weak.upgrade() {
             let _ = app.window().hide();
         }
-    });
-
-    // 缩放手柄：down 记录起点，move 按指针位移精确缩放，clamp 到约束。
-    let weak = app.as_weak();
-    let st = Rc::clone(&resize_state);
-    app.on_resize_down(move |x, y| {
-        let Some(app) = weak.upgrade() else { return };
-        let mut s = st.borrow_mut();
-        s.active = true;
-        s.start_size = current_size(&app);
-        s.start_pos = (x, y);
-    });
-    let weak = app.as_weak();
-    let st = Rc::clone(&resize_state);
-    app.on_resize_move(move |x, y| {
-        let Some(app) = weak.upgrade() else { return };
-        let s = st.borrow_mut();
-        if !s.active {
-            return;
-        }
-        let delta = ((x - s.start_pos.0).max(0.0), (y - s.start_pos.1).max(0.0));
-        let requested = LogicalSize {
-            width: s.start_size.width + delta.0,
-            height: s.start_size.height + delta.1,
-        };
-        let clamped = constraints.clamp(requested);
-        apply_size(&app, clamped);
-    });
-    let st = Rc::clone(&resize_state);
-    let weak = app.as_weak();
-    let ctrl = Arc::clone(&controller);
-    let persisted_for_resize = Arc::clone(&persisted);
-    app.on_resize_up(move || {
-        st.borrow_mut().active = false;
-        let Some(app) = weak.upgrade() else { return };
-        let _ = app
-            .window()
-            .with_winit_window(|window: &winit::window::Window| {
-                let state = persisted_for_resize
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let mode = ctrl
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .mode;
-                save_layout(window, &state, mode);
-            });
     });
 
     // 回退路径：只有 runtime clock 未启动时才使用内建时钟文本。
@@ -1650,6 +1667,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tray_event_timer = {
         let timer = Timer::default();
         let tray_icon = Rc::clone(&tray_icon);
+        let exit_app = app.as_weak();
+        let exit_persisted = Arc::clone(&persisted);
+        let exit_controller = Arc::clone(&controller);
         timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(50),
@@ -1672,6 +1692,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Some(WindowsTrayEvent::Exit) => {
                         tracing::info!("explicit exit requested from system tray");
+                        if let Some(app) = exit_app.upgrade() {
+                            let _ =
+                                app.window()
+                                    .with_winit_window(|window: &winit::window::Window| {
+                                        let state = exit_persisted
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        let mode = exit_controller
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                            .mode;
+                                        save_layout(window, &state, mode);
+                                    });
+                        }
                         if let Err(error) = slint::quit_event_loop() {
                             tracing::warn!(%error, "event loop exit request failed");
                         }
@@ -1685,10 +1719,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("floatile-shell running");
     let run_result = app.run();
-
-    if let Some(perf_sampler) = perf_sampler {
-        perf_sampler.stop();
-    }
+    tracing::info!("host shutdown started");
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(listener) = hotkey_listener {
@@ -1699,34 +1730,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         register_timer.stop();
         tray_event_timer.stop();
+        use slint::winit_030::winit::window::Window;
+        if let Some(Err(error)) = app
+            .window()
+            .with_winit_window(|w: &Window| unregister_hotkey(w, HOTKEY_ID))
+        {
+            tracing::debug!(%error, "global hotkey release skipped");
+        }
         let _ = tray_icon.borrow_mut().take();
+        hotkey_app.borrow_mut().take();
+        tracing::info!("Windows tray and hotkey resources released");
     }
+
+    drop(instance_control_surface);
+    drop(runtime_instance_supervisor);
+    tracing::info!("persistent plugin instance sessions received stop requests");
 
     if let Some(runtime_clock) = runtime_clock {
-        let _ = runtime_clock.stop.try_send(());
-        if runtime_clock.worker.join().is_err() {
-            tracing::warn!("runtime clock worker panicked");
-        }
+        stop_worker_bounded(
+            runtime_clock.stop,
+            runtime_clock.worker,
+            RUNTIME_SHUTDOWN_BUDGET,
+            "runtime-clock",
+        );
     }
 
-    // Windows 退出时注销热键。
-    #[cfg(windows)]
-    let _ = {
-        use slint::winit_030::winit::window::Window;
-        app.window()
-            .with_winit_window(|w: &Window| unregister_hotkey(w, HOTKEY_ID))
-    };
+    if let Some(perf_sampler) = perf_sampler {
+        perf_sampler.stop();
+    }
+
+    drop(audit_listener);
+    drop(app);
+    drop(persisted);
+    tracing::info!("host shutdown resources released");
 
     run_result?;
     Ok(())
-}
-
-fn current_size(app: &Clock) -> LogicalSize {
-    let size = app.window().size();
-    LogicalSize {
-        width: size.width as f32,
-        height: size.height as f32,
-    }
 }
 
 /// 恢复热键候选的人类可读标签，与 `register_timer` 中候选数组下标一一对应。
@@ -1758,5 +1797,25 @@ fn apply_mode_effect(app: &Clock, effect: floatile_shell::ModeEffect) {
             tracing::debug!(mode = ?mode, click_through, "mode applied");
         }
         Err(error) => tracing::warn!(%error, mode = ?mode, "set_click_through failed"),
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_worker_stop_returns_when_worker_ignores_signal() {
+        let (stop, _stop_rx) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(|| std::thread::sleep(Duration::from_millis(200)));
+        let started = Instant::now();
+
+        assert!(!stop_worker_bounded(
+            stop,
+            worker,
+            Duration::from_millis(10),
+            "test-worker",
+        ));
+        assert!(started.elapsed() < Duration::from_millis(100));
     }
 }
