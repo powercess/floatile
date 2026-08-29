@@ -9,9 +9,12 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+#[cfg(windows)]
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::rc::Rc;
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -33,14 +36,14 @@ use floatile_platform::listen_hotkey;
 use floatile_platform::{Hotkey, HotkeyModifiers};
 use floatile_platform::{
     PlatformError, PlatformKind, SingleInstanceState, WindowOptions, acquire_single_instance,
-    apply_window_options, configure_widget_window_role, data_dir, enumerate_monitors,
-    process_metrics, resize_window, set_always_on_top, set_click_through, set_pointer_capture,
-    set_window_position, start_window_drag, to_monitor_layout,
+    apply_window_options, data_dir, enumerate_monitors, process_metrics, resize_window,
+    set_always_on_top, set_click_through, set_pointer_capture, set_window_position,
+    start_window_drag, to_monitor_layout,
 };
 #[cfg(windows)]
 use floatile_platform::{
-    WindowsTrayEvent, WindowsTrayIcon, install_hotkey_message_hook, register_hotkey,
-    unregister_hotkey,
+    WindowsTrayEvent, WindowsTrayIcon, configure_widget_window_role, install_hotkey_message_hook,
+    register_hotkey, unregister_hotkey,
 };
 use floatile_runtime::{WidgetConfig, WidgetManager};
 use floatile_shell::{
