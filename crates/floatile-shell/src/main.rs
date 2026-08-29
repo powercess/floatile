@@ -32,9 +32,10 @@ use floatile_platform::listen_hotkey;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use floatile_platform::{Hotkey, HotkeyModifiers};
 use floatile_platform::{
-    PlatformError, PlatformKind, WindowOptions, apply_window_options, data_dir, enumerate_monitors,
-    process_metrics, resize_window, set_always_on_top, set_click_through, set_window_position,
-    start_window_drag, to_monitor_layout,
+    PlatformError, PlatformKind, SingleInstanceState, WindowOptions, acquire_single_instance,
+    apply_window_options, data_dir, enumerate_monitors, process_metrics, resize_window,
+    set_always_on_top, set_click_through, set_window_position, start_window_drag,
+    to_monitor_layout,
 };
 #[cfg(windows)]
 use floatile_platform::{
@@ -850,6 +851,7 @@ const HOTKEY_ID: u32 = 0x0001;
 const KEY_E: u32 = 0x0E;
 #[cfg(windows)]
 const KEY_F12: u32 = 0x7B;
+const SINGLE_INSTANCE_NAME: &str = "Local\\Floatile.DesktopHost";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let process_started = Instant::now();
@@ -860,6 +862,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .add_directive(tracing::level_filters::LevelFilter::INFO.into()),
         )
         .init();
+    let _single_instance_guard = match acquire_single_instance(SINGLE_INSTANCE_NAME)? {
+        SingleInstanceState::Acquired(guard) => {
+            tracing::info!(
+                name = SINGLE_INSTANCE_NAME,
+                "single-instance ownership acquired"
+            );
+            Some(guard)
+        }
+        SingleInstanceState::AlreadyRunning => {
+            tracing::info!(
+                name = SINGLE_INSTANCE_NAME,
+                "existing Floatile host detected"
+            );
+            return Ok(());
+        }
+        SingleInstanceState::Unsupported => {
+            tracing::info!("single-instance enforcement unavailable on this platform");
+            None
+        }
+    };
     let perf_sampler = if perf_enabled {
         Some(PerfSampler::start()?)
     } else {

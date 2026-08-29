@@ -2,6 +2,7 @@ pub mod capability;
 pub mod hotkey;
 pub mod metrics;
 pub mod monitor;
+pub mod single_instance;
 pub mod window;
 
 #[cfg(target_os = "linux")]
@@ -58,6 +59,9 @@ pub use hotkey::{
 };
 pub use metrics::{MetricsError, ProcessMetrics, process_metrics};
 pub use monitor::{MonitorInfo, MonitorKeySource, enumerate_monitors, to_monitor_layout};
+pub use single_instance::{
+    SingleInstanceError, SingleInstanceGuard, SingleInstanceState, acquire_single_instance,
+};
 pub use window::{
     PlatformError, WindowOptions, apply_window_options, remove_window_decorations, resize_window,
     set_always_on_top, set_click_through, set_window_position, start_window_drag,
