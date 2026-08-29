@@ -39,7 +39,8 @@ use floatile_platform::{
 };
 #[cfg(windows)]
 use floatile_platform::{
-    install_hotkey_message_hook, register_hotkey, remove_window_decorations, unregister_hotkey,
+    WindowsTrayEvent, WindowsTrayIcon, install_hotkey_message_hook, register_hotkey,
+    remove_window_decorations, unregister_hotkey,
 };
 use floatile_runtime::{WidgetConfig, WidgetManager};
 use floatile_shell::{
@@ -1390,6 +1391,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let control_window = instance_control_surface
         .as_ref()
         .map(|surface| surface.weak());
+    #[cfg(windows)]
+    let tray_control_window = control_window.clone();
     app.on_settings_clicked(move || {
         let Some(window) = control_window.as_ref().and_then(slint::Weak::upgrade) else {
             tracing::warn!("instance control surface unavailable");
@@ -1488,6 +1491,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 一次性收敛：成功后不再重复执行，避免每次 tick 重改窗口样式
     // （SetWindowLongPtrW + ShowWindow 隐藏/重现）造成持续频闪。
     #[cfg(windows)]
+    let tray_icon = Rc::new(RefCell::new(None::<WindowsTrayIcon>));
+    #[cfg(windows)]
     let register_timer = {
         // 200 ms × 25 = 5 s 的窗口就绪与热键注册预算；耗尽后按降级模型停止重试。
         const MAX_RETRIES: u32 = 25;
@@ -1529,6 +1534,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let timer_for_callback = Rc::clone(&register_timer);
         let decorations_done = Rc::new(RefCell::new(false));
         let hotkey_done = Rc::new(RefCell::new(false));
+        let tray_done = Rc::new(RefCell::new(false));
+        let tray_icon_for_registration = Rc::clone(&tray_icon);
         let candidate_index = Rc::new(RefCell::new(0usize));
         let retries = Rc::new(RefCell::new(0u32));
         register_timer.start(
@@ -1541,7 +1548,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let attempts = *retries.borrow();
                 if attempts >= MAX_RETRIES {
                     tracing::error!(
-                        "window decorations/hotkey setup failed after {attempts} retries; \
+                        "window decorations/hotkey/tray setup failed after {attempts} retries; \
                          click-through stays disabled, Show mode exits by pressing Escape"
                     );
                     timer_for_callback.stop();
@@ -1608,6 +1615,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
+                if !*tray_done.borrow() {
+                    let tray_result = WindowsTrayIcon::install("Floatile");
+                    match tray_result {
+                        Ok(icon) => {
+                            *tray_icon_for_registration.borrow_mut() = Some(icon);
+                            *tray_done.borrow_mut() = true;
+                            tracing::info!("system tray icon registered");
+                        }
+                        Err(error) => {
+                            pending = true;
+                            tracing::debug!("system tray registration retry: {error}");
+                        }
+                    }
+                }
+
                 if pending {
                     *retries.borrow_mut() = attempts + 1;
                 } else {
@@ -1616,6 +1638,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
         register_timer
+    };
+
+    #[cfg(windows)]
+    let tray_event_timer = {
+        let timer = Timer::default();
+        let tray_icon = Rc::clone(&tray_icon);
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(50),
+            move || {
+                let event = tray_icon
+                    .borrow()
+                    .as_ref()
+                    .and_then(WindowsTrayIcon::poll_event);
+                match event {
+                    Some(WindowsTrayEvent::Open) => {
+                        let Some(window) =
+                            tray_control_window.as_ref().and_then(slint::Weak::upgrade)
+                        else {
+                            tracing::warn!("instance control surface unavailable");
+                            return;
+                        };
+                        if let Err(error) = window.show() {
+                            tracing::warn!(%error, "instance control surface show failed");
+                        }
+                    }
+                    Some(WindowsTrayEvent::Exit) => {
+                        tracing::info!("explicit exit requested from system tray");
+                        if let Err(error) = slint::quit_event_loop() {
+                            tracing::warn!(%error, "event loop exit request failed");
+                        }
+                    }
+                    None => {}
+                }
+            },
+        );
+        timer
     };
 
     tracing::info!("floatile-shell running");
@@ -1631,7 +1690,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[cfg(windows)]
-    register_timer.stop();
+    {
+        register_timer.stop();
+        tray_event_timer.stop();
+        let _ = tray_icon.borrow_mut().take();
+    }
 
     if let Some(runtime_clock) = runtime_clock {
         let _ = runtime_clock.stop.try_send(());

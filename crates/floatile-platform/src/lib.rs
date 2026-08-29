@@ -5,6 +5,9 @@ pub mod monitor;
 pub mod single_instance;
 pub mod window;
 
+#[cfg(windows)]
+pub mod windows_host;
+
 #[cfg(target_os = "linux")]
 mod x11;
 
@@ -66,3 +69,5 @@ pub use window::{
     PlatformError, WindowOptions, apply_window_options, remove_window_decorations, resize_window,
     set_always_on_top, set_click_through, set_window_position, start_window_drag,
 };
+#[cfg(windows)]
+pub use windows_host::{WindowsTrayEvent, WindowsTrayIcon};
