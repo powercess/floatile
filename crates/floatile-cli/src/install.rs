@@ -24,7 +24,7 @@ use floatile_core::install::{
 use floatile_core::manifest::Manifest;
 use floatile_store::Store;
 use floatile_store::installation::InstalledInstallation;
-use floatile_store::installation::{InstallationCatalogError, load_highest};
+use floatile_store::installation::{InstallationCatalogError, load_exact, load_highest};
 use floatile_store::trust::{PendingInstallation, TrustPolicyError};
 use semver::Version;
 use thiserror::Error;
@@ -134,6 +134,40 @@ pub struct InstalledPackage {
     pub upgrade: Option<UpgradePlan>,
 }
 
+/// 精确版本卸载结果。目录会先原子移出可加载命名空间；清理失败时保留不可见 tombstone，
+/// 供后续维护清理，但该版本不会再被宿主加载。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UninstallReport {
+    pub cleanup_pending: Option<PathBuf>,
+}
+
+/// 精确版本卸载错误（稳定 code `FUNINSTALL_*`）。
+#[derive(Debug, Error)]
+pub enum UninstallError {
+    #[error("安装 {id}@{version} 不存在")]
+    Missing { id: String, version: String },
+    #[error("安装仍被实例引用: {0:?}")]
+    Referenced(Vec<u64>),
+    #[error("读取安装失败: {0}")]
+    Catalog(#[from] InstallationCatalogError),
+    #[error("读取实例引用失败: {0}")]
+    Store(#[from] floatile_store::StoreError),
+    #[error("无法原子移出安装目录: {0}")]
+    Commit(String),
+}
+
+impl UninstallError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Missing { .. } => "FUNINSTALL_MISSING",
+            Self::Referenced(_) => "FUNINSTALL_REFERENCED",
+            Self::Catalog(_) => "FUNINSTALL_INVALID",
+            Self::Store(_) => "FUNINSTALL_STORE",
+            Self::Commit(_) => "FUNINSTALL_COMMIT",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RecoveryReport {
     pub finalized: usize,
@@ -146,6 +180,36 @@ pub struct RecoveryReport {
 /// 但仍由本函数集中定义布局，CLI 写入与宿主读取共享同一约定。
 pub fn install_dir(store: &Path, id: &str, version: &str) -> PathBuf {
     store.join(id).join(version)
+}
+
+/// 安全卸载一个精确、不可变安装版本。
+///
+/// 先完整复核安装身份并拒绝任何实例引用，再用同文件系统 rename 将目录原子移出插件
+/// 可加载命名空间。即使递归清理失败，也不会留下可被运行时误加载的半删除目录。
+pub fn uninstall_package(
+    plugin_store: &Path,
+    store: &Store,
+    id: &str,
+    version: &str,
+) -> Result<UninstallReport, UninstallError> {
+    let installation =
+        load_exact(plugin_store, id, version)?.ok_or_else(|| UninstallError::Missing {
+            id: id.to_owned(),
+            version: version.to_owned(),
+        })?;
+    let reference = installation.reference()?;
+    let referenced = store.instances().referencing_installation(&reference)?;
+    if !referenced.is_empty() {
+        return Err(UninstallError::Referenced(
+            referenced.into_iter().map(|instance| instance.0).collect(),
+        ));
+    }
+
+    let tombstone = plugin_store.join(format!(".removed-{}-{}-{}", id, version, nonce()));
+    fs::rename(&installation.dir, &tombstone)
+        .map_err(|error| UninstallError::Commit(error.to_string()))?;
+    let cleanup_pending = fs::remove_dir_all(&tombstone).err().map(|_| tombstone);
+    Ok(UninstallReport { cleanup_pending })
 }
 
 /// 原子安装一个已通过完整校验的 `.floatile` 包。
@@ -335,7 +399,7 @@ pub fn recover_trusted_installs(
                 report.aborted += 1;
             }
             (false, true) => {
-                let installed = floatile_store::installation::load_exact(
+                let installed = load_exact(
                     plugin_store,
                     &pending.plugin_id,
                     &pending.version.to_string(),
@@ -758,6 +822,40 @@ mod tests {
         install_package(&bytes, &store, "v2.floatile", &Default::default()).unwrap();
         assert!(install_dir(&store, "dev.floatile.clock", "0.1.0").exists());
         assert!(install_dir(&store, "dev.floatile.clock", "0.2.0").exists());
+    }
+
+    #[test]
+    fn uninstall_removes_only_unreferenced_exact_version() {
+        let plugin_store = temp_store("uninstall");
+        let installed = install_package(
+            &valid_pkg_bytes(),
+            &plugin_store,
+            "clock.floatile",
+            &Default::default(),
+        )
+        .unwrap();
+        let store = floatile_store::open(":memory:").unwrap();
+        let reference = floatile_core::InstallationRef::from_install_meta(&installed.meta).unwrap();
+        let instance = store
+            .instances()
+            .create(
+                &reference,
+                &floatile_core::InstanceConfig::new(serde_json::json!({})).unwrap(),
+                floatile_core::InstanceDesiredState::Stopped,
+                1,
+            )
+            .unwrap();
+
+        let error =
+            uninstall_package(&plugin_store, &store, "dev.floatile.clock", "0.1.0").unwrap_err();
+        assert_eq!(error.code(), "FUNINSTALL_REFERENCED");
+        assert!(installed.dir.is_dir());
+
+        assert!(store.instances().delete(instance.id()).unwrap());
+        let report =
+            uninstall_package(&plugin_store, &store, "dev.floatile.clock", "0.1.0").unwrap();
+        assert_eq!(report.cleanup_pending, None);
+        assert!(!installed.dir.exists());
     }
 
     #[test]

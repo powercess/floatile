@@ -4,6 +4,8 @@
 //! Broker 组合与确定性测试；平台持久 Keyring 接入前，宿主重启后必须把连接报告为 unavailable。
 
 use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use floatile_core::CredentialRef;
@@ -100,6 +102,126 @@ impl CredentialVault for MemoryCredentialVault {
     }
 }
 
+/// OS-backed credential vault. On Windows this uses the current user's Credential Manager;
+/// unsupported platforms fail closed instead of silently falling back to process memory.
+pub struct PlatformCredentialVault {
+    fallback_root: PathBuf,
+}
+
+impl PlatformCredentialVault {
+    pub fn new(fallback_root: PathBuf) -> Self {
+        Self { fallback_root }
+    }
+
+    fn fallback_path(&self, reference: &CredentialRef) -> PathBuf {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(reference.as_str().as_bytes());
+        let name = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.fallback_root.join(format!("{name}.credential"))
+    }
+
+    fn put_fallback(
+        &self,
+        reference: &CredentialRef,
+        secret: &[u8],
+    ) -> Result<(), CredentialError> {
+        let protected =
+            floatile_platform::credential_protect(secret).map_err(map_platform_error)?;
+        std::fs::create_dir_all(&self.fallback_root).map_err(|_| CredentialError::Unavailable)?;
+        let destination = self.fallback_path(reference);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let temporary =
+            destination.with_extension(format!("credential.tmp-{}-{nonce}", std::process::id()));
+        let result = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|_| CredentialError::Unavailable)?;
+            file.write_all(&protected)
+                .and_then(|()| file.sync_all())
+                .map_err(|_| CredentialError::Unavailable)?;
+            std::fs::rename(&temporary, &destination).map_err(|_| CredentialError::Unavailable)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(temporary);
+        }
+        result
+    }
+
+    fn read_fallback(&self, reference: &CredentialRef) -> Result<Vec<u8>, CredentialError> {
+        let protected = std::fs::read(self.fallback_path(reference)).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CredentialError::NotFound
+            } else {
+                CredentialError::Unavailable
+            }
+        })?;
+        if protected.len() > MAX_CREDENTIAL_BYTES.saturating_mul(4) {
+            return Err(CredentialError::Unavailable);
+        }
+        floatile_platform::credential_unprotect(&protected).map_err(map_platform_error)
+    }
+}
+
+impl CredentialVault for PlatformCredentialVault {
+    fn put(&self, reference: &CredentialRef, secret: &[u8]) -> Result<(), CredentialError> {
+        if secret.is_empty() {
+            return Err(CredentialError::Empty);
+        }
+        if secret.len() > MAX_CREDENTIAL_BYTES {
+            return Err(CredentialError::TooLarge);
+        }
+        match floatile_platform::credential_put(reference.as_str(), secret) {
+            Ok(()) => Ok(()),
+            Err(_) => self.put_fallback(reference, secret),
+        }
+    }
+
+    fn delete(&self, reference: &CredentialRef) -> Result<bool, CredentialError> {
+        let manager_deleted =
+            floatile_platform::credential_delete(reference.as_str()).unwrap_or(false);
+        let fallback = self.fallback_path(reference);
+        let fallback_deleted = match std::fs::remove_file(fallback) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(CredentialError::Unavailable),
+        };
+        Ok(manager_deleted || fallback_deleted)
+    }
+
+    fn with_secret(
+        &self,
+        reference: &CredentialRef,
+        use_secret: &mut dyn FnMut(&[u8]),
+    ) -> Result<(), CredentialError> {
+        match floatile_platform::credential_with_secret(reference.as_str(), use_secret) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let mut secret = self.read_fallback(reference)?;
+                use_secret(&secret);
+                secret.fill(0);
+                std::hint::black_box(&mut secret);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn map_platform_error(error: floatile_platform::PlatformCredentialError) -> CredentialError {
+    match error {
+        floatile_platform::PlatformCredentialError::NotFound => CredentialError::NotFound,
+        floatile_platform::PlatformCredentialError::InvalidInput
+        | floatile_platform::PlatformCredentialError::Unavailable
+        | floatile_platform::PlatformCredentialError::Platform(_) => CredentialError::Unavailable,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -144,5 +266,35 @@ mod tests {
     fn vault_debug_surface_never_contains_secret() {
         assert!(!std::any::type_name::<MemoryCredentialVault>().contains("secret"));
         assert!(!std::any::type_name::<CredentialRef>().contains("secret"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_platform_vault_round_trips_and_deletes_current_user_credential() {
+        let reference = CredentialRef::new(format!(
+            "cred://floatile-test/process-{}",
+            std::process::id()
+        ))
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "floatile-platform-vault-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let vault = PlatformCredentialVault::new(root.clone());
+        let _ = vault.delete(&reference);
+        vault.put(&reference, b"windows-vault-test").unwrap();
+        let restored_vault = PlatformCredentialVault::new(root.clone());
+        let mut observed = Vec::new();
+        restored_vault
+            .with_secret(&reference, &mut |secret| observed.extend_from_slice(secret))
+            .unwrap();
+        assert_eq!(observed, b"windows-vault-test");
+        assert!(restored_vault.delete(&reference).unwrap());
+        assert_eq!(
+            restored_vault.with_secret(&reference, &mut |_| {}),
+            Err(CredentialError::NotFound)
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

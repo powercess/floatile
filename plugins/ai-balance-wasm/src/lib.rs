@@ -6,7 +6,9 @@ use floatile_sdk::impl_export_widget;
 use floatile_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
-const CONNECTION_ID: u64 = 1;
+// Guest-visible handles are instance-scoped; the first explicitly granted Connection is handle 1.
+// Persistent database Connection IDs never cross the host/guest boundary.
+const PRIMARY_CONNECTION_HANDLE: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
 pub struct BalanceState {
@@ -46,7 +48,7 @@ struct AiBalance;
 
 impl AiBalance {
     fn refresh(&self, ctx: &mut Context<Self>) {
-        match ctx.http().submit("balance", CONNECTION_ID, &[]) {
+        match ctx.http().submit("balance", PRIMARY_CONNECTION_HANDLE, &[]) {
             Ok(_) => {
                 let _ = ctx
                     .state()

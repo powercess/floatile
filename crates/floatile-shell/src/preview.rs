@@ -78,10 +78,11 @@ pub fn run_preview(
         match spawn_runtime_ui(plugin, instance, caps, audit_listener).await {
             Ok(value) => *session_for_spawn.borrow_mut() = Some(value),
             Err(error) => {
+                let detail: String = error.to_string().chars().take(2_048).collect();
                 *outcome_for_spawn.borrow_mut() = Some(PreviewOutcome {
                     running: false,
                     code: error.code().to_owned(),
-                    detail: "真实宿主无法启动插件预览".to_owned(),
+                    detail,
                 });
                 let _ = slint::quit_event_loop();
             }
@@ -105,11 +106,11 @@ pub fn run_preview(
                     detail: "真实宿主预览已进入 running".to_owned(),
                 });
             }
-            Some(RuntimeUiLifecycleEvent::Failed { code, .. }) => {
+            Some(RuntimeUiLifecycleEvent::Failed { code, detail }) => {
                 *outcome_for_poll.borrow_mut() = Some(PreviewOutcome {
                     running: false,
                     code: code.to_owned(),
-                    detail: "插件预览运行时失败".to_owned(),
+                    detail: detail.chars().take(2_048).collect(),
                 });
                 let _ = slint::quit_event_loop();
             }

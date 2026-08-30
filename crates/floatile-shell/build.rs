@@ -27,7 +27,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    let ftui_json = floatile_clock_wasm::__floatile_ftui_json();
+    let ftui_json = floatile_clock_model::ftui_json();
     let doc: floatile_ui_schema::UiDocument =
         serde_json::from_str(&ftui_json).expect("clock widget.ftui 应为合法 JSON");
     // renderer 内部独立复验预算/结构;失败即构建失败,防止过期/恶意 IR 静默进入宿主。
@@ -36,6 +36,8 @@ fn main() {
     // 参考时钟源变化时需要重新生成,防止嵌入过期 UI IR。
     println!("cargo:rerun-if-changed=../../plugins/clock-wasm/src/lib.rs");
     println!("cargo:rerun-if-changed=../../plugins/clock-wasm/Cargo.toml");
+    println!("cargo:rerun-if-changed=../../plugins/clock-model/src/lib.rs");
+    println!("cargo:rerun-if-changed=../../plugins/clock-model/Cargo.toml");
     // renderer 内部逻辑变化也需重新生成。
     println!("cargo:rerun-if-changed=../../crates/floatile-renderer/src/render.rs");
 

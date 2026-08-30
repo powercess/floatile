@@ -72,7 +72,7 @@ fn check_failure_is_stable_redacted_and_cleans_temporary_directory() {
     assert_eq!(report["schemaVersion"], 1);
     assert_eq!(report["status"], "error");
     assert_eq!(report["severity"], "error");
-    assert_eq!(report["code"], "FBUILD_CARGO_METADATA");
+    assert_eq!(report["code"], "FBUILD_PROJECT_DIRECTORY");
     assert_eq!(report["phases"]["metadata"], false);
     assert!(
         !report["detail"]

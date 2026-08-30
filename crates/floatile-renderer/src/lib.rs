@@ -16,4 +16,7 @@ pub mod error;
 pub mod render;
 
 pub use error::RendererError;
-pub use render::{BindingSlot, BindingValueType, EventSlot, RenderedComponent, render_component};
+pub use render::{
+    BindingSlot, BindingValueType, CONTENT_COMPONENT_NAME, EventSlot,
+    RUNTIME_WINDOW_COMPONENT_NAME, RenderedComponent, render_component,
+};

@@ -91,6 +91,11 @@ manifest 是安装与运行时的显式事实，不是开发者主要编辑界�
 | `httpTemplates` | 否 | 固定 HTTPS GET 模板；origin/响应/超时预算不得超过 `network:https` |
 | `config.schema` | 否 | 包内规范路径；缺省表示无用户配置；只允许当前 schema 文档内 fragment 引用 |
 | `storage.migrationVersion` | 否 | 非负整数；只描述插件私有 KV 迁移 |
+
+`sizes` 描述宿主拥有的 Widget **外窗逻辑尺寸**，包含编辑模式下由宿主保留的工具栏与边距，
+不是插件组件在编辑模式中的净可用尺寸。当前宿主编辑态顶部保留 40 逻辑像素，左右/底部各保留 8
+逻辑像素；展示态隐藏这些宿主控件并让插件组件使用整个既定外窗。模式切换不得改变外窗尺寸或位置。
+插件必须在 `min` 外窗扣除宿主保留区后仍能表达核心信息；不得依赖编辑态下被工具栏占用的空间。
 | `build` | 否 | 诊断元数据，不参与信任/授权 |
 | `signature` | 不存在 | ADR-0005 使用 detached 根路径 `signature.json`；manifest 不内嵌自引用签名 |
 

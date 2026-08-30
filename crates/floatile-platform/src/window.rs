@@ -77,6 +77,18 @@ pub fn set_always_on_top(
     Ok(())
 }
 
+/// 将一个已经置顶的宿主窗口重新提升到同级置顶窗口之前。
+///
+/// 单纯重复设置 `AlwaysOnTop` 在 Windows 上是幂等操作，不会改变两个 topmost 窗口
+/// 的相对 Z 序。短暂切回 Normal 后再次置顶，并请求焦点，供管理中心在新 Widget
+/// 创建后恢复到前景。调用方应只在明确的窗口生命周期变化后调用，不能逐帧重放。
+pub fn raise_always_on_top(window: &winit::window::Window) -> Result<(), PlatformError> {
+    window.set_window_level(WindowLevel::Normal);
+    window.set_window_level(WindowLevel::AlwaysOnTop);
+    window.focus_window();
+    Ok(())
+}
+
 /// 启动交互式窗口拖拽（WM 拖动，适用于无边框窗口）。
 ///
 /// `window` 为 winit 窗口（通过 Slint `WinitWindowAccessor` 取得）。
@@ -85,6 +97,16 @@ pub fn start_window_drag(window: &winit::window::Window) -> Result<(), PlatformE
     window
         .drag_window()
         .map_err(|e| PlatformError::Platform(format!("drag_window: {e}")))
+}
+
+/// 从无边框窗口右下角启动由窗口管理器接管的交互式缩放。
+///
+/// 与手动跟踪光标相比，WM 缩放天然支持 DPI、跨显示器和 manifest 已应用的
+/// min/max 限制；调用方只负责命中宿主拥有的缩放手柄。
+pub fn start_window_resize(window: &winit::window::Window) -> Result<(), PlatformError> {
+    window
+        .drag_resize_window(winit::window::ResizeDirection::SouthEast)
+        .map_err(|e| PlatformError::Platform(format!("drag_resize_window: {e}")))
 }
 
 /// 在无边框窗口的自定义拖动交互期间获取或释放鼠标捕获。
@@ -115,6 +137,21 @@ pub fn resize_window(
     size: floatile_core::LogicalSize,
 ) -> Result<(), PlatformError> {
     let _ = window.request_inner_size(winit::dpi::LogicalSize::new(size.width, size.height));
+    Ok(())
+}
+
+/// 应用已验证 manifest 的 Widget 尺寸、边界与可缩放语义。
+pub fn apply_widget_size_constraints(
+    window: &winit::window::Window,
+    sizes: &floatile_core::manifest::Sizes,
+) -> Result<(), PlatformError> {
+    let logical = |size: floatile_core::LogicalSize| {
+        winit::dpi::LogicalSize::new(f64::from(size.width), f64::from(size.height))
+    };
+    window.set_resizable(sizes.resizable);
+    window.set_min_inner_size(Some(logical(sizes.min)));
+    window.set_max_inner_size(Some(logical(sizes.max)));
+    let _ = window.request_inner_size(logical(sizes.default));
     Ok(())
 }
 

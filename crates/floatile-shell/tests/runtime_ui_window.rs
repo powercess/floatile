@@ -17,14 +17,23 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use floatile_core::LogicalSize;
+use floatile_core::manifest::Sizes;
 use floatile_platform::capability::probe;
 use floatile_shell::runtime_ui::{
     PLUGIN_COMPONENT_NAME, RuntimePluginWindow, compile_component, render_ftui,
 };
 use floatile_ui_schema::ir::{Component, EventSchema, PropValue, UiDocument};
 use floatile_ui_schema::schema::JsonSchema;
+use slint::ComponentHandle;
 use slint_interpreter::Value;
 
+#[cfg(windows)]
+fn has_display() -> bool {
+    true
+}
+
+#[cfg(not(windows))]
 fn has_display() -> bool {
     std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
@@ -111,12 +120,43 @@ fn runtime_window_renders_projects_state_and_forwards_events() {
     let definition = compile_component(&rendered).expect("interpreter 运行时编译");
     assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
     let caps = probe();
-    let window =
-        RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings.clone(), &caps)
-            .expect("interpreter 自窗口应可实例化");
-    let second_window =
-        RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings.clone(), &caps)
-            .expect("同一插件定义应可实例化第二个独立窗口");
+    let sizes = Sizes {
+        default: LogicalSize {
+            width: 420.0,
+            height: 360.0,
+        },
+        min: LogicalSize {
+            width: 320.0,
+            height: 280.0,
+        },
+        max: LogicalSize {
+            width: 900.0,
+            height: 720.0,
+        },
+        resizable: true,
+    };
+    let window = RuntimePluginWindow::create_on_ui_thread(
+        &definition,
+        rendered.bindings.clone(),
+        &caps,
+        &sizes,
+    )
+    .expect("interpreter 自窗口应可实例化");
+    let second_window = RuntimePluginWindow::create_on_ui_thread(
+        &definition,
+        rendered.bindings.clone(),
+        &caps,
+        &sizes,
+    )
+    .expect("同一插件定义应可实例化第二个独立窗口");
+    assert!(
+        window.instance().window().is_visible(),
+        "运行时插件窗口创建成功后必须显式可见"
+    );
+    assert!(
+        second_window.instance().window().is_visible(),
+        "同一插件的第二个窗口也必须显式可见"
+    );
 
     // 沿 binding 槽位投影权威 State → 再读出确认往返（ADR-0002 spike-3 断言之一）。
     window
@@ -170,4 +210,14 @@ fn runtime_window_renders_projects_state_and_forwards_events() {
     let got = received.lock().unwrap();
     assert_eq!(got.len(), 1, "事件应回投一次");
     assert_eq!(got[0].0, "toggle", "事件名来自 renderer 槽位");
+    drop(got);
+
+    let dropped_window = second_window.weak();
+    drop(second_window);
+    if let Some(instance) = dropped_window.upgrade() {
+        assert!(
+            !instance.window().is_visible(),
+            "会话释放必须显式隐藏运行时原生窗口"
+        );
+    }
 }

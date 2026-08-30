@@ -17,6 +17,8 @@ use crate::project;
 /// 构建错误（稳定 code `FBUILD_*`）。
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
+    #[error("项目目录不可用: {0}")]
+    ProjectDirectory(String),
     #[error("项目配置失败: {0}")]
     Project(#[from] project::ProjectError),
     #[error("cargo 元数据失败: {0}")]
@@ -34,6 +36,7 @@ pub enum BuildError {
 impl BuildError {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::ProjectDirectory(_) => "FBUILD_PROJECT_DIRECTORY",
             Self::Project(_) => "FBUILD_PROJECT",
             Self::CargoMetadata(_) => "FBUILD_CARGO_METADATA",
             Self::WasmBuild(_) => "FBUILD_WASM_BUILD",
@@ -46,6 +49,7 @@ impl BuildError {
     /// Agent/CI 可见的有界描述，不包含 cargo stderr 或宿主路径。
     pub fn public_detail(&self) -> Cow<'static, str> {
         match self {
+            Self::ProjectDirectory(_) => Cow::Borrowed("项目目录不存在或不可访问"),
             Self::Project(_) => Cow::Borrowed("项目配置无效"),
             Self::CargoMetadata(_) => Cow::Borrowed("Cargo 项目元数据检查失败"),
             Self::WasmBuild(_) => Cow::Borrowed("WASM Component 构建失败"),
@@ -118,6 +122,12 @@ fn cargo_metadata(manifest: &Path) -> Result<CargoMeta, BuildError> {
 
 /// 构建项目目录中的插件，输出 `.floatile` 到 `out`。
 pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildError> {
+    let project_dir = project_dir.canonicalize().map_err(|error| {
+        BuildError::ProjectDirectory(format!(
+            "无法解析项目目录 {}: {error}",
+            project_dir.display()
+        ))
+    })?;
     let manifest_path = project_dir.join("Cargo.toml");
     if !manifest_path.exists() {
         return Err(BuildError::CargoMetadata(format!(
@@ -129,7 +139,7 @@ pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildEr
 
     // 1. 编译 wasm 组件。
     let wasm_build = Command::new("cargo")
-        .current_dir(project_dir)
+        .current_dir(&project_dir)
         .args(["build", "--release", "--target", "wasm32-wasip2"])
         .arg("--manifest-path")
         .arg(&manifest_path)
@@ -149,7 +159,7 @@ pub fn build_project(project_dir: &Path, out: &Path) -> Result<Manifest, BuildEr
 
     // 2. 宿主运行 build_ftui 生成 widget.ftui。
     let ftui_output = Command::new("cargo")
-        .current_dir(project_dir)
+        .current_dir(&project_dir)
         // Author projects conventionally use the same `build_ftui` binary name. Cargo places
         // host binaries directly under the target profile directory, so concurrent builds of
         // different plugins can otherwise overwrite/run each other's executable on Windows.

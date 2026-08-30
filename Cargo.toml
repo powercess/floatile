@@ -14,6 +14,7 @@ members = [
     "crates/floatile-ui-schema",
     "crates/floatile-cli",
     "plugins/clock-wasm",
+    "plugins/clock-model",
     "plugins/ai-balance-wasm",
     "plugins/evil-wasm",
 ]
@@ -26,6 +27,7 @@ license = "PROPRIETARY"
 authors = ["Floatile Project"]
 
 [workspace.dependencies]
+floatile-cli = { path = "crates/floatile-cli", version = "0.1.0" }
 floatile-core = { path = "crates/floatile-core", version = "0.1.0" }
 floatile-platform = { path = "crates/floatile-platform", version = "0.1.0" }
 floatile-plugin-api = { path = "crates/floatile-plugin-api", version = "0.1.0" }
@@ -36,6 +38,7 @@ floatile-store = { path = "crates/floatile-store", version = "0.1.0" }
 floatile-ui-schema = { path = "crates/floatile-ui-schema", version = "0.1.0" }
 floatile-sdk = { path = "crates/floatile-sdk", version = "0.1.0" }
 floatile-sdk-macros = { path = "crates/floatile-sdk-macros", version = "0.1.0" }
+floatile-clock-model = { path = "plugins/clock-model", version = "0.1.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,6 +54,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 url = "2"
 futures-util = "0.3"
 slint = { version = "1.17", features = ["backend-winit", "unstable-winit-030"] }
+slint-interpreter = "1.17"
 winit = "0.30"
 x11rb = { version = "0.13", default-features = false, features = ["randr", "shape"] }
 windows-sys = "0.52"

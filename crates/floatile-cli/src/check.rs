@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use floatile_core::manifest::PermissionDecl;
 use floatile_core::{CapabilityExposure, CapabilityId};
 use serde::Serialize;
+use slint_interpreter::Compiler;
 use thiserror::Error;
 
 use crate::build::{BuildError, build_project};
@@ -50,6 +51,10 @@ pub enum CheckError {
     Inspect(#[from] InspectError),
     #[error("组件使用了 manifest 未声明的能力: {0:?}")]
     CapabilityMissing(Vec<String>),
+    #[error("UI renderer 失败: {0}")]
+    UiRender(String),
+    #[error("生成 UI 无法由宿主编译: {0}")]
+    UiCompile(String),
 }
 
 impl CheckError {
@@ -59,6 +64,8 @@ impl CheckError {
             Self::Build(error) => error.code(),
             Self::Inspect(error) => error.code(),
             Self::CapabilityMissing(_) => "FCHECK_CAPABILITY_MISSING",
+            Self::UiRender(_) => "FCHECK_UI_RENDER",
+            Self::UiCompile(_) => "FCHECK_UI_COMPILE",
         }
     }
 
@@ -66,6 +73,9 @@ impl CheckError {
     pub fn public_detail(&self) -> Cow<'static, str> {
         match self {
             Self::TemporaryDirectory(_) => Cow::Borrowed("无法准备临时检查目录"),
+            Self::Build(BuildError::ProjectDirectory(_)) => {
+                Cow::Borrowed("项目目录不存在或不可访问")
+            }
             Self::Build(BuildError::Project(_)) => Cow::Borrowed("项目配置无效"),
             Self::Build(BuildError::CargoMetadata(_)) => Cow::Borrowed("Cargo 项目元数据检查失败"),
             Self::Build(BuildError::WasmBuild(_)) => Cow::Borrowed("WASM Component 构建失败"),
@@ -78,12 +88,15 @@ impl CheckError {
                 "组件使用了 manifest 未声明的宿主能力: {}",
                 capabilities.join(", ")
             )),
+            Self::UiRender(_) => Cow::Borrowed("UI 无法映射到宿主组件"),
+            Self::UiCompile(detail) => Cow::Owned(format!("生成 UI 无法由宿主编译: {detail}")),
         }
     }
 
     pub fn phases(&self) -> CheckPhases {
         match self {
-            Self::TemporaryDirectory(_) | Self::Build(BuildError::CargoMetadata(_)) => {
+            Self::TemporaryDirectory(_)
+            | Self::Build(BuildError::ProjectDirectory(_) | BuildError::CargoMetadata(_)) => {
                 CheckPhases::default()
             }
             Self::Build(BuildError::WasmBuild(_)) => CheckPhases {
@@ -115,6 +128,11 @@ impl CheckError {
                 manifest: true,
                 package: true,
             },
+            Self::UiRender(_) | Self::UiCompile(_) => CheckPhases {
+                metadata: true,
+                wasm: true,
+                ..CheckPhases::default()
+            },
         }
     }
 }
@@ -129,6 +147,7 @@ pub fn check_project(project_dir: &Path) -> Result<CheckReport, CheckError> {
         std::fs::read(&package_path).map_err(|error| InspectError::Io(error.to_string()))?;
     let validated =
         validate_package(&archive, &PackageLimits::default()).map_err(InspectError::Package)?;
+    compile_host_ui(&validated.ui_document)?;
     let used = imported_capabilities(&validated.wasm).map_err(InspectError::Package)?;
     let (missing, warnings) = capability_drift(&validated.manifest.permissions, &used);
     if !missing.is_empty() {
@@ -148,6 +167,35 @@ pub fn check_project(project_dir: &Path) -> Result<CheckReport, CheckError> {
         warnings,
         inspection,
     })
+}
+
+fn compile_host_ui(document: &floatile_ui_schema::UiDocument) -> Result<(), CheckError> {
+    let rendered = floatile_renderer::render_component(document)
+        .map_err(|error| CheckError::UiRender(error.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CheckError::UiCompile(format!("编译器初始化失败: {error}")))?;
+    let compiled = runtime.block_on(async {
+        Compiler::default()
+            .build_from_source(rendered.source, PathBuf::from("plugin-check-ui"))
+            .await
+    });
+    if compiled.has_errors() {
+        let detail: String = compiled
+            .diagnostics()
+            .map(|diagnostic| format!("{diagnostic:?}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+            .chars()
+            .take(2_048)
+            .collect();
+        return Err(CheckError::UiCompile(detail));
+    }
+    compiled
+        .component(floatile_renderer::RUNTIME_WINDOW_COMPONENT_NAME)
+        .ok_or_else(|| CheckError::UiCompile("缺少运行时 Window 组件".to_owned()))?;
+    Ok(())
 }
 
 fn capability_drift(

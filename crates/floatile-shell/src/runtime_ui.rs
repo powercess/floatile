@@ -15,21 +15,36 @@
 //!   之前被拒，宿主存活（F12 前置）。
 //! - 投影失败只记录，绝不 panic、不部分改写权威 State。
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use floatile_platform::{PlatformCapabilities, set_always_on_top};
+use floatile_core::manifest::Sizes;
+use floatile_core::{
+    InstanceId, LogicalPosition, LogicalRect, LogicalSize, PhysicalSize, PluginId, ScaleFactor,
+    WidgetLayout, WidgetMode, recover_layout,
+};
+use floatile_platform::{
+    PlatformCapabilities, PlatformKind, apply_widget_size_constraints,
+    configure_widget_window_role, enumerate_monitors, resize_window, set_always_on_top,
+    set_click_through, set_window_position, start_window_drag, start_window_resize,
+    to_monitor_layout,
+};
 use floatile_renderer::{
-    BindingSlot, BindingValueType, EventSlot, RenderedComponent, render_component,
+    BindingSlot, BindingValueType, EventSlot, RUNTIME_WINDOW_COMPONENT_NAME, RenderedComponent,
+    render_component,
 };
 use floatile_ui_schema::path::PathSegments;
 use floatile_ui_schema::{MAX_IR_BYTES, UiDocument, validate_document};
 use serde_json::Value;
 use slint::winit_030::WinitWindowAccessor;
+use slint::winit_030::{EventResult, winit};
+use slint::{Timer, TimerMode};
 use slint_interpreter::{Compiler, ComponentDefinition, ComponentInstance, Value as UiValue};
 
 /// renderer 声明的宿主组件名（单一事实源，随 renderer 命名演进）。
-pub const PLUGIN_COMPONENT_NAME: &str = "ClockPluginUI";
+pub const PLUGIN_COMPONENT_NAME: &str = RUNTIME_WINDOW_COMPONENT_NAME;
 
 /// 运行时 UI 渲染错误。`code()` 返回稳定诊断 code（`RUI_*`），自由文本不作判断依据。
 #[derive(Debug, thiserror::Error)]
@@ -148,6 +163,20 @@ type EventSink = Arc<dyn Fn(&str, String) + Send + Sync + 'static>;
 pub struct RuntimePluginWindow {
     instance: ComponentInstance,
     bindings: Vec<BindingSlot>,
+    mode: Rc<Cell<WidgetMode>>,
+    _window_setup_timer: Rc<Timer>,
+}
+
+/// 运行时窗口向后台持久化 worker 投递的有界布局通道。
+pub(crate) type RuntimeLayoutSender = mpsc::SyncSender<WidgetLayout>;
+pub type RuntimeSettingsHandler = Rc<dyn Fn(InstanceId)>;
+pub type RuntimeShowHandler = Rc<dyn Fn()>;
+
+pub(crate) struct RuntimeWindowHostContext {
+    pub restored_layout: Option<WidgetLayout>,
+    pub layout_sender: Option<RuntimeLayoutSender>,
+    pub settings_handler: Option<RuntimeSettingsHandler>,
+    pub show_handler: Option<RuntimeShowHandler>,
 }
 
 impl RuntimePluginWindow {
@@ -161,19 +190,153 @@ impl RuntimePluginWindow {
         definition: &ComponentDefinition,
         bindings: Vec<BindingSlot>,
         caps: &PlatformCapabilities,
+        sizes: &Sizes,
+    ) -> Result<Self, RuntimeUiError> {
+        Self::create_on_ui_thread_with_layout(definition, bindings, caps, sizes, None, None)
+    }
+
+    /// 创建窗口并接入实例级布局恢复/保存；SQLite 始终由 sender 另一端的后台 worker
+    /// 持有，UI 线程只发送已经由领域模型验证的 `WidgetLayout`。
+    pub(crate) fn create_on_ui_thread_with_layout(
+        definition: &ComponentDefinition,
+        bindings: Vec<BindingSlot>,
+        caps: &PlatformCapabilities,
+        sizes: &Sizes,
+        restored_layout: Option<WidgetLayout>,
+        layout_context: Option<(InstanceId, PluginId, RuntimeLayoutSender)>,
     ) -> Result<Self, RuntimeUiError> {
         use slint_interpreter::ComponentHandle;
         let instance = definition
             .create()
             .map_err(|e| RuntimeUiError::Instantiate(e.to_string()))?;
-        let window = instance.window();
+        instance
+            .show()
+            .map_err(|e| RuntimeUiError::Instantiate(format!("显示插件窗口失败: {e}")))?;
+        let resizable = sizes.resizable;
+        let monitor_layouts = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let event_monitors = Rc::clone(&monitor_layouts);
+        let mode = Rc::new(Cell::new(WidgetMode::Edit));
+        let event_mode = Rc::clone(&mode);
+        let mut cursor_position = None;
+        let mut host_interaction_active = false;
+        instance
+            .window()
+            .on_winit_window_event(move |slint_window, event| {
+                if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+                    cursor_position = Some(*position);
+                    return EventResult::Propagate;
+                }
+                if matches!(
+                    event,
+                    winit::event::WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Released,
+                        button: winit::event::MouseButton::Left,
+                        ..
+                    }
+                ) && host_interaction_active
+                {
+                    host_interaction_active = false;
+                    if let Some((instance_id, plugin_id, sender)) = &layout_context {
+                        let _ = slint_window.with_winit_window(|window| {
+                            try_send_runtime_layout(
+                                window,
+                                *instance_id,
+                                plugin_id.clone(),
+                                &event_monitors.borrow(),
+                                sender,
+                                event_mode.get(),
+                            )
+                        });
+                    }
+                    return EventResult::PreventDefault;
+                }
+                if !matches!(
+                    event,
+                    winit::event::WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Pressed,
+                        button: winit::event::MouseButton::Left,
+                        ..
+                    }
+                ) {
+                    return EventResult::Propagate;
+                }
+                let Some(position) = cursor_position else {
+                    return EventResult::Propagate;
+                };
+                let scale = f64::from(slint_window.scale_factor());
+                let size = slint_window.size();
+                let x = position.x / scale;
+                let y = position.y / scale;
+                let width = f64::from(size.width) / scale;
+                let height = f64::from(size.height) / scale;
+                let action =
+                    match runtime_window_hit(x, y, width, height, resizable, event_mode.get()) {
+                        RuntimeWindowHit::Resize => {
+                            slint_window.with_winit_window(start_window_resize)
+                        }
+                        RuntimeWindowHit::Drag => slint_window.with_winit_window(start_window_drag),
+                        RuntimeWindowHit::Content => return EventResult::Propagate,
+                    };
+                match action {
+                    Some(Ok(())) => {
+                        host_interaction_active = true;
+                        EventResult::PreventDefault
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "runtime plugin host window interaction failed");
+                        EventResult::Propagate
+                    }
+                    None => EventResult::Propagate,
+                }
+            });
         let caps = *caps;
-        let _ = window.with_winit_window(move |w: &slint::winit_030::winit::window::Window| {
-            if let Err(error) = set_always_on_top(w, caps.always_on_top.is_available()) {
-                tracing::warn!(%error, "runtime plugin window always-on-top apply failed");
+        let sizes = sizes.clone();
+        let setup_monitors = Rc::clone(&monitor_layouts);
+        let weak = instance.as_weak();
+        let setup_timer = Rc::new(Timer::default());
+        let timer_for_callback = Rc::clone(&setup_timer);
+        let mut attempts = 0u32;
+        setup_timer.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+            attempts = attempts.saturating_add(1);
+            let Some(instance) = weak.upgrade() else {
+                timer_for_callback.stop();
+                return;
+            };
+            let result = instance
+                .window()
+                .with_winit_window(|window: &winit::window::Window| {
+                    let monitors = runtime_monitor_layouts(window)?;
+                    *setup_monitors.borrow_mut() = monitors;
+                    configure_runtime_widget_window(
+                        window,
+                        &caps,
+                        &sizes,
+                        restored_layout.as_ref(),
+                        &setup_monitors.borrow(),
+                    )
+                });
+            match result {
+                Some(Ok(())) => timer_for_callback.stop(),
+                Some(Err(error)) if attempts >= 40 => {
+                    tracing::warn!(%error, attempts, "runtime plugin window setup exhausted retries");
+                    timer_for_callback.stop();
+                }
+                None if attempts >= 40 => {
+                    tracing::warn!(attempts, "runtime plugin native window was never ready");
+                    timer_for_callback.stop();
+                }
+                Some(Err(error)) => {
+                    tracing::debug!(%error, attempts, "runtime plugin window setup retry");
+                }
+                None => {}
             }
         });
-        Ok(Self { instance, bindings })
+        Ok(Self {
+            instance,
+            bindings,
+            mode,
+            _window_setup_timer: setup_timer,
+        })
     }
 
     /// 沿 renderer binding 槽位把权威 State 投影进本窗口（UI 线程）。
@@ -188,6 +351,14 @@ impl RuntimePluginWindow {
                 .map_err(|e| RuntimeUiError::Projection(format!("{}: {e}", slot.prop)))?;
         }
         Ok(())
+    }
+
+    /// 设置由已校验 manifest 提供的插件显示名。名称作为运行时属性传入，绝不拼接到
+    /// renderer 生成源码中，因此引号、换行等不可信字符不能改变 Slint 程序结构。
+    pub fn set_host_title(&self, title: &str) -> Result<(), RuntimeUiError> {
+        self.instance
+            .set_property("host_title", UiValue::String(title.into()))
+            .map_err(|e| RuntimeUiError::Projection(format!("host_title: {e}")))
     }
 
     /// 注册输入事件回投：声明事件 → interpreter callback → sink。
@@ -216,6 +387,49 @@ impl RuntimePluginWindow {
         Ok(())
     }
 
+    pub(crate) fn register_host_settings(
+        &self,
+        instance_id: InstanceId,
+        handler: RuntimeSettingsHandler,
+    ) -> Result<(), RuntimeUiError> {
+        self.instance
+            .set_callback("host_settings", move |_| {
+                handler(instance_id);
+                UiValue::Void
+            })
+            .map_err(|error| RuntimeUiError::Callback(format!("host_settings: {error:?}")))
+    }
+
+    pub(crate) fn register_host_show(
+        &self,
+        handler: RuntimeShowHandler,
+    ) -> Result<(), RuntimeUiError> {
+        self.instance
+            .set_callback("host_show", move |_| {
+                handler();
+                UiValue::Void
+            })
+            .map_err(|error| RuntimeUiError::Callback(format!("host_show: {error:?}")))
+    }
+
+    pub(crate) fn apply_mode(
+        &self,
+        mode: WidgetMode,
+        click_through: bool,
+    ) -> Result<(), RuntimeUiError> {
+        use slint_interpreter::ComponentHandle;
+        self.instance
+            .set_property("host_edit_mode", UiValue::Bool(mode == WidgetMode::Edit))
+            .map_err(|error| RuntimeUiError::Projection(format!("host_edit_mode: {error}")))?;
+        self.instance
+            .window()
+            .with_winit_window(|window| set_click_through(window, click_through))
+            .unwrap_or(Err(floatile_platform::PlatformError::WindowNotReady))
+            .map_err(|error| RuntimeUiError::Projection(error.to_string()))?;
+        self.mode.set(mode);
+        Ok(())
+    }
+
     /// 跨线程弱引用：`slint::Weak<ComponentInstance>` 是 Send，可交给 worker 投影。
     pub fn weak(&self) -> slint::Weak<ComponentInstance> {
         use slint_interpreter::ComponentHandle;
@@ -226,6 +440,166 @@ impl RuntimePluginWindow {
     pub fn instance(&self) -> &ComponentInstance {
         &self.instance
     }
+}
+
+impl Drop for RuntimePluginWindow {
+    fn drop(&mut self) {
+        use slint_interpreter::ComponentHandle;
+        if let Err(error) = self.instance.hide() {
+            tracing::debug!(%error, "runtime plugin native window hide skipped during drop");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeWindowHit {
+    Resize,
+    Drag,
+    Content,
+}
+
+fn runtime_window_hit(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    resizable: bool,
+    mode: WidgetMode,
+) -> RuntimeWindowHit {
+    if mode == WidgetMode::Show {
+        RuntimeWindowHit::Content
+    } else if resizable && x >= width - 24.0 && y >= height - 24.0 {
+        RuntimeWindowHit::Resize
+    } else if y <= 40.0 && x < width - 148.0 {
+        RuntimeWindowHit::Drag
+    } else {
+        RuntimeWindowHit::Content
+    }
+}
+
+fn configure_runtime_widget_window(
+    window: &winit::window::Window,
+    caps: &PlatformCapabilities,
+    sizes: &Sizes,
+    restored_layout: Option<&WidgetLayout>,
+    monitors: &[floatile_core::MonitorLayout],
+) -> Result<(), floatile_platform::PlatformError> {
+    if caps.kind == PlatformKind::Windows {
+        configure_widget_window_role(window)?;
+    }
+    apply_widget_size_constraints(window, sizes)?;
+    if let Some(layout) = restored_layout {
+        match recover_layout(layout, monitors) {
+            Ok(recovered) => {
+                resize_window(window, recovered.rect.size)?;
+                set_window_position(window, recovered.rect.position)?;
+                if recovered.lost_monitor {
+                    tracing::warn!(
+                        instance_id = layout.instance_id.0,
+                        monitor = ?layout.monitor_key,
+                        "runtime plugin expected monitor missing; restored on primary"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                instance_id = layout.instance_id.0,
+                %error,
+                "runtime plugin layout recovery rejected; using manifest defaults"
+            ),
+        }
+    }
+    set_always_on_top(window, caps.always_on_top.is_available())
+}
+
+fn runtime_monitor_layouts(
+    window: &winit::window::Window,
+) -> Result<Vec<floatile_core::MonitorLayout>, floatile_platform::PlatformError> {
+    let scale = ScaleFactor::new(window.scale_factor())
+        .map_err(|error| floatile_platform::PlatformError::Platform(error.to_string()))?;
+    enumerate_monitors().map(|monitors| {
+        monitors
+            .iter()
+            .map(|monitor| to_monitor_layout(monitor, scale))
+            .collect()
+    })
+}
+
+fn try_send_runtime_layout(
+    window: &winit::window::Window,
+    instance_id: InstanceId,
+    plugin_id: PluginId,
+    monitors: &[floatile_core::MonitorLayout],
+    sender: &RuntimeLayoutSender,
+    mode: WidgetMode,
+) {
+    let scale = window.scale_factor();
+    let Ok(position) = window.outer_position() else {
+        tracing::warn!(
+            instance_id = instance_id.0,
+            "runtime window position unavailable"
+        );
+        return;
+    };
+    let size = window.inner_size();
+    let Ok(scale_factor) = ScaleFactor::new(scale) else {
+        tracing::warn!(
+            instance_id = instance_id.0,
+            scale,
+            "invalid runtime window scale"
+        );
+        return;
+    };
+    let snapshot = crate::WindowSnapshot {
+        rect: LogicalRect {
+            position: LogicalPosition {
+                x: position.x as f32 / scale as f32,
+                y: position.y as f32 / scale as f32,
+            },
+            size: LogicalSize {
+                width: size.width as f32 / scale as f32,
+                height: size.height as f32 / scale as f32,
+            },
+        },
+        physical_size: PhysicalSize {
+            width: size.width,
+            height: size.height,
+        },
+        scale_factor,
+        mode,
+    };
+    let layout =
+        match crate::layout_from_window(instance_id, plugin_id, snapshot, monitors, unix_now()) {
+            Ok(Some(layout)) => layout,
+            Ok(None) => {
+                tracing::warn!(
+                    instance_id = instance_id.0,
+                    "no monitor for runtime layout save"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(instance_id = instance_id.0, %error, "runtime layout rejected");
+                return;
+            }
+        };
+    match sender.try_send(layout) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(_)) => tracing::warn!(
+            instance_id = instance_id.0,
+            "runtime layout queue full; newest snapshot dropped"
+        ),
+        Err(mpsc::TrySendError::Disconnected(_)) => tracing::debug!(
+            instance_id = instance_id.0,
+            "runtime layout worker unavailable"
+        ),
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 #[derive(Debug)]
@@ -350,6 +724,26 @@ fn serialize_callback_args(args: &[UiValue]) -> Vec<Value> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_host_hit_regions_keep_management_button_clickable() {
+        assert_eq!(
+            runtime_window_hit(120.0, 20.0, 360.0, 310.0, true, WidgetMode::Edit),
+            RuntimeWindowHit::Drag
+        );
+        assert_eq!(
+            runtime_window_hit(309.0, 18.0, 360.0, 310.0, true, WidgetMode::Edit),
+            RuntimeWindowHit::Content
+        );
+        assert_eq!(
+            runtime_window_hit(350.0, 300.0, 360.0, 310.0, true, WidgetMode::Edit),
+            RuntimeWindowHit::Resize
+        );
+        assert_eq!(
+            runtime_window_hit(120.0, 20.0, 360.0, 310.0, true, WidgetMode::Show),
+            RuntimeWindowHit::Content
+        );
+    }
     use floatile_ui_schema::ir::{Component, PropValue};
     use floatile_ui_schema::schema::JsonSchema;
     use std::collections::BTreeMap;
@@ -665,6 +1059,37 @@ mod tests {
         assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
     }
 
+    #[test]
+    fn compile_nested_page_state_branches_without_display() {
+        let mut document = clock_ftui();
+        let text = |value: &str| Component {
+            kind: "Text".into(),
+            props: BTreeMap::from([("text".into(), PropValue::Literal(serde_json::json!(value)))]),
+            ..Default::default()
+        };
+        document.root = Component {
+            kind: "If".into(),
+            when: Some(floatile_ui_schema::ir::Binding::State {
+                bind: "$.running".into(),
+            }),
+            then: Some(Box::new(text("loading"))),
+            else_: Some(Box::new(Component {
+                kind: "If".into(),
+                when: Some(floatile_ui_schema::ir::Binding::State {
+                    bind: "$.running".into(),
+                }),
+                then: Some(Box::new(text("error"))),
+                else_: Some(Box::new(text("content"))),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let rendered = render_ftui(&ftui_bytes(&document)).unwrap();
+        let definition = compile_component(&rendered)
+            .unwrap_or_else(|error| panic!("{error}\n{}", rendered.source));
+        assert_eq!(definition.name(), PLUGIN_COMPONENT_NAME);
+    }
+
     #[tokio::test]
     async fn runtime_ui_preparation_runs_off_the_calling_thread() {
         let caller = thread::current().id();
@@ -680,14 +1105,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use floatile_core::PluginInstance;
 use floatile_core::capability::{
     CapabilityId, EffectiveGrant, Grant, Grants, InstanceGrant, TrustLevel, narrow_instance,
     parse_capability_params,
 };
 use floatile_core::instance::InstallationRef;
 use floatile_core::manifest::Manifest;
-use floatile_core::types::{InstanceId, PluginId};
+use floatile_core::{ConnectionId, PluginInstance};
 use floatile_plugin_api::exports::floatile::widget::widget_contract::{UiEvent, WidgetEvent};
 use floatile_runtime::{WidgetConfig, WidgetManager};
 use floatile_services::{
@@ -825,6 +1249,10 @@ impl RuntimeUiSession {
     pub fn try_lifecycle_event(&self) -> Option<RuntimeUiLifecycleEvent> {
         self.lifecycle.try_recv().ok()
     }
+
+    pub fn apply_mode(&self, mode: WidgetMode, click_through: bool) -> Result<(), RuntimeUiError> {
+        self._window.apply_mode(mode, click_through)
+    }
 }
 
 impl Drop for RuntimeUiSession {
@@ -935,14 +1363,19 @@ pub fn compose_instance_https(
             RuntimeUiError::Runtime(format!("读取 Connection grants 失败: {error}"))
         })?;
     let mut connections = Vec::with_capacity(grants.len());
-    for grant in grants {
+    for (index, grant) in grants.into_iter().enumerate() {
         let connection = connection_store
             .get(grant.connection_id)
             .map_err(|error| RuntimeUiError::Runtime(format!("读取 Connection 失败: {error}")))?
             .ok_or_else(|| RuntimeUiError::Runtime("Connection grant 引用不存在".to_owned()))?;
-        connections.push(connection);
+        let handle = u64::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(1))
+            .map(ConnectionId)
+            .ok_or_else(|| RuntimeUiError::Runtime("Connection handle 预算溢出".to_owned()))?;
+        connections.push((handle, connection));
     }
-    Ok(HttpsService::new(
+    Ok(HttpsService::new_with_handles(
         manifest.http_templates.clone(),
         connections,
         vault,
@@ -957,7 +1390,32 @@ pub async fn spawn_runtime_ui_with_https(
     audit_listener: Option<AuditListener>,
     https: Option<HttpsService>,
 ) -> Result<RuntimeUiSession, RuntimeUiError> {
+    spawn_runtime_ui_with_host_layout(
+        plugin,
+        instance,
+        caps,
+        audit_listener,
+        https,
+        RuntimeWindowHostContext {
+            restored_layout: None,
+            layout_sender: None,
+            settings_handler: None,
+            show_handler: None,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn spawn_runtime_ui_with_host_layout(
+    plugin: InstalledPlugin,
+    instance: PluginInstance,
+    caps: PlatformCapabilities,
+    audit_listener: Option<AuditListener>,
+    https: Option<HttpsService>,
+    host: RuntimeWindowHostContext,
+) -> Result<RuntimeUiSession, RuntimeUiError> {
     let id = plugin.manifest.id.clone();
+    let sizes = plugin.manifest.sizes.clone();
     let (instance_id, generation, config_json) = validate_runtime_instance(&plugin, &instance)?;
     // 1. 后台解析 + 复验 + 渲染（双层预算，恶意 IR 在此被拒，不达 interpreter）。
     let prepared = prepare_runtime_ui(plugin.ui_bytes).await?;
@@ -970,7 +1428,24 @@ pub async fn spawn_runtime_ui_with_https(
     // 2. interpreter 产物含 Rc、不可跨线程；在 Slint local executor 异步编译，随后
     // 在同一 UI 线程实例化窗口，不使用嵌套 block_on。
     let definition = compile_component_async(&rendered).await?;
-    let window = RuntimePluginWindow::create_on_ui_thread(&definition, rendered.bindings, &caps)?;
+    let layout_context = host
+        .layout_sender
+        .map(|sender| (instance_id, id.clone(), sender));
+    let window = RuntimePluginWindow::create_on_ui_thread_with_layout(
+        &definition,
+        rendered.bindings,
+        &caps,
+        &sizes,
+        host.restored_layout,
+        layout_context,
+    )?;
+    window.set_host_title(&plugin.manifest.name)?;
+    if let Some(handler) = host.settings_handler {
+        window.register_host_settings(instance_id, handler)?;
+    }
+    if let Some(handler) = host.show_handler {
+        window.register_host_show(handler)?;
+    }
 
     // 3. 输入事件回投通道：UI 线程 sink → worker 转发给实例。
     let (event_tx, event_rx) = mpsc::sync_channel::<(String, String)>(EVENT_QUEUE_CAPACITY);
@@ -1441,5 +1916,76 @@ mod grants_tests {
 
         let error = validate_runtime_instance(&plugin, &instance).unwrap_err();
         assert_eq!(error.code(), "RUI_INSTANCE_IDENTITY");
+    }
+
+    #[test]
+    fn composed_https_uses_instance_handle_when_persistent_id_is_not_one() {
+        let root =
+            std::env::temp_dir().join(format!("floatile-scoped-connection-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let store = floatile_store::open(root.join("layout.db")).unwrap();
+        let installation = InstallationRef::new(
+            PluginId("dev.floatile.connection-test".to_owned()),
+            "1.0.0",
+            floatile_core::InstallationDigest::from_bytes([0x42; 32]),
+        )
+        .unwrap();
+        let instance = store
+            .instances()
+            .create(
+                &installation,
+                &floatile_core::InstanceConfig::empty(),
+                floatile_core::InstanceDesiredState::Stopped,
+                1,
+            )
+            .unwrap();
+        let dummy_reference = floatile_core::CredentialRef::new("cred://test/dummy").unwrap();
+        let dummy = store
+            .connections()
+            .create("example", "dummy", &dummy_reference, 1)
+            .unwrap();
+        assert_eq!(dummy.id(), ConnectionId(1));
+        let reference = floatile_core::CredentialRef::new("cred://test/non-first").unwrap();
+        let persistent = store
+            .connections()
+            .create("example", "non-first", &reference, 2)
+            .unwrap();
+        assert_eq!(persistent.id(), ConnectionId(2));
+        assert!(
+            store
+                .connections()
+                .grant(instance.id(), persistent.id(), 3)
+                .unwrap()
+        );
+        let vault = Arc::new(floatile_services::MemoryCredentialVault::default());
+        vault.put(&reference, b"Bearer test").unwrap();
+        let mut manifest = installed_plugin().manifest;
+        manifest.http_templates = vec![floatile_core::manifest::HttpTemplateDecl {
+            id: "balance".to_owned(),
+            method: "GET".to_owned(),
+            url: "https://api.example.com/v1/balance".to_owned(),
+            query_params: Vec::new(),
+            credential_header: "authorization".to_owned(),
+            allowed_statuses: vec![200],
+            max_response_bytes: 4096,
+            timeout_ms: 2000,
+            cache_ttl_ms: 0,
+            stale_if_error_ms: 0,
+            max_retries: 0,
+            retry_base_delay_ms: 10,
+        }];
+        let service = compose_instance_https(&store, instance.id(), &manifest, vault).unwrap();
+        assert!(
+            service
+                .prepare("balance", ConnectionId(1), Vec::new())
+                .is_ok()
+        );
+        assert!(matches!(
+            service.prepare("balance", persistent.id(), Vec::new()),
+            Err(floatile_services::HttpServiceError::ConnectionNotGranted)
+        ));
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

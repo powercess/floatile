@@ -29,7 +29,7 @@ pub enum StoreError {
 }
 
 /// 当前 schema 版本（与 migration 列表一一对应）。
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 /// 打开数据库并迁移到最新版本。
 ///
@@ -80,6 +80,9 @@ impl Store {
         }
         if current < 8 {
             self.migration_v8()?;
+        }
+        if current < 9 {
+            self.migration_v9()?;
         }
         Ok(())
     }
@@ -303,6 +306,30 @@ impl Store {
         .map_err(|error| StoreError::Migration(format!("v8 建立显式回滚审计表失败: {error}")))?;
         tx.commit()
             .map_err(|error| StoreError::Migration(format!("v8 提交失败: {error}")))
+    }
+
+    fn migration_v9(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS installation_rebindings (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id    INTEGER NOT NULL,
+                plugin_id      TEXT NOT NULL,
+                from_version   TEXT NOT NULL,
+                from_digest    BLOB NOT NULL CHECK (length(from_digest) = 32),
+                target_version TEXT NOT NULL,
+                target_digest  BLOB NOT NULL CHECK (length(target_digest) = 32),
+                direction      TEXT NOT NULL CHECK (direction IN ('upgrade', 'rollback')),
+                reason         TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 512),
+                rebound_at     INTEGER NOT NULL CHECK (rebound_at >= 0)
+            );
+            CREATE INDEX IF NOT EXISTS installation_rebindings_instance
+                ON installation_rebindings(instance_id, id);
+            PRAGMA user_version = 9;",
+        )
+        .map_err(|error| StoreError::Migration(format!("v9 建立版本换绑审计表失败: {error}")))?;
+        tx.commit()
+            .map_err(|error| StoreError::Migration(format!("v9 提交失败: {error}")))
     }
 
     /// 布局存储接口。
@@ -618,6 +645,39 @@ impl<'a> InstanceStore<'a> {
         Ok(instances)
     }
 
+    /// 返回精确引用某个不可变 Installation 的实例 ID。
+    ///
+    /// 卸载门禁必须同时匹配插件、版本与内容摘要，不能仅按版本字符串推断引用关系。
+    pub fn referencing_installation(
+        &self,
+        installation: &InstallationRef,
+    ) -> Result<Vec<InstanceId>, StoreError> {
+        installation
+            .validate()
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        let mut statement = self.conn.prepare(
+            "SELECT instance_id
+             FROM plugin_instances
+             WHERE plugin_id = ?1
+               AND installation_version = ?2
+               AND installation_digest = ?3
+             ORDER BY instance_id ASC",
+        )?;
+        let mut rows = statement.query(rusqlite::params![
+            installation.plugin().0,
+            installation.version(),
+            installation.digest().as_bytes().as_slice(),
+        ])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            let value: i64 = row.get(0)?;
+            ids.push(InstanceId(u64::try_from(value).map_err(|_| {
+                StoreError::Corrupt(format!("instance_id 不得为负数: {value}"))
+            })?));
+        }
+        Ok(ids)
+    }
+
     /// 原子替换 canonical config；过期时间戳不会覆盖较新的记录。
     pub fn update_config(
         &self,
@@ -675,6 +735,11 @@ impl<'a> InstanceStore<'a> {
         target
             .validate()
             .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        if current.plugin() != target.plugin() {
+            return Err(StoreError::Corrupt(
+                "rollback target 必须属于同一插件".to_owned(),
+            ));
+        }
         let instance_id_sql = sqlite_i64(instance_id.0, "instance_id")?;
         let updated_at_sql = sqlite_i64(updated_at, "updated_at")?;
         let tx = self.conn.unchecked_transaction()?;
@@ -710,6 +775,93 @@ impl<'a> InstanceStore<'a> {
                     current.digest().as_bytes().as_slice(),
                     target.version(),
                     target.digest().as_bytes().as_slice(),
+                    reason,
+                    updated_at_sql,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
+    /// 将 stopped 实例原子换绑到同插件的另一个已验证 Installation，并记录升级/回滚审计。
+    ///
+    /// 本层不读取安装文件；调用方必须先通过 installation catalog 复核目标内容并用目标 schema
+    /// 校验 canonical config。运行中实例、过期 current 引用和并发更新都返回 `false`。
+    pub fn rebind_installation(
+        &self,
+        instance_id: InstanceId,
+        current: &InstallationRef,
+        target: &InstallationRef,
+        reason: &str,
+        updated_at: u64,
+    ) -> Result<bool, StoreError> {
+        if reason.is_empty() || reason.len() > 512 {
+            return Err(StoreError::Corrupt(
+                "rebind reason 必须为 1..=512 字节".to_owned(),
+            ));
+        }
+        current
+            .validate()
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        target
+            .validate()
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        if current.plugin() != target.plugin() {
+            return Err(StoreError::Corrupt(
+                "rebind target 必须属于同一插件".to_owned(),
+            ));
+        }
+        if current == target {
+            return Err(StoreError::Corrupt(
+                "rebind target 必须不同于当前安装".to_owned(),
+            ));
+        }
+        let current_version = semver::Version::parse(current.version())
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        let target_version = semver::Version::parse(target.version())
+            .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+        let direction = if target_version > current_version {
+            "upgrade"
+        } else {
+            "rollback"
+        };
+        let instance_id_sql = sqlite_i64(instance_id.0, "instance_id")?;
+        let updated_at_sql = sqlite_i64(updated_at, "updated_at")?;
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE plugin_instances
+             SET installation_version = ?1, installation_digest = ?2, updated_at = ?3
+             WHERE instance_id = ?4
+               AND plugin_id = ?5
+               AND installation_version = ?6
+               AND installation_digest = ?7
+               AND desired_state = 'stopped'
+               AND updated_at <= ?3",
+            rusqlite::params![
+                target.version(),
+                target.digest().as_bytes().as_slice(),
+                updated_at_sql,
+                instance_id_sql,
+                current.plugin().0,
+                current.version(),
+                current.digest().as_bytes().as_slice(),
+            ],
+        )?;
+        if changed == 1 {
+            tx.execute(
+                "INSERT INTO installation_rebindings (
+                    instance_id, plugin_id, from_version, from_digest,
+                    target_version, target_digest, direction, reason, rebound_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    instance_id_sql,
+                    current.plugin().0,
+                    current.version(),
+                    current.digest().as_bytes().as_slice(),
+                    target.version(),
+                    target.digest().as_bytes().as_slice(),
+                    direction,
                     reason,
                     updated_at_sql,
                 ],
@@ -1565,6 +1717,129 @@ mod tests {
     }
 
     #[test]
+    fn version_rebind_requires_stopped_instance_and_audits_direction() {
+        let store = open(":memory:").unwrap();
+        let instance = store
+            .instances()
+            .create(
+                &historical_installation(),
+                &config("upgrade"),
+                InstanceDesiredState::Stopped,
+                10,
+            )
+            .unwrap();
+        assert!(
+            store
+                .instances()
+                .rebind_installation(
+                    instance.id(),
+                    instance.installation(),
+                    &installation(),
+                    "explicit user upgrade",
+                    11,
+                )
+                .unwrap()
+        );
+        let rebound = store.instances().get(instance.id()).unwrap().unwrap();
+        assert_eq!(rebound.installation(), &installation());
+        let direction: String = store
+            .conn
+            .query_row(
+                "SELECT direction FROM installation_rebindings WHERE instance_id = ?1",
+                rusqlite::params![sqlite_i64(instance.id().0, "instance_id").unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(direction, "upgrade");
+
+        store
+            .instances()
+            .set_desired_state(instance.id(), InstanceDesiredState::Running, 12)
+            .unwrap();
+        assert!(
+            !store
+                .instances()
+                .rebind_installation(
+                    instance.id(),
+                    &installation(),
+                    &historical_installation(),
+                    "must stop first",
+                    13,
+                )
+                .unwrap()
+        );
+        let count: u32 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM installation_rebindings", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn exact_installation_reference_query_tracks_create_rebind_and_delete() {
+        let store = open(":memory:").unwrap();
+        let instance = store
+            .instances()
+            .create(
+                &installation(),
+                &config("reference"),
+                InstanceDesiredState::Stopped,
+                10,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .instances()
+                .referencing_installation(&installation())
+                .unwrap(),
+            vec![instance.id()]
+        );
+        assert!(
+            store
+                .instances()
+                .referencing_installation(&historical_installation())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .instances()
+                .rollback_installation(
+                    instance.id(),
+                    &installation(),
+                    &historical_installation(),
+                    "test rebind",
+                    11,
+                )
+                .unwrap()
+        );
+        assert!(
+            store
+                .instances()
+                .referencing_installation(&installation())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .instances()
+                .referencing_installation(&historical_installation())
+                .unwrap(),
+            vec![instance.id()]
+        );
+        assert!(store.instances().delete(instance.id()).unwrap());
+        assert!(
+            store
+                .instances()
+                .referencing_installation(&historical_installation())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn migration_v4_failure_rolls_back_allocator_and_version() {
         let mut store = v3_store();
         store
@@ -1878,6 +2153,33 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'table' AND name = 'installation_rollbacks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0);
+    }
+
+    #[test]
+    fn migration_v9_failure_rolls_back_rebinding_table_and_version() {
+        let mut store = v6_store();
+        store.migration_v7().unwrap();
+        store.migration_v8().unwrap();
+        store
+            .conn
+            .execute_batch("CREATE INDEX installation_rebindings ON layout(instance_id);")
+            .unwrap();
+        assert!(matches!(store.migrate(), Err(StoreError::Migration(_))));
+        let version: u32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 8);
+        let exists: u32 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'installation_rebindings'",
                 [],
                 |row| row.get(0),
             )

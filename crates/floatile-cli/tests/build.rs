@@ -38,6 +38,27 @@ fn builds_clock_wasm_project_end_to_end() {
 }
 
 #[test]
+fn build_project_accepts_relative_project_directory() {
+    let workspace = workspace_root();
+    let current = std::env::current_dir().unwrap().canonicalize().unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let relative = if current == workspace {
+        PathBuf::from("plugins/clock-wasm")
+    } else if current == workspace.join("crates/floatile-cli") {
+        PathBuf::from("../../plugins/clock-wasm")
+    } else {
+        panic!("非预期测试工作目录: {}", current.display());
+    };
+    let out = std::env::temp_dir().join(format!(
+        "floatile-build-relative-{}.floatile",
+        std::process::id()
+    ));
+    let manifest = build_project(&relative, &out).expect("相对项目目录应从当前目录解析");
+    assert_eq!(manifest.id.0, "dev.floatile.clock");
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
 fn build_fails_cleanly_on_missing_project() {
     let result = build_project(
         &std::env::temp_dir().join("does-not-exist-floatile"),

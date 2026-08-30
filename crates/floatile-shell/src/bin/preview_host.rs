@@ -67,7 +67,7 @@ fn run() -> Result<floatile_shell::preview::PreviewOutcome, (&'static str, &'sta
     )
     .map_err(|_| ("FPREVIEW_INSTANCE", "无法创建预览实例"))?;
     floatile_shell::preview::run_preview(plugin, instance, Duration::from_millis(duration_ms), None)
-        .map_err(|error| (error.code(), error.public_detail()))
+        .map_err(report_runtime_error)
 }
 
 fn run_persistent_instance(
@@ -117,5 +117,13 @@ fn run_persistent_instance(
         Duration::from_millis(duration_ms),
         None,
     )
-    .map_err(|error| (error.code(), error.public_detail()))
+    .map_err(report_runtime_error)
+}
+
+fn report_runtime_error(
+    error: floatile_shell::preview::PreviewError,
+) -> (&'static str, &'static str) {
+    let bounded: String = error.to_string().chars().take(2_048).collect();
+    eprintln!("floatile preview diagnostic [{}]: {bounded}", error.code());
+    (error.code(), error.public_detail())
 }

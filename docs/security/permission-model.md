@@ -67,6 +67,19 @@ pub struct Grants {
 
 - **实例级收窄**：安装时授予的是「上限」，运行时可被权限管理器收窄，不得放宽。
 - **密钥/凭证永远不进入插件**：插件只能持有 credential reference（`cred://<id>`），由宿主注入（见 HTTP Broker）。
+- **Windows 持久凭证**：宿主优先写当前登录会话的 Credential Manager。登录凭证会话不可用时，
+  使用 Windows DPAPI machine scope 加密并把密文放在当前用户 `%APPDATA%\\floatile\\credentials`；
+  目录 ACL 与不可预测的 SHA-256 文件名构成额外边界。该降级不等价于用户 scope，Beta 前必须复核
+  本机其他账户/管理员威胁，但任何路径都禁止把明文写入 SQLite、State、日志或控制面快照。
+- **可撤销性**：Connection grant 只能由 stopped 实例显式增加或撤销。最后一个 grant 消失时，宿主
+  删除 Connection 和对应 vault entry；共享 Connection 不因单个实例撤权而删除。
+- **可恢复轮换**：凭证更新只允许 stopped 实例发起。宿主先创建新的不可预测 CredentialRef 并写入
+  vault，再原子增加 Connection credential generation、切换引用并把健康状态重置为 `unknown`，最后
+  删除旧 vault entry；数据库切换前的失败必须清理新 entry 并保留旧引用。共享 grant 一并采用新
+  generation，guest 始终只看到实例局部 handle。
+- **实例级句柄**：guest 的 `connection-id` 是从 1 开始的实例局部 handle，不是 SQLite 中的全局
+  `ConnectionId`。宿主只为该实例明确 grant 的 Connection 建表；健康状态回写仍使用宿主持有的真实
+  ID。当前 Windows Alpha 管理入口限制为每实例一个连接，多连接 slot/alias 必须在后续契约中显式化。
 
 ### 2.1 升级权限差异
 
@@ -103,7 +116,7 @@ check(plugin_id, instance_id, capability, args)
 | 固有 | ui state, log, clock | 不提示；固定当前实例 scope 与硬预算，不可放宽 |
 | L0 低风险 | storage, timer, theme, metrics | 安装时由 manifest 声明即授予（可收窄） |
 | L1 中风险 | notification, clipboard:write | 安装时提示，运行时首启二次确认 |
-| L2 高风险 | network, clipboard:read, file:read, launcher | 每次实例激活时重新确认 + 会话内超时失效 |
+| L2 高风险 | network, clipboard:read, file:read, launcher | 每次实例激活时重新确认；一次性授权绑定精确实例指纹且不跨宿主进程保留 |
 | L3 特高风险 | network:localhost, 任意命令, 原生二进制 | 默认禁止；如未来支持需签名 + OS 级隔离 + 独立授权流程 |
 
 P0/MVP 只实现固有能力与 L0。

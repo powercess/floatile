@@ -22,6 +22,7 @@ pub use broker::Broker;
 pub use clock::{Clock, ClockSnapshot};
 pub use credential::{
     CredentialError, CredentialVault, MAX_CREDENTIAL_BYTES, MemoryCredentialVault,
+    PlatformCredentialVault,
 };
 pub use errors::{LogError, MetricsError, StorageError, ThemeError, TimerError};
 pub use http::{

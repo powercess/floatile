@@ -45,7 +45,7 @@ fn build_clock_wasm() -> Vec<u8> {
 }
 
 fn clock_ftui_document() -> UiDocument {
-    let json = floatile_clock_wasm::__floatile_ftui_json();
+    let json = floatile_clock_model::ftui_json();
     serde_json::from_str(&json).expect("clock ftui JSON 应可解析")
 }
 

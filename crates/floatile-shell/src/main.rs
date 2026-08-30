@@ -9,12 +9,9 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::cell::Cell;
-#[cfg(windows)]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-#[cfg(windows)]
 use std::rc::Rc;
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -26,8 +23,8 @@ use floatile_core::capability::{
 };
 use floatile_core::layout::recover_layout;
 use floatile_core::{
-    InstanceId, LogicalPosition, LogicalRect, LogicalSize, MonitorLayout, PhysicalSize, PluginId,
-    ScaleFactor, SizeConstraints, WidgetMode,
+    InstanceDesiredState, InstanceId, LogicalPosition, LogicalRect, LogicalSize, MonitorLayout,
+    PhysicalSize, PluginId, ScaleFactor, SizeConstraints, WidgetMode,
 };
 use floatile_platform::capability::probe;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -36,30 +33,76 @@ use floatile_platform::listen_hotkey;
 use floatile_platform::{Hotkey, HotkeyModifiers};
 use floatile_platform::{
     PlatformError, PlatformKind, SingleInstanceState, WindowOptions, acquire_single_instance,
-    apply_window_options, data_dir, enumerate_monitors, process_metrics, resize_window,
-    set_always_on_top, set_click_through, set_pointer_capture, set_window_position,
+    apply_window_options, data_dir, enumerate_monitors, process_metrics, raise_always_on_top,
+    resize_window, set_always_on_top, set_click_through, set_pointer_capture, set_window_position,
     start_window_drag, to_monitor_layout,
 };
 #[cfg(windows)]
 use floatile_platform::{
     WindowsTrayEvent, WindowsTrayIcon, configure_widget_window_role, install_hotkey_message_hook,
-    register_hotkey, unregister_hotkey,
+    register_hotkey, register_thread_hotkey, unregister_hotkey, unregister_thread_hotkey,
 };
 use floatile_runtime::{WidgetConfig, WidgetManager};
+use floatile_services::{CredentialVault, PlatformCredentialVault};
 use floatile_shell::{
     BUILTIN_CLOCK_PLUGIN, CLOCK_INSTANCE_ID, PluginBinding, layout_from_window,
     resolve_binding_string,
 };
 use floatile_ui_schema::schema::JsonSchema;
-use slint::Timer;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
+use slint::{ComponentHandle, Timer};
+
+type RuntimeModeSlot = Rc<RefCell<Option<floatile_shell::instance_supervisor::RuntimeModeHandler>>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupSurface {
+    WelcomeWidget,
+    PluginWidgets,
+    ControlCenter,
+    Background,
+}
+
+fn choose_startup_surface(instance_count: usize, running_count: usize) -> StartupSurface {
+    if instance_count == 0 {
+        StartupSurface::WelcomeWidget
+    } else if running_count == 0 {
+        StartupSurface::ControlCenter
+    } else {
+        StartupSurface::PluginWidgets
+    }
+}
+
+fn choose_startup_surface_with_authorization(
+    instance_count: usize,
+    running_count: usize,
+    has_sensitive_running: bool,
+) -> StartupSurface {
+    if has_sensitive_running {
+        StartupSurface::ControlCenter
+    } else {
+        choose_startup_surface(instance_count, running_count)
+    }
+}
+
+fn choose_background_startup(
+    surface: StartupSurface,
+    running_count: usize,
+    background_requested: bool,
+) -> StartupSurface {
+    if background_requested && running_count == 0 {
+        StartupSurface::Background
+    } else {
+        surface
+    }
+}
 
 slint::slint! {
     // renderer 构建期生成插件内容组件;由 build.rs 写入 gitignore 的源路径。
     import { ClockPluginUI } from "generated/clock_plugin.slnt";
 
     export component Clock inherits Window {
-        title: "Floatile Widget";
+        in property <string> window-title: "Floatile Widget";
+        title: root.window-title;
         preferred-width: 260px;
         preferred-height: 120px;
         min-width: 120px;
@@ -820,6 +863,7 @@ fn schedule_layout_restore(
     app: slint::Weak<Clock>,
     state: Arc<Mutex<PersistedState>>,
     controller: Arc<Mutex<floatile_shell::ShellController>>,
+    runtime_modes: RuntimeModeSlot,
     delay: Duration,
 ) {
     Timer::single_shot(delay, move || {
@@ -855,14 +899,18 @@ fn schedule_layout_restore(
                     ctrl.mode = mode;
                     let effect = ctrl.current_effect();
                     drop(ctrl);
-                    apply_mode_effect(&app, effect);
+                    apply_mode_effect(&app, effect, &runtime_modes);
                 }
             }
             Some(Ok(None)) => {}
             Some(Err(error)) => tracing::warn!(%error, "layout restore failed"),
-            None => {
-                schedule_layout_restore(app.as_weak(), state, controller, Duration::from_millis(50))
-            }
+            None => schedule_layout_restore(
+                app.as_weak(),
+                state,
+                controller,
+                runtime_modes,
+                Duration::from_millis(50),
+            ),
         }
     });
 }
@@ -884,19 +932,20 @@ const WIDGET_WINDOW_TITLE: &str = "Floatile Widget";
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let process_started = Instant::now();
     let perf_enabled = std::env::args_os().any(|arg| arg == "--perf");
+    let background_requested = std::env::args_os().any(|arg| arg == "--background");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::level_filters::LevelFilter::INFO.into()),
         )
         .init();
-    let _single_instance_guard = match acquire_single_instance(SINGLE_INSTANCE_NAME)? {
+    let single_instance_guard = match acquire_single_instance(SINGLE_INSTANCE_NAME)? {
         SingleInstanceState::Acquired(guard) => {
             tracing::info!(
                 name = SINGLE_INSTANCE_NAME,
                 "single-instance ownership acquired"
             );
-            Some(guard)
+            Some(Rc::new(guard))
         }
         SingleInstanceState::AlreadyRunning => {
             tracing::info!(
@@ -968,6 +1017,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 只有底层能力与恢复热键都成功后，模式控制器才允许启用点击穿透。
     let controller = Arc::new(Mutex::new(floatile_shell::ShellController::new(false)));
+    let runtime_modes: RuntimeModeSlot = Rc::new(RefCell::new(None));
 
     // 布局持久化：数据目录 + SQLite（数据库不可用时降级为无持久化运行）。
     let database_path = data_dir().and_then(|dir| {
@@ -987,6 +1037,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+    let runtime_plugin_store = floatile_shell::plugin_manager::plugin_store();
+    let startup_surface = store.as_ref().map_or_else(|| {
+        choose_background_startup(StartupSurface::WelcomeWidget, 0, background_requested)
+    }, |store| {
+        match store.instances().list() {
+            Ok(instances) => {
+                let running_count = instances
+                    .iter()
+                    .filter(|instance| {
+                        instance.desired_state() == InstanceDesiredState::Running
+                    })
+                    .count();
+                let has_sensitive_running = runtime_plugin_store.as_ref().is_some_and(|plugin_store| {
+                    instances.iter().any(|instance| {
+                        instance.desired_state() == InstanceDesiredState::Running
+                            && floatile_shell::instance_supervisor::instance_requires_sensitive_authorization(
+                                plugin_store,
+                                instance,
+                            )
+                    })
+                });
+                choose_background_startup(choose_startup_surface_with_authorization(
+                    instances.len(),
+                    running_count,
+                    has_sensitive_running,
+                ), running_count, background_requested)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "instance startup projection unavailable; showing welcome widget");
+                choose_background_startup(StartupSurface::WelcomeWidget, 0, background_requested)
+            }
+        }
+    });
     let persisted = Arc::new(Mutex::new(PersistedState {
         store,
         monitors: Vec::new(),
@@ -1007,6 +1090,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let controller_for_hotkey = Arc::clone(&controller);
         let app_for_hotkey = Rc::clone(&hotkey_app);
         let persisted_for_hotkey = Arc::clone(&persisted);
+        let runtime_modes_for_hotkey = Rc::clone(&runtime_modes);
         if click_through_capable {
             install_hotkey_message_hook(&mut event_loop_builder, move |hotkey_id| {
                 if hotkey_id != HOTKEY_ID {
@@ -1018,7 +1102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .restore_edit_mode();
                 if let Some(app) = app_for_hotkey.borrow().as_ref() {
-                    apply_mode_effect(app, effect);
+                    apply_primary_mode_effect(app, effect);
                     let _ = app
                         .window()
                         .with_winit_window(|window: &winit::window::Window| {
@@ -1028,6 +1112,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             save_layout(window, &state, WidgetMode::Edit);
                         });
                 }
+                let (mode, click_through) = mode_effect_values(effect);
+                if let Some(handler) = runtime_modes_for_hotkey.borrow().as_ref() {
+                    handler(mode, click_through);
+                }
                 true
             });
         }
@@ -1035,7 +1123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     slint::BackendSelector::new()
         .with_winit_window_attributes_hook(move |attrs| {
-            if attrs.title == WIDGET_WINDOW_TITLE {
+            if attrs.title == WIDGET_WINDOW_TITLE || attrs.title.is_empty() {
                 apply_window_options(&window_options, attrs)
             } else {
                 attrs
@@ -1045,7 +1133,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .select()?;
 
     let app = Clock::new()?;
-    let plugin_projection = load_clock_projection();
+    // Set the non-widget identity before Slint lazily creates the native window. Doing this
+    // after supervisor/window setup is too late on Windows: automation and shell integrations
+    // can still group the hidden event-loop anchor with real plugin widget windows.
+    if startup_surface != StartupSurface::WelcomeWidget {
+        app.set_window_title("Floatile Shell Anchor".into());
+    }
+    let plugin_projection = (startup_surface == StartupSurface::WelcomeWidget)
+        .then(load_clock_projection)
+        .flatten();
     app.set_time_text(now_hhmmss().into());
     if let Some(clock) = &plugin_projection
         && let Ok(text) = resolve_binding_string(&clock.binding, &clock.initial_state)
@@ -1087,15 +1183,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // PP-M1 动态监督器在后台对齐 SQLite desired state；UI 线程只接收已备好的
     // 启停动作。单实例安装缺失、篡改或 runtime 失败均隔离，不影响其他实例。
     let runtime_database = database_path.as_ref().ok().cloned();
-    let runtime_plugin_store = floatile_shell::plugin_manager::plugin_store();
-    let runtime_instance_supervisor = match (runtime_database.clone(), runtime_plugin_store.clone())
-    {
-        (Some(database), Some(plugin_store)) => {
-            match floatile_shell::instance_supervisor::DynamicInstanceSupervisor::start(
+    let credential_vault = runtime_database.as_ref().and_then(|database| {
+        database.parent().map(|root| {
+            Arc::new(PlatformCredentialVault::new(root.join("credentials")))
+                as Arc<dyn CredentialVault>
+        })
+    });
+    let runtime_instance_supervisor = match (
+        runtime_database.clone(),
+        runtime_plugin_store.clone(),
+        credential_vault.clone(),
+    ) {
+        (Some(database), Some(plugin_store), Some(vault)) => {
+            match floatile_shell::instance_supervisor::DynamicInstanceSupervisor::start_with_vault(
                 database,
                 plugin_store,
                 caps,
                 audit_listener.clone(),
+                vault,
             ) {
                 Ok(supervisor) => Some(supervisor),
                 Err(error) => {
@@ -1110,12 +1215,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_instance_supervisor.as_ref(),
         runtime_database,
         runtime_plugin_store,
+        credential_vault,
     ) {
-        (Some(supervisor), Some(database), Some(plugin_store)) => {
-            match floatile_shell::instance_control::InstanceControlSurface::start(
+        (Some(supervisor), Some(database), Some(plugin_store), Some(vault)) => {
+            match floatile_shell::instance_control::InstanceControlSurface::start_with_vault(
                 database,
                 plugin_store,
                 supervisor.handle(),
+                vault,
             ) {
                 Ok(surface) => Some(surface),
                 Err(error) => {
@@ -1126,18 +1233,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => None,
     };
-    if always_on_top_available {
+    if let (Some(supervisor), Some(surface)) = (
+        runtime_instance_supervisor.as_ref(),
+        instance_control_surface.as_ref(),
+    ) {
+        supervisor.set_settings_handler(surface.settings_handler());
+    }
+    if let Some(supervisor) = runtime_instance_supervisor.as_ref() {
+        *runtime_modes.borrow_mut() = Some(supervisor.mode_handler());
+        if startup_surface == StartupSurface::WelcomeWidget {
+            let weak = app.as_weak();
+            supervisor.set_show_handler(Rc::new(move || {
+                if let Some(app) = weak.upgrade() {
+                    app.invoke_show_mode();
+                }
+            }));
+        } else {
+            let controller = Arc::clone(&controller);
+            let runtime_modes = Rc::clone(&runtime_modes);
+            supervisor.set_show_handler(Rc::new(move || {
+                let effect = controller
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .toggle_mode();
+                let (mode, click_through) = mode_effect_values(effect);
+                if let Some(handler) = runtime_modes.borrow().as_ref() {
+                    handler(mode, click_through);
+                }
+            }));
+        }
+    }
+    if startup_surface == StartupSurface::WelcomeWidget && always_on_top_available {
         schedule_always_on_top(app.as_weak(), Duration::ZERO);
     }
     // 窗口就绪后恢复持久化布局（位置/尺寸/模式），并刷新显示器快照。
-    schedule_layout_restore(
-        app.as_weak(),
-        Arc::clone(&persisted),
-        Arc::clone(&controller),
-        Duration::ZERO,
-    );
+    if startup_surface == StartupSurface::WelcomeWidget {
+        schedule_layout_restore(
+            app.as_weak(),
+            Arc::clone(&persisted),
+            Arc::clone(&controller),
+            Rc::clone(&runtime_modes),
+            Duration::ZERO,
+        );
+    } else {
+        tracing::info!(?startup_surface, "builtin welcome widget suppressed");
+        if startup_surface == StartupSurface::ControlCenter
+            && let Some(window) = instance_control_surface
+                .as_ref()
+                .map(floatile_shell::instance_control::InstanceControlSurface::weak)
+                .and_then(|window| window.upgrade())
+            && let Err(error) = window.show()
+        {
+            tracing::warn!(%error, "stopped-instance control surface show failed");
+        }
+    }
     #[cfg(windows)]
-    {
+    if startup_surface == StartupSurface::WelcomeWidget {
         *hotkey_app.borrow_mut() = Some(app.clone_strong());
     }
 
@@ -1165,7 +1316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .restore_edit_mode();
-                    apply_mode_effect(&app, effect);
+                    apply_primary_mode_effect(&app, effect);
                     let _ = app
                         .window()
                         .with_winit_window(|window: &winit::window::Window| {
@@ -1198,209 +1349,219 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
-    let weak = app.as_weak();
-    let controller_for_window_events = Arc::clone(&controller);
-    let persisted_for_window_events = Arc::clone(&persisted);
-    let mut cursor_position = None;
-    let mut window_resize = None::<(winit::dpi::PhysicalPosition<f64>, LogicalSize)>;
-    let size_constraints = SizeConstraints::default();
-    app.window()
-        .on_winit_window_event(move |slint_window, event| {
-            use slint::winit_030::winit::window::Window;
+    if startup_surface == StartupSurface::WelcomeWidget {
+        let weak = app.as_weak();
+        let controller_for_window_events = Arc::clone(&controller);
+        let persisted_for_window_events = Arc::clone(&persisted);
+        let runtime_modes_for_window_events = Rc::clone(&runtime_modes);
+        let mut cursor_position = None;
+        let mut window_resize = None::<(winit::dpi::PhysicalPosition<f64>, LogicalSize)>;
+        let size_constraints = SizeConstraints::default();
+        app.window()
+            .on_winit_window_event(move |slint_window, event| {
+                use slint::winit_030::winit::window::Window;
 
-            if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-                cursor_position = Some(*position);
-                if let Some((started_at, started_size)) = window_resize {
-                    let scale_factor = f64::from(slint_window.scale_factor());
-                    let requested = LogicalSize {
-                        width: started_size.width
-                            + ((position.x - started_at.x) / scale_factor) as f32,
-                        height: started_size.height
-                            + ((position.y - started_at.y) / scale_factor) as f32,
-                    };
-                    let clamped = size_constraints.clamp(requested);
-                    let _ = slint_window
-                        .with_winit_window(|window: &Window| resize_window(window, clamped));
+                if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+                    cursor_position = Some(*position);
+                    if let Some((started_at, started_size)) = window_resize {
+                        let scale_factor = f64::from(slint_window.scale_factor());
+                        let requested = LogicalSize {
+                            width: started_size.width
+                                + ((position.x - started_at.x) / scale_factor) as f32,
+                            height: started_size.height
+                                + ((position.y - started_at.y) / scale_factor) as f32,
+                        };
+                        let clamped = size_constraints.clamp(requested);
+                        let _ = slint_window
+                            .with_winit_window(|window: &Window| resize_window(window, clamped));
+                        return EventResult::PreventDefault;
+                    }
+                }
+
+                if matches!(
+                    event,
+                    winit::event::WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Released,
+                        button: winit::event::MouseButton::Left,
+                        ..
+                    }
+                ) && window_resize.take().is_some()
+                {
+                    let _ = slint_window.with_winit_window(|window: &Window| {
+                        if let Err(error) = set_pointer_capture(window, false) {
+                            tracing::debug!(%error, "pointer capture release skipped");
+                        }
+                        let state = persisted_for_window_events
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let mode = controller_for_window_events
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .mode;
+                        save_layout(window, &state, mode);
+                    });
                     return EventResult::PreventDefault;
                 }
-            }
 
-            if matches!(
-                event,
-                winit::event::WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Released,
-                    button: winit::event::MouseButton::Left,
-                    ..
+                // 窗口移动/关闭后持久化布局。恢复流程主动移动窗口产生的 Moved 事件
+                // 由 `suppress_next_moved_save` 跳过，避免 WM 初始放置覆盖用户布局。
+                if matches!(
+                    event,
+                    winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::CloseRequested
+                ) {
+                    let _ = slint_window.with_winit_window(|window: &Window| {
+                        let mut state = persisted_for_window_events
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if matches!(event, winit::event::WindowEvent::Moved(_))
+                            && state.suppress_next_moved_save
+                        {
+                            state.suppress_next_moved_save = false;
+                            return;
+                        }
+                        let mode = controller_for_window_events
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .mode;
+                        save_layout(window, &state, mode);
+                    });
                 }
-            ) && window_resize.take().is_some()
-            {
-                let _ = slint_window.with_winit_window(|window: &Window| {
-                    if let Err(error) = set_pointer_capture(window, false) {
-                        tracing::debug!(%error, "pointer capture release skipped");
+
+                if matches!(
+                    event,
+                    winit::event::WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Pressed,
+                        button: winit::event::MouseButton::Left,
+                        ..
                     }
-                    let state = persisted_for_window_events
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ) {
                     let mode = controller_for_window_events
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .mode;
-                    save_layout(window, &state, mode);
-                });
-                return EventResult::PreventDefault;
-            }
+                    if let Some(position) = cursor_position {
+                        let scale_factor = slint_window.scale_factor();
+                        let physical_size = slint_window.size();
+                        let logical_position = LogicalPosition {
+                            x: position.x as f32 / scale_factor,
+                            y: position.y as f32 / scale_factor,
+                        };
+                        let logical_size = LogicalSize {
+                            width: physical_size.width as f32 / scale_factor,
+                            height: physical_size.height as f32 / scale_factor,
+                        };
 
-            // 窗口移动/关闭后持久化布局。恢复流程主动移动窗口产生的 Moved 事件
-            // 由 `suppress_next_moved_save` 跳过，避免 WM 初始放置覆盖用户布局。
-            if matches!(
-                event,
-                winit::event::WindowEvent::Moved(_) | winit::event::WindowEvent::CloseRequested
-            ) {
-                let _ = slint_window.with_winit_window(|window: &Window| {
-                    let mut state = persisted_for_window_events
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if matches!(event, winit::event::WindowEvent::Moved(_))
-                        && state.suppress_next_moved_save
-                    {
-                        state.suppress_next_moved_save = false;
-                        return;
-                    }
-                    let mode = controller_for_window_events
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .mode;
-                    save_layout(window, &state, mode);
-                });
-            }
-
-            if matches!(
-                event,
-                winit::event::WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Pressed,
-                    button: winit::event::MouseButton::Left,
-                    ..
-                }
-            ) {
-                let mode = controller_for_window_events
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .mode;
-                if let Some(position) = cursor_position {
-                    let scale_factor = slint_window.scale_factor();
-                    let physical_size = slint_window.size();
-                    let logical_position = LogicalPosition {
-                        x: position.x as f32 / scale_factor,
-                        y: position.y as f32 / scale_factor,
-                    };
-                    let logical_size = LogicalSize {
-                        width: physical_size.width as f32 / scale_factor,
-                        height: physical_size.height as f32 / scale_factor,
-                    };
-
-                    if floatile_shell::is_window_resize_handle(logical_position, logical_size, mode)
-                    {
-                        let _ = slint_window.with_winit_window(|window: &Window| {
+                        if floatile_shell::is_window_resize_handle(
+                            logical_position,
+                            logical_size,
+                            mode,
+                        ) {
+                            let _ = slint_window.with_winit_window(|window: &Window| {
                             if let Err(error) = set_pointer_capture(window, true) {
                                 tracing::warn!(%error, "pointer capture unavailable for resize");
                             }
                         });
-                        window_resize = Some((position, logical_size));
-                        tracing::debug!("window resize handle pressed");
-                        return EventResult::PreventDefault;
-                    }
+                            window_resize = Some((position, logical_size));
+                            tracing::debug!("window resize handle pressed");
+                            return EventResult::PreventDefault;
+                        }
 
-                    if floatile_shell::is_window_drag_region(logical_position, logical_size, mode) {
-                        match slint_window.with_winit_window(start_window_drag) {
-                            Some(Ok(())) => {
-                                tracing::debug!(
-                                    x = logical_position.x,
-                                    y = logical_position.y,
-                                    "window drag started before Slint pointer grab"
-                                );
-                                return EventResult::PreventDefault;
+                        if floatile_shell::is_window_drag_region(
+                            logical_position,
+                            logical_size,
+                            mode,
+                        ) {
+                            match slint_window.with_winit_window(start_window_drag) {
+                                Some(Ok(())) => {
+                                    tracing::debug!(
+                                        x = logical_position.x,
+                                        y = logical_position.y,
+                                        "window drag started before Slint pointer grab"
+                                    );
+                                    return EventResult::PreventDefault;
+                                }
+                                Some(Err(error)) => tracing::warn!(%error, "drag_window failed"),
+                                None => tracing::warn!("winit window not ready"),
                             }
-                            Some(Err(error)) => tracing::warn!(%error, "drag_window failed"),
-                            None => tracing::warn!("winit window not ready"),
                         }
                     }
                 }
-            }
 
-            // Show 模式退出：穿透开启时靠全局热键；降级态（热键候选全部注册失败、
-            // 未开启穿透）时窗口仍可获得键盘焦点，按 Esc 退出展示模式。
-            // 鼠标点击只做正常的窗口激活，绝不作为模式切换入口。
-            if let winit::event::WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } = event
-                && key_event.state == winit::event::ElementState::Pressed
-                && key_event.logical_key
-                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
-            {
-                let mut controller = controller_for_window_events
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if controller.mode == WidgetMode::Show {
-                    let effect = controller.restore_edit_mode();
-                    drop(controller);
-                    if let Some(app) = weak.upgrade() {
-                        apply_mode_effect(&app, effect);
-                    }
-                    tracing::info!("show mode exited by Escape");
-                    return EventResult::PreventDefault;
-                }
-            }
-
-            if matches!(
-                event,
-                winit::event::WindowEvent::Focused(true)
-                    | winit::event::WindowEvent::Occluded(false)
-            ) {
-                // 显示器拓扑可能变化（插拔/分辨率变更）：刷新快照并重新应用恢复结果。
-                let _ = slint_window.with_winit_window(|window: &Window| {
-                    let mut state = persisted_for_window_events
+                // Show 模式退出：穿透开启时靠全局热键；降级态（热键候选全部注册失败、
+                // 未开启穿透）时窗口仍可获得键盘焦点，按 Esc 退出展示模式。
+                // 鼠标点击只做正常的窗口激活，绝不作为模式切换入口。
+                if let winit::event::WindowEvent::KeyboardInput {
+                    event: key_event, ..
+                } = event
+                    && key_event.state == winit::event::ElementState::Pressed
+                    && key_event.logical_key
+                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                {
+                    let mut controller = controller_for_window_events
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    state.scale_factor = window.scale_factor();
-                    state.refresh_monitors();
-                    if let Some((rect, mode, lost)) = restored_placement(window, &state) {
-                        let moved = match apply_restored_position(window, rect.position) {
-                            Ok(moved) => moved,
-                            Err(error) => {
-                                tracing::warn!(%error, "layout position re-apply failed");
-                                return;
-                            }
-                        };
-                        let size_result = resize_window(window, rect.size);
-                        if moved {
-                            state.suppress_next_moved_save = true;
+                    if controller.mode == WidgetMode::Show {
+                        let effect = controller.restore_edit_mode();
+                        drop(controller);
+                        if let Some(app) = weak.upgrade() {
+                            apply_mode_effect(&app, effect, &runtime_modes_for_window_events);
                         }
-                        if size_result.is_ok() {
-                            tracing::info!(
-                                mode = ?mode,
-                                lost_monitor = lost,
-                                "layout re-applied after focus/topology change"
-                            );
-                        } else {
-                            tracing::warn!(
-                                size_error = ?size_result.err(),
-                                "layout size re-apply failed after focus/topology change"
-                            );
-                        }
+                        tracing::info!("show mode exited by Escape");
+                        return EventResult::PreventDefault;
                     }
-                });
-                let effect = controller_for_window_events
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .current_effect();
-                if let Some(app) = weak.upgrade() {
-                    apply_mode_effect(&app, effect);
                 }
-            }
-            EventResult::Propagate
-        });
 
-    if perf_enabled {
+                if matches!(
+                    event,
+                    winit::event::WindowEvent::Focused(true)
+                        | winit::event::WindowEvent::Occluded(false)
+                ) {
+                    // 显示器拓扑可能变化（插拔/分辨率变更）：刷新快照并重新应用恢复结果。
+                    let _ = slint_window.with_winit_window(|window: &Window| {
+                        let mut state = persisted_for_window_events
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state.scale_factor = window.scale_factor();
+                        state.refresh_monitors();
+                        if let Some((rect, mode, lost)) = restored_placement(window, &state) {
+                            let moved = match apply_restored_position(window, rect.position) {
+                                Ok(moved) => moved,
+                                Err(error) => {
+                                    tracing::warn!(%error, "layout position re-apply failed");
+                                    return;
+                                }
+                            };
+                            let size_result = resize_window(window, rect.size);
+                            if moved {
+                                state.suppress_next_moved_save = true;
+                            }
+                            if size_result.is_ok() {
+                                tracing::info!(
+                                    mode = ?mode,
+                                    lost_monitor = lost,
+                                    "layout re-applied after focus/topology change"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    size_error = ?size_result.err(),
+                                    "layout size re-apply failed after focus/topology change"
+                                );
+                            }
+                        }
+                    });
+                    let effect = controller_for_window_events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .current_effect();
+                    if let Some(app) = weak.upgrade() {
+                        apply_mode_effect(&app, effect, &runtime_modes_for_window_events);
+                    }
+                }
+                EventResult::Propagate
+            });
+    }
+
+    if perf_enabled && startup_surface == StartupSurface::WelcomeWidget {
         let first_frame_logged = Cell::new(false);
         let frame_count = Cell::new(0_u64);
         let sample_started = Cell::new(process_started);
@@ -1438,6 +1599,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak = app.as_weak();
     let ctrl = Arc::clone(&controller);
     let persisted_for_mode = Arc::clone(&persisted);
+    let runtime_modes_for_button = Rc::clone(&runtime_modes);
     app.on_show_mode(move || {
         let Some(app) = weak.upgrade() else { return };
         let effect = ctrl
@@ -1449,7 +1611,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             floatile_shell::ModeEffect::Show { .. } => WidgetMode::Show,
         };
         tracing::info!(mode = ?mode, "show-mode button");
-        apply_mode_effect(&app, effect);
+        apply_mode_effect(&app, effect, &runtime_modes_for_button);
         let _ = app
             .window()
             .with_winit_window(|window: &winit::window::Window| {
@@ -1466,6 +1628,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|surface| surface.weak());
     #[cfg(windows)]
     let tray_control_window = control_window.clone();
+    #[cfg(windows)]
+    let activation_control_window = control_window.clone();
     app.on_settings_clicked(move || {
         let Some(window) = control_window.as_ref().and_then(slint::Weak::upgrade) else {
             tracing::warn!("instance control surface unavailable");
@@ -1473,8 +1637,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         if let Err(error) = window.show() {
             tracing::warn!(%error, "instance control surface show failed");
+            return;
+        }
+        if let Some(Err(error)) = window.window().with_winit_window(raise_always_on_top) {
+            tracing::debug!(%error, "instance control surface raise skipped");
         }
     });
+
+    #[cfg(windows)]
+    let activation_event_timer = {
+        let timer = Timer::default();
+        let guard = single_instance_guard.as_ref().map(Rc::clone);
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(50),
+            move || {
+                let Some(guard) = guard.as_ref() else { return };
+                match guard.take_activation_request() {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        tracing::info!("secondary launch requested management activation");
+                        let Some(window) = activation_control_window
+                            .as_ref()
+                            .and_then(slint::Weak::upgrade)
+                        else {
+                            tracing::warn!("instance control surface unavailable for activation");
+                            return;
+                        };
+                        if let Err(error) = window.show() {
+                            tracing::warn!(%error, "secondary-launch activation show failed");
+                            return;
+                        }
+                        if let Some(Err(error)) =
+                            window.window().with_winit_window(raise_always_on_top)
+                        {
+                            tracing::warn!(%error, "secondary-launch activation raise failed");
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "activation event poll failed"),
+                }
+            },
+        );
+        timer
+    };
 
     // 删除：移除持久化记录并关闭窗口（单窗口宿主语义）。
     let weak = app.as_weak();
@@ -1497,7 +1702,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // 回退路径：只有 runtime clock 未启动时才使用内建时钟文本。
-    let fallback_builtin_timer = runtime_clock.is_none();
+    let fallback_builtin_timer =
+        startup_surface == StartupSurface::WelcomeWidget && runtime_clock.is_none();
     let weak = app.as_weak();
     let timer = Timer::default();
     if fallback_builtin_timer {
@@ -1555,10 +1761,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         ];
         let weak = app.as_weak();
+        let welcome_widget = startup_surface == StartupSurface::WelcomeWidget;
         let controller_for_registration = Arc::clone(&controller);
         let register_timer = Rc::new(Timer::default());
         let timer_for_callback = Rc::clone(&register_timer);
-        let widget_role_done = Rc::new(RefCell::new(false));
+        let widget_role_done = Rc::new(RefCell::new(!welcome_widget));
         let hotkey_done = Rc::new(RefCell::new(false));
         let tray_done = Rc::new(RefCell::new(false));
         let tray_icon_for_registration = Rc::clone(&tray_icon);
@@ -1611,12 +1818,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         *hotkey_done.borrow_mut() = true;
                     } else {
-                        let hotkey_result = app
-                            .window()
-                            .with_winit_window(|w: &Window| {
-                                register_hotkey(w, hotkey_candidates[index])
-                            })
-                            .unwrap_or(Err(PlatformError::WindowNotReady));
+                        let hotkey_result = if welcome_widget {
+                            app.window()
+                                .with_winit_window(|w: &Window| {
+                                    register_hotkey(w, hotkey_candidates[index])
+                                })
+                                .unwrap_or(Err(PlatformError::WindowNotReady))
+                        } else {
+                            register_thread_hotkey(hotkey_candidates[index])
+                        };
                         match hotkey_result {
                             Ok(()) => {
                                 controller_for_registration
@@ -1671,6 +1881,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let timer = Timer::default();
         let tray_icon = Rc::clone(&tray_icon);
         let exit_app = app.as_weak();
+        let save_welcome_layout = startup_surface == StartupSurface::WelcomeWidget;
         let exit_persisted = Arc::clone(&persisted);
         let exit_controller = Arc::clone(&controller);
         timer.start(
@@ -1691,11 +1902,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         if let Err(error) = window.show() {
                             tracing::warn!(%error, "instance control surface show failed");
+                            return;
+                        }
+                        if let Some(Err(error)) =
+                            window.window().with_winit_window(raise_always_on_top)
+                        {
+                            tracing::debug!(%error, "tray-open management raise skipped");
                         }
                     }
                     Some(WindowsTrayEvent::Exit) => {
                         tracing::info!("explicit exit requested from system tray");
-                        if let Some(app) = exit_app.upgrade() {
+                        if save_welcome_layout && let Some(app) = exit_app.upgrade() {
                             let _ =
                                 app.window()
                                     .with_winit_window(|window: &winit::window::Window| {
@@ -1721,7 +1938,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     tracing::info!("floatile-shell running");
-    let run_result = app.run();
+    let run_result = if startup_surface == StartupSurface::WelcomeWidget {
+        app.run()
+    } else {
+        // ComponentHandle::run() always shows its component before entering the event loop.
+        // In plugin/control-center startup modes the Clock component is only a lifetime owner,
+        // so enter Slint's daemon-style loop without resurfacing the hidden welcome widget.
+        slint::run_event_loop_until_quit()
+    };
     tracing::info!("host shutdown started");
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1733,12 +1957,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         register_timer.stop();
         tray_event_timer.stop();
-        use slint::winit_030::winit::window::Window;
-        if let Some(Err(error)) = app
-            .window()
-            .with_winit_window(|w: &Window| unregister_hotkey(w, HOTKEY_ID))
-        {
-            tracing::debug!(%error, "global hotkey release skipped");
+        activation_event_timer.stop();
+        if startup_surface == StartupSurface::WelcomeWidget {
+            use slint::winit_030::winit::window::Window;
+            if let Some(Err(error)) = app
+                .window()
+                .with_winit_window(|w: &Window| unregister_hotkey(w, HOTKEY_ID))
+            {
+                tracing::debug!(%error, "global hotkey release skipped");
+            }
+        } else if let Err(error) = unregister_thread_hotkey(HOTKEY_ID) {
+            tracing::debug!(%error, "thread global hotkey release skipped");
         }
         let _ = tray_icon.borrow_mut().take();
         hotkey_app.borrow_mut().take();
@@ -1782,13 +2011,29 @@ fn hotkey_label(index: usize) -> &'static str {
     }
 }
 
-fn apply_mode_effect(app: &Clock, effect: floatile_shell::ModeEffect) {
-    use slint::winit_030::winit::window::Window;
+fn apply_mode_effect(
+    app: &Clock,
+    effect: floatile_shell::ModeEffect,
+    runtime_modes: &RuntimeModeSlot,
+) {
+    let (mode, click_through) = mode_effect_values(effect);
+    apply_primary_mode_effect(app, effect);
+    if let Some(handler) = runtime_modes.borrow().as_ref() {
+        handler(mode, click_through);
+    }
+}
 
-    let (mode, click_through) = match effect {
+fn mode_effect_values(effect: floatile_shell::ModeEffect) -> (WidgetMode, bool) {
+    match effect {
         floatile_shell::ModeEffect::Edit => (WidgetMode::Edit, false),
         floatile_shell::ModeEffect::Show { click_through } => (WidgetMode::Show, click_through),
-    };
+    }
+}
+
+fn apply_primary_mode_effect(app: &Clock, effect: floatile_shell::ModeEffect) {
+    use slint::winit_030::winit::window::Window;
+
+    let (mode, click_through) = mode_effect_values(effect);
     let edit_mode = mode == WidgetMode::Edit;
     let result = app
         .window()
@@ -1806,6 +2051,30 @@ fn apply_mode_effect(app: &Clock, effect: floatile_shell::ModeEffect) {
 #[cfg(test)]
 mod shutdown_tests {
     use super::*;
+
+    #[test]
+    fn startup_surface_reserves_builtin_clock_for_first_use() {
+        assert_eq!(choose_startup_surface(0, 0), StartupSurface::WelcomeWidget);
+        assert_eq!(choose_startup_surface(2, 1), StartupSurface::PluginWidgets);
+        assert_eq!(choose_startup_surface(2, 2), StartupSurface::PluginWidgets);
+        assert_eq!(choose_startup_surface(2, 0), StartupSurface::ControlCenter);
+        assert_eq!(
+            choose_startup_surface_with_authorization(2, 2, true),
+            StartupSurface::ControlCenter
+        );
+        assert_eq!(
+            choose_background_startup(StartupSurface::WelcomeWidget, 0, true),
+            StartupSurface::Background
+        );
+        assert_eq!(
+            choose_background_startup(StartupSurface::ControlCenter, 0, true),
+            StartupSurface::Background
+        );
+        assert_eq!(
+            choose_background_startup(StartupSurface::ControlCenter, 1, true),
+            StartupSurface::ControlCenter
+        );
+    }
 
     #[test]
     fn bounded_worker_stop_returns_when_worker_ignores_signal() {

@@ -187,6 +187,44 @@ pub fn list_highest(root: &Path) -> Result<Vec<InstalledInstallation>, Installat
     Ok(installations)
 }
 
+/// 枚举插件存储中的全部合法安装版本，并逐一复核完整性。
+///
+/// 结果先按插件 id、再按语义版本降序排列。管理面使用此函数展示并存版本；运行时仍必须
+/// 通过精确 [`InstallationRef`] 加载，不允许把该枚举当作静默升级策略。
+pub fn list_all(root: &Path) -> Result<Vec<InstalledInstallation>, InstallationCatalogError> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(root)
+        .map_err(|error| InstallationCatalogError::Read(error.to_string()))?;
+    let mut installations = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| InstallationCatalogError::Read(error.to_string()))?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !entry.path().is_dir() || !is_valid_plugin_id_dir(&id) {
+            continue;
+        }
+        let versions = std::fs::read_dir(entry.path())
+            .map_err(|error| InstallationCatalogError::Read(error.to_string()))?;
+        for version_entry in versions {
+            let version_entry =
+                version_entry.map_err(|error| InstallationCatalogError::Read(error.to_string()))?;
+            let version_text = version_entry.file_name().to_string_lossy().into_owned();
+            let Ok(version) = Version::parse(&version_text) else {
+                continue;
+            };
+            if version_entry.path().is_dir() {
+                installations.push((id.clone(), version, load_from_dir(&version_entry.path())?));
+            }
+        }
+    }
+    installations.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)));
+    Ok(installations
+        .into_iter()
+        .map(|(_, _, installation)| installation)
+        .collect())
+}
+
 fn is_valid_plugin_id_dir(name: &str) -> bool {
     !name.is_empty()
         && name.chars().all(|character| {
@@ -352,6 +390,33 @@ mod tests {
             ]
         );
         assert!(list_highest(&root.join("missing")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn catalog_lists_all_versions_in_stable_semver_order() {
+        let root = temp_root("list-all");
+        write_install(&root, "dev.floatile.zulu", "1.0.0");
+        write_install(&root, "dev.floatile.alpha", "1.0.0");
+        write_install(&root, "dev.floatile.alpha", "2.0.0");
+
+        let installations = list_all(&root).unwrap();
+        let identities: Vec<_> = installations
+            .iter()
+            .map(|installation| {
+                (
+                    installation.meta.id.as_str(),
+                    installation.meta.version.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                ("dev.floatile.alpha", "2.0.0"),
+                ("dev.floatile.alpha", "1.0.0"),
+                ("dev.floatile.zulu", "1.0.0"),
+            ]
+        );
     }
 
     #[test]

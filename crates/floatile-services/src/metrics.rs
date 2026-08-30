@@ -73,12 +73,12 @@ impl MetricsService {
         Ok(compute_cpu_percent(cpu, wall))
     }
 
-    /// 本进程内存快照。虚拟内存采样未实现，`virtual_kib` 暂为 0。
+    /// 本进程内存快照。
     pub fn memory(&self) -> Result<MemorySnapshot, MetricsError> {
         let sample = process_metrics().map_err(|_| MetricsError::Unavailable)?;
         Ok(MemorySnapshot {
             rss_kib: sample.rss_bytes / 1024,
-            virtual_kib: 0,
+            virtual_kib: sample.virtual_bytes / 1024,
         })
     }
 }

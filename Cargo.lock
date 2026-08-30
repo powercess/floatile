@@ -1726,12 +1726,14 @@ dependencies = [
  "floatile-core",
  "floatile-platform",
  "floatile-plugin-api",
+ "floatile-renderer",
  "floatile-runtime",
  "floatile-store",
  "floatile-ui-schema",
  "semver",
  "serde",
  "serde_json",
+ "slint-interpreter",
  "thiserror 2.0.20",
  "tokio",
  "toml 0.8.23",
@@ -1740,11 +1742,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "floatile-clock-wasm"
+name = "floatile-clock-model"
 version = "0.1.0"
 dependencies = [
  "floatile-sdk",
  "serde",
+]
+
+[[package]]
+name = "floatile-clock-wasm"
+version = "0.1.0"
+dependencies = [
+ "floatile-clock-model",
+ "floatile-sdk",
 ]
 
 [[package]]
@@ -1855,6 +1865,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -1865,7 +1876,8 @@ dependencies = [
 name = "floatile-shell"
 version = "0.1.0"
 dependencies = [
- "floatile-clock-wasm",
+ "floatile-cli",
+ "floatile-clock-model",
  "floatile-core",
  "floatile-platform",
  "floatile-plugin-api",

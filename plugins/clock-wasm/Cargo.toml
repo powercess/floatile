@@ -22,5 +22,5 @@ build-host = []
 workspace = true
 
 [dependencies]
+floatile-clock-model = { workspace = true }
 floatile-sdk = { workspace = true }
-serde = { workspace = true }

@@ -150,11 +150,17 @@ impl HttpTransport for ReqwestHttpTransport {
 #[derive(Clone)]
 pub struct HttpsService {
     templates: Arc<BTreeMap<String, HttpTemplateDecl>>,
-    connections: Arc<BTreeMap<ConnectionId, Connection>>,
+    connections: Arc<BTreeMap<ConnectionId, ScopedConnection>>,
     vault: Arc<dyn CredentialVault>,
     transport: Arc<dyn HttpTransport>,
     cache: Arc<Mutex<BTreeMap<CacheKey, CachedResponse>>>,
     health_listener: Option<ConnectionHealthListener>,
+}
+
+#[derive(Clone)]
+struct ScopedConnection {
+    persistent_id: ConnectionId,
+    connection: Connection,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,6 +183,25 @@ impl HttpsService {
         vault: Arc<dyn CredentialVault>,
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
+        Self::new_with_handles(
+            templates,
+            granted_connections
+                .into_iter()
+                .map(|connection| (connection.id(), connection))
+                .collect(),
+            vault,
+            transport,
+        )
+    }
+
+    /// Build an instance-scoped service whose guest-visible handles are independent from
+    /// persistent database Connection IDs. Health callbacks continue to use persistent IDs.
+    pub fn new_with_handles(
+        templates: Vec<HttpTemplateDecl>,
+        granted_connections: Vec<(ConnectionId, Connection)>,
+        vault: Arc<dyn CredentialVault>,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Self {
         Self {
             templates: Arc::new(
                 templates
@@ -187,7 +212,15 @@ impl HttpsService {
             connections: Arc::new(
                 granted_connections
                     .into_iter()
-                    .map(|connection| (connection.id(), connection))
+                    .map(|(handle, connection)| {
+                        (
+                            handle,
+                            ScopedConnection {
+                                persistent_id: connection.id(),
+                                connection,
+                            },
+                        )
+                    })
                     .collect(),
             ),
             vault,
@@ -212,10 +245,12 @@ impl HttpsService {
             .templates
             .get(template_id)
             .ok_or(HttpServiceError::TemplateUnavailable)?;
-        let connection = self
+        let scoped = self
             .connections
             .get(&connection_id)
             .ok_or(HttpServiceError::ConnectionNotGranted)?;
+        let connection = &scoped.connection;
+        let persistent_connection_id = scoped.persistent_id;
         if matches!(
             connection.health(),
             ConnectionHealth::Unavailable | ConnectionHealth::Revoked
@@ -251,7 +286,7 @@ impl HttpsService {
             .is_err()
         {
             if let Some(listener) = &self.health_listener {
-                listener(connection_id, ConnectionHealth::Unavailable);
+                listener(persistent_connection_id, ConnectionHealth::Unavailable);
             }
             return Err(HttpServiceError::CredentialUnavailable);
         }
@@ -300,7 +335,7 @@ impl HttpsService {
                     match transport.execute(transport_request.clone()).await {
                         Ok(response) => {
                             if let Some(listener) = &health_listener {
-                                listener(connection_id, ConnectionHealth::Healthy);
+                                listener(persistent_connection_id, ConnectionHealth::Healthy);
                             }
                             if !cache_ttl.is_zero() || !stale_if_error.is_zero() {
                                 lock(&cache).insert(
@@ -327,7 +362,7 @@ impl HttpsService {
                                 return Ok(hit.response.clone());
                             }
                             if let Some(listener) = &health_listener {
-                                listener(connection_id, ConnectionHealth::Degraded);
+                                listener(persistent_connection_id, ConnectionHealth::Degraded);
                             }
                             return Err(OperationFailure::from(error));
                         }
@@ -519,6 +554,50 @@ mod tests {
         assert_eq!(response.body, br#"{"balance":42}"#);
         assert!(saw_secret.load(Ordering::Acquire));
         assert!(!format!("{response:?}").contains("host-only-secret"));
+    }
+
+    #[tokio::test]
+    async fn instance_scoped_handle_hides_persistent_connection_id() {
+        let vault = Arc::new(MemoryCredentialVault::default());
+        let persistent = connection(ConnectionHealth::Healthy);
+        vault
+            .put(persistent.credential(), b"Bearer host-only-secret")
+            .unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let health_observed = Arc::clone(&observed);
+        let service = HttpsService::new_with_handles(
+            vec![template()],
+            vec![(ConnectionId(1), persistent)],
+            vault,
+            Arc::new(InspectTransport {
+                saw_secret: Arc::new(AtomicBool::new(false)),
+            }),
+        )
+        .with_health_listener(Arc::new(move |id, health| {
+            lock(&health_observed).push((id, health));
+        }));
+
+        assert!(matches!(
+            service.prepare("balance", ConnectionId(7), Vec::new()),
+            Err(HttpServiceError::ConnectionNotGranted)
+        ));
+        service
+            .prepare(
+                "balance",
+                ConnectionId(1),
+                vec![QueryParam {
+                    name: "account".into(),
+                    value: "A&B".into(),
+                }],
+            )
+            .unwrap()
+            .work
+            .await
+            .unwrap();
+        assert_eq!(
+            lock(&observed).as_slice(),
+            &[(ConnectionId(7), ConnectionHealth::Healthy)]
+        );
     }
 
     #[tokio::test]

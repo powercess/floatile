@@ -86,6 +86,21 @@ plugin package
 - 实例控制命令、reconcile 动作和控制面快照均使用有界 channel；Slint timer 只做 `try_recv/try_send`。
   observed lifecycle 只存在于当前进程，不覆盖 SQLite desired state；手动 retry 仅清除所选实例的已隔离
   fingerprint，并由后台 worker 重新复核最新 Installation/Config。
+- 第三方运行时窗口在一次宿主拖动/缩放结束时构造领域层验证过的 `WidgetLayout`，经容量 64 的
+  `try_send` 队列交给 instance supervisor worker 写入 SQLite；启动时同一 worker 按 `InstanceId`
+  读取布局并随启动动作交给 UI 线程恢复，Slint/winit 回调不执行数据库 I/O。
+- Windows 单实例守卫同时持有当前会话命名互斥体和手动复位 activation event。重复启动进程只设置
+  event 后退出；主进程 Slint timer 以零超时消费并显示控制面，不引入文件轮询、阻塞 IPC 或 Shell
+  中的 Win32 调用。
+- Windows 插件/控制中心启动表面不创建内建 Clock 原生窗口。恢复热键通过 platform 的
+  `RegisterHotKey(NULL, ...)` 注册到运行 winit 的 UI 线程消息队列，仍由 event-loop msg hook 派发；
+  欢迎表面才拥有 Clock HWND、窗口事件和渲染性能通知。
+- Windows 原生插件包选择器由 platform 封装 Win32 common dialog 及私有 owner 句柄，在独立 worker
+  阻塞等待用户；Slint 线程只设置 busy 和接收路径。选择结果仍进入 instance-control worker 的统一
+  包预算、校验和原子安装路径。
+- Windows 当前用户开机启动由 platform 封装 HKCU Run 注册表值。控制面 worker 读取/写入精确宿主
+  命令，Slint 线程不访问注册表；`--background` 在没有 desired-running 实例时进入无窗口事件循环，
+  仍注册托盘、线程热键和单实例 activation，普通二次启动可重新显示管理中心。
 
 ## 4. UI、渲染与 DPI
 

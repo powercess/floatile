@@ -72,7 +72,7 @@ fn write_clock_install(root: &Path, wasm: Vec<u8>) -> PathBuf {
         ("manifest.json".to_owned(), manifest),
         (
             "ui/widget.ftui".to_owned(),
-            floatile_clock_wasm::__floatile_ftui_json().into_bytes(),
+            floatile_clock_model::ftui_json().into_bytes(),
         ),
     ]);
     for (name, bytes) in &files {

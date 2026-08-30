@@ -13,6 +13,12 @@ use floatile_ui_schema::{MAX_BINDINGS, MAX_NODES, MAX_TREE_DEPTH, validate_docum
 
 use crate::RendererError;
 
+/// 可嵌入宿主壳的插件内容组件名。
+pub const CONTENT_COMPONENT_NAME: &str = "ClockPluginUI";
+
+/// 运行时 interpreter 创建的无边框插件窗口组件名。
+pub const RUNTIME_WINDOW_COMPONENT_NAME: &str = "FloatileRuntimeWidget";
+
 /// 一个 State 绑定:实例路径 → 生成的 Slint 属性名。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct BindingSlot {
@@ -92,8 +98,11 @@ struct Ctx {
 fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot]) -> String {
     let mut out = String::new();
     out.push_str("// 由 floatile-renderer 生成;宿主控制,勿手编。\n");
+    out.push_str("import { Button } from \"std-widgets.slint\";\n");
     // `export` 让宿主的 `slint!` 能 `import` 本组件并把权威 State 投影到其绑定槽位。
-    out.push_str("export component ClockPluginUI inherits Rectangle {\n");
+    out.push_str(&format!(
+        "export component {CONTENT_COMPONENT_NAME} inherits Rectangle {{\n"
+    ));
     for slot in bindings {
         let (kind, default) = match slot.value_type {
             BindingValueType::String => ("string", "\"\""),
@@ -110,8 +119,133 @@ fn wrap_component(body: &str, bindings: &[BindingSlot], callbacks: &[EventSlot])
     for slot in callbacks {
         out.push_str(&format!("    callback {};\n", slot.callback));
     }
-    out.push_str("    background: transparent;\n");
+    out.push_str("    background: #151922;\n");
+    out.push_str("    border-color: #4a90e2;\n");
+    out.push_str("    border-width: 1px;\n");
+    out.push_str("    border-radius: 12px;\n");
     out.push_str(body);
+    out.push_str("}\n");
+    // interpreter 必须实例化一个显式 Window。若直接实例化 Rectangle，Slint 会为其
+    // 隐式创建带系统标题栏的普通窗口，随后修改 Win32 style 仍会与 Slint 的窗口状态
+    // 同步互相覆盖。运行时壳拥有窗口策略，只把有限 binding/event 契约转发给内容。
+    out.push_str(&format!(
+        "export component {RUNTIME_WINDOW_COMPONENT_NAME} inherits Window {{\n"
+    ));
+    out.push_str("    in property <string> host_title: \"Floatile\";\n");
+    out.push_str("    title: root.host_title;\n");
+    out.push_str("    no-frame: true;\n");
+    out.push_str("    background: transparent;\n");
+    for slot in bindings {
+        let (kind, default) = match slot.value_type {
+            BindingValueType::String => ("string", "\"\""),
+            BindingValueType::Boolean => ("bool", "false"),
+            BindingValueType::Number => ("float", "0"),
+            BindingValueType::StringList => ("[string]", "[]"),
+            BindingValueType::NumberList => ("[float]", "[]"),
+        };
+        out.push_str(&format!(
+            "    in property <{kind}> {}: {default};\n",
+            slot.prop
+        ));
+    }
+    for slot in callbacks {
+        out.push_str(&format!("    callback {};\n", slot.callback));
+    }
+    out.push_str("    callback host_settings;\n");
+    out.push_str("    callback host_show;\n");
+    out.push_str("    in property <bool> host_edit_mode: true;\n");
+    out.push_str("    Rectangle {\n");
+    out.push_str("        background: #1c212b;\n");
+    out.push_str("        border-color: #3d4658;\n");
+    out.push_str("        border-width: 1px;\n");
+    out.push_str("        border-radius: 12px;\n");
+    out.push_str("    }\n");
+    out.push_str("    Rectangle {\n");
+    out.push_str("        visible: root.host_edit_mode;\n");
+    out.push_str("        width: parent.width;\n");
+    out.push_str("        height: 40px;\n");
+    out.push_str("        background: #202632;\n");
+    out.push_str("        border-radius: 12px;\n");
+    out.push_str("    }\n");
+    out.push_str("    Text {\n");
+    out.push_str("        visible: root.host_edit_mode;\n");
+    out.push_str("        x: 14px;\n");
+    out.push_str("        y: 0px;\n");
+    out.push_str("        width: root.width - 156px;\n");
+    out.push_str("        height: 40px;\n");
+    out.push_str("        text: root.width >= 300px ? root.host_title : \"Floatile\";\n");
+    out.push_str("        color: #e7edf8;\n");
+    out.push_str("        font-size: 12px;\n");
+    out.push_str("        font-weight: 600;\n");
+    out.push_str("        horizontal-alignment: left;\n");
+    out.push_str("        vertical-alignment: center;\n");
+    out.push_str("    }\n");
+    out.push_str("    Rectangle {\n");
+    out.push_str("        visible: root.host_edit_mode;\n");
+    out.push_str("        x: root.width - 138px;\n");
+    out.push_str("        y: 8px;\n");
+    out.push_str("        width: 60px;\n");
+    out.push_str("        height: 24px;\n");
+    out.push_str("        border-radius: 7px;\n");
+    out.push_str("        border-width: 1px;\n");
+    out.push_str("        border-color: show-focus.has-focus ? #ffffff : #3d85d8;\n");
+    out.push_str("        background: show-touch.has-hover ? #397dcc : #2f6fba;\n");
+    out.push_str("        forward-focus: show-focus;\n");
+    out.push_str("        accessible-role: button;\n");
+    out.push_str("        accessible-label: \"展示\";\n");
+    out.push_str("        accessible-enabled: true;\n");
+    out.push_str("        accessible-action-default => { root.host_show(); }\n");
+    out.push_str("        Text { text: \"展示\"; color: white; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }\n");
+    out.push_str("        show-focus := FocusScope { key-pressed(event) => { if event.text == \" \" || event.text == \"\\n\" { root.host_show(); return accept; } return reject; } }\n");
+    out.push_str("        show-touch := TouchArea { clicked => { show-focus.focus(); root.host_show(); } }\n");
+    out.push_str("    }\n");
+    out.push_str("    Rectangle {\n");
+    out.push_str("        visible: root.host_edit_mode;\n");
+    out.push_str("        x: root.width - 72px;\n");
+    out.push_str("        y: 8px;\n");
+    out.push_str("        width: 60px;\n");
+    out.push_str("        height: 24px;\n");
+    out.push_str("        border-radius: 7px;\n");
+    out.push_str("        border-width: 1px;\n");
+    out.push_str("        border-color: settings-focus.has-focus ? #ffffff : #46536a;\n");
+    out.push_str("        background: settings-touch.has-hover ? #354158 : #2a3344;\n");
+    out.push_str("        forward-focus: settings-focus;\n");
+    out.push_str("        accessible-role: button;\n");
+    out.push_str("        accessible-label: \"管理\";\n");
+    out.push_str("        accessible-enabled: true;\n");
+    out.push_str("        accessible-action-default => { root.host_settings(); }\n");
+    out.push_str("        Text { text: \"管理\"; color: #e7edf8; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }\n");
+    out.push_str("        settings-focus := FocusScope { key-pressed(event) => { if event.text == \" \" || event.text == \"\\n\" { root.host_settings(); return accept; } return reject; } }\n");
+    out.push_str("        settings-touch := TouchArea { clicked => { settings-focus.focus(); root.host_settings(); } }\n");
+    out.push_str("    }\n");
+    out.push_str(&format!("    content := {CONTENT_COMPONENT_NAME} {{\n"));
+    out.push_str("        x: root.host_edit_mode ? 8px : 0px;\n");
+    out.push_str("        y: root.host_edit_mode ? 40px : 0px;\n");
+    out.push_str("        width: root.host_edit_mode ? parent.width - 16px : parent.width;\n");
+    out.push_str("        height: root.host_edit_mode ? parent.height - 48px : parent.height;\n");
+    for slot in bindings {
+        out.push_str(&format!("        {}: root.{};\n", slot.prop, slot.prop));
+    }
+    for slot in callbacks {
+        out.push_str(&format!(
+            "        {} => {{ root.{}(); }}\n",
+            slot.callback, slot.callback
+        ));
+    }
+    out.push_str("    }\n");
+    out.push_str("    Rectangle {\n");
+    out.push_str("        visible: root.host_edit_mode;\n");
+    out.push_str("        x: parent.width - 22px;\n");
+    out.push_str("        y: parent.height - 22px;\n");
+    out.push_str("        width: 16px;\n");
+    out.push_str("        height: 16px;\n");
+    out.push_str("        background: transparent;\n");
+    out.push_str("        Text {\n");
+    out.push_str("            text: \"⌟\";\n");
+    out.push_str("            color: #6f86a8;\n");
+    out.push_str("            font-size: 14px;\n");
+    out.push_str("        }\n");
+    out.push_str("    }\n");
     out.push_str("}\n");
     out
 }
@@ -178,7 +312,7 @@ fn render_responsive(
         children.push_str(&render_node(child, ctx, depth + 1)?);
         children.push('\n');
     }
-    let props = render_layout_props(comp)?;
+    let props = render_layout_props(comp, depth)?;
     Ok(format!(
         "if root.width < {breakpoint}px: VerticalLayout {{\n{props}{children}}}\nif root.width >= {breakpoint}px: HorizontalLayout {{\n{props}{children}}}\n"
     ))
@@ -267,7 +401,7 @@ fn render_grid(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, 
             PropValue::Binding(_) => None,
         })
         .unwrap_or(1) as usize;
-    let props = render_layout_props(comp)?;
+    let props = render_layout_props(comp, depth)?;
     let mut rows = String::new();
     for row in comp.children.chunks(columns) {
         rows.push_str("    Row {\n");
@@ -332,22 +466,26 @@ fn render_layout(
         children.push_str(&render_node(child, ctx, depth + 1)?);
         children.push('\n');
     }
-    let props = render_layout_props(comp)?;
+    let props = render_layout_props(comp, depth)?;
     Ok(format!("{layout} {{\n{props}{children}}}\n"))
 }
 
 /// 布局的公共样式 props 映射(Slint layout spacing/padding 语义)。
-fn render_layout_props(comp: &Component) -> Result<String, RendererError> {
+fn render_layout_props(comp: &Component, depth: usize) -> Result<String, RendererError> {
     let mut out = String::new();
     if let Some(PropValue::Literal(v)) = comp.props.get("padding")
         && let Some(px) = v.as_f64()
     {
         out.push_str(&format!("    padding: {px}px;\n"));
+    } else if depth == 0 {
+        out.push_str("    padding: 16px;\n");
     }
     if let Some(PropValue::Literal(v)) = comp.props.get("gap")
         && let Some(px) = v.as_f64()
     {
         out.push_str(&format!("    spacing: {px}px;\n"));
+    } else if depth == 0 {
+        out.push_str("    spacing: 10px;\n");
     }
     Ok(out)
 }
@@ -399,6 +537,8 @@ fn text_style_props(comp: &Component) -> Result<String, RendererError> {
         && let Some(s) = v.as_str()
     {
         out.push_str(&format!("        color: {0};\n", color_literal(s)?));
+    } else {
+        out.push_str("        color: #dbe4f3;\n");
     }
     if let Some(PropValue::Literal(v)) = comp.props.get("opacity")
         && let Some(f) = v.as_f64()
@@ -630,12 +770,17 @@ fn render_if(comp: &Component, ctx: &mut Ctx, depth: usize) -> Result<String, Re
     };
     let then_text = render_node(then, ctx, depth + 1)?;
     let mut out = String::new();
-    out.push_str(&format!("if root.{0}: ", slot.prop));
+    // A branch may itself be another `If` (SDK `page_state` uses this for deterministic
+    // loading/error/empty/content priority). Slint requires a component after `:`, so every
+    // branch gets a neutral host-owned container instead of emitting invalid `if a: if b:`.
+    out.push_str(&format!("if root.{0}: Rectangle {{\n", slot.prop));
     out.push_str(&then_text);
+    out.push_str("}\n");
     if let Some(els) = &comp.else_ {
         let else_text = render_node(els, ctx, depth + 1)?;
-        out.push_str(&format!("if !root.{0}: ", slot.prop));
+        out.push_str(&format!("if !root.{0}: Rectangle {{\n", slot.prop));
         out.push_str(&else_text);
+        out.push_str("}\n");
     }
     Ok(out)
 }
@@ -906,6 +1051,51 @@ mod tests {
         );
         assert!(rendered.source.contains("VerticalLayout"));
         assert!(rendered.source.contains("text: root.prop_time;"));
+        assert!(
+            rendered
+                .source
+                .contains("export component FloatileRuntimeWidget inherits Window")
+        );
+        assert!(rendered.source.contains("callback host_settings;"));
+        assert!(rendered.source.contains("callback host_show;"));
+        assert!(
+            rendered
+                .source
+                .contains("in property <string> host_title: \"Floatile\";")
+        );
+        assert!(rendered.source.contains("title: root.host_title;"));
+        assert!(
+            rendered
+                .source
+                .contains("text: root.width >= 300px ? root.host_title : \"Floatile\";")
+        );
+        assert!(rendered.source.contains("horizontal-alignment: left;"));
+        assert!(
+            rendered
+                .source
+                .contains("in property <bool> host_edit_mode: true;")
+        );
+        assert!(
+            rendered
+                .source
+                .contains("accessible-action-default => { root.host_settings(); }")
+        );
+        assert!(
+            rendered
+                .source
+                .contains("accessible-action-default => { root.host_show(); }")
+        );
+        assert!(rendered.source.contains("accessible-role: button;"));
+        assert!(
+            rendered
+                .source
+                .contains("show-focus.focus(); root.host_show();")
+        );
+        assert!(
+            rendered
+                .source
+                .contains("y: root.host_edit_mode ? 40px : 0px;")
+        );
         assert_eq!(
             rendered.bindings,
             vec![BindingSlot {

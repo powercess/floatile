@@ -17,11 +17,13 @@ workspace = true
 [dependencies]
 floatile-core = { workspace = true }
 floatile-platform = { workspace = true }
+floatile-renderer = { workspace = true }
 floatile-runtime = { workspace = true }
 floatile-store = { workspace = true }
 floatile-ui-schema = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+slint-interpreter = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

@@ -18,6 +18,7 @@
 宿主侧
   floatile-shell → floatile-runtime → floatile-plugin-api
         │                 │                    │
+        ├────────→ floatile-cli（仅包校验/原子安装库接口）
         │                 ├────────────→ floatile-ui-schema
         │                 └────────────→ floatile-services → floatile-store
         │                                      │
@@ -80,8 +81,12 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - 把已验证 UI IR 映射到宿主 Slint 组件；插件不提供 `.slint`。
 - 在主线程应用 runtime 发来的有界 State snapshot/patch，并把声明过的 UI event 投递 runtime。
 - 提供安装/实例控制面；后台 worker 读取 SQLite 与已验证 Installation、求值 Config Schema，Slint
-  主线程只消费有界快照并发送非阻塞命令。observed lifecycle 不写回 desired-state 数据库。
-- 不解析不可信包、不执行 WASM、不直接实现 plugin capability。
+  主线程只消费有界快照并发送非阻塞命令；本地开发包安装只在该 worker 调用 `floatile-cli` 的
+  有界校验/原子安装库接口。observed lifecycle 不写回 desired-state 数据库。
+- 运行时插件窗口按 `InstanceId` 恢复布局；一次宿主拖动/缩放结束后，Slint 主线程只向 supervisor
+  的有界队列发送已验证 `WidgetLayout`，SQLite 保存和下次启动读取均由后台 worker 完成。
+- 不复制包解析/安装语义；只从后台 worker 调用 `floatile-cli` 的统一安全核心。不执行 WASM、
+  不直接实现 plugin capability。
 - 内建 Reference Clock，用于与插件化时钟对比行为/性能。
 
 ### 3.4 `floatile-platform`
@@ -132,10 +137,12 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 ### 3.8 `floatile-store`
 
 - SQLite open/migration/transaction。
-- 当前 v5 持久化 layout、plugin instance、audit_log、宿主 Connection 元数据和实例级 Connection grant；
-  SQLite 只保存不透明 `CredentialRef`，不保存 secret；plugin private KV 尚未接入 SQLite。
+- 当前 v9 持久化 layout、plugin instance、audit_log、publisher trust/安装恢复意图、宿主 Connection
+  元数据、实例级 Connection grant，以及 stopped 实例的版本换绑审计；SQLite 只保存不透明
+  `CredentialRef`，不保存 secret；plugin private KV 尚未接入 SQLite。
 - 实例 CRUD 负责不复用 ID、Config/时间戳复验和删除实例所有的布局；Installation 内容仍由
-  原子安装目录与 `install.json` digest 管理。
+  原子安装目录与 `install.json` digest 管理。版本换绑原子匹配 current InstallationRef，只允许同插件、
+  stopped 实例，并记录 upgrade/rollback 方向；安装内容、信任和目标 Config 复核由调用方先完成。
 - 不做 permission 决策，不向 plugin 暴露连接/SQL/path。
 
 ### 3.9 `floatile-sdk`
@@ -146,8 +153,10 @@ S5a 已实现：IR 类型、组件 registry v1、State/Event schema 模型与校
 - capability wrapper 保留稳定错误，不暴露 raw generated module/handle。
 - `floatile-sdk-macros` proc-macro crate 已拆分：`#[derive(State)]` 生成 schema + initial。
 - S5c 已实现：`Widget<State,Event>` trait、`View` builder、`Context` 运行时封装（state/log/
-  clock/timer/storage/metrics/theme）与 `impl_export_widget!` 导出适配；clock-wasm 已改用作者
-  SDK（作者不手写 WIT）。作者级 `Event` 类型化（`FromWidgetEvent`）已落地；build-time UI IR 生成
+  clock/timer/storage/metrics/theme）与 `impl_export_widget!` 导出适配；参考时钟已改用作者
+  SDK（作者不手写 WIT）。其 `clock-model` 是 host/guest 共用的纯 `rlib` 作者模型与 UI 单一事实源，
+  `clock-wasm` 只负责 Component `cdylib` 导出，避免 Windows host 构建图生成两个同名 DLL。
+  作者级 `Event` 类型化（`FromWidgetEvent`）已落地；build-time UI IR 生成
   仍待后续切片。
 
 ### 3.10 TypeScript SDK（非 Cargo workspace crate）
@@ -220,7 +229,8 @@ schemas/
 sdk/
   typescript/               # @floatile/sdk 构建期 UI/codegen；private，runtime 仍需后继 ADR
 plugins/
-  clock-wasm/               # Rust 参考插件
+  clock-model/              # Rust 参考插件的 host/guest 作者模型与 UI 单一事实源（rlib）
+  clock-wasm/               # 参考插件 WASM Component 导出外壳（cdylib）
   clock-typescript/         # TypeScript adapter 通过后加入
 tests/fixtures/
   evil-plugin/

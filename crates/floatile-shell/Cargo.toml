@@ -19,6 +19,7 @@ name = "floatile-preview-host"
 path = "src/bin/preview_host.rs"
 
 [dependencies]
+floatile-cli = { workspace = true }
 floatile-core = { workspace = true }
 floatile-platform = { workspace = true }
 floatile-renderer = { workspace = true }
@@ -34,7 +35,7 @@ slint = { workspace = true }
 # ADR-0002：运行时第三方插件 UI 渲染依赖 slint-interpreter 编译 renderer 生成的源码。
 # 与 `slint!` 宏共用同一 compiler/core（1.17 同版本），不引入 slint-build 图像/AVIF 链
 # （规避 RUSTSEC-2024-0436）。运行时编译入口按不受信任输入预算（RUI_* 前置拒绝）。
-slint-interpreter = "1.17"
+slint-interpreter = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -42,11 +43,11 @@ tracing-subscriber = { workspace = true }
 
 # 构建期生成参考时钟的 widget.ftui（单一事实源），不把 guest SDK 链入宿主二进制。
 [build-dependencies]
-floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }
+floatile-clock-model = { workspace = true }
 floatile-renderer = { workspace = true }
 floatile-ui-schema = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-floatile-clock-wasm = { path = "../../plugins/clock-wasm", version = "0.1.0" }
+floatile-clock-model = { workspace = true }
 floatile-renderer = { workspace = true }

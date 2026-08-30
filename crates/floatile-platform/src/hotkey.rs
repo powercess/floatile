@@ -163,6 +163,41 @@ pub fn unregister_hotkey(
     }
 }
 
+/// 把全局热键注册到当前线程消息队列，而不是某个可视 HWND。
+///
+/// Windows 的 `RegisterHotKey(NULL, ...)` 会把 `WM_HOTKEY` 投递到调用线程；这让托盘型
+/// 宿主无需创建伪装的隐藏窗口。其他平台显式返回不支持。
+pub fn register_thread_hotkey(hotkey: Hotkey) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows_impl::register_thread_hotkey(hotkey)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = hotkey;
+        Err(PlatformError::Unsupported(
+            "thread-queue global hotkeys are only implemented on Windows",
+        ))
+    }
+}
+
+/// 注销当前线程消息队列上的全局热键。
+pub fn unregister_thread_hotkey(hotkey_id: u32) -> Result<(), PlatformError> {
+    #[cfg(windows)]
+    {
+        windows_impl::unregister_thread_hotkey(hotkey_id)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = hotkey_id;
+        Err(PlatformError::Unsupported(
+            "thread-queue global hotkeys are only implemented on Windows",
+        ))
+    }
+}
+
 /// 在 Windows winit 事件循环上安装安全的 `WM_HOTKEY` 消息钩子。
 ///
 /// 原始 `MSG` 指针只在平台 crate 内按 winit 的回调合约读取；业务层只接收热键 ID。
@@ -478,7 +513,7 @@ mod macos_impl {
                 event,
                 ffi::EVENT_PARAM_DIRECT_OBJECT,
                 ffi::TYPE_EVENT_HOTKEY_ID,
-                std::ptr::null_mut(),
+                0,
                 size_of::<ffi::EventHotKeyID>(),
                 std::ptr::null_mut(),
                 &mut hotkey_id as *mut _ as *mut c_void,
@@ -693,6 +728,40 @@ mod windows_impl {
             let err = unsafe { GetLastError() };
             return Err(PlatformError::Platform(format!(
                 "UnregisterHotKey failed: {err}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(super) fn register_thread_hotkey(hotkey: Hotkey) -> Result<(), PlatformError> {
+        // SAFETY: NULL HWND requests delivery to the current thread's message queue. The
+        // Slint/winit event loop is created and run on this same thread and owns the msg hook.
+        unsafe { SetLastError(0) };
+        let ok = unsafe {
+            RegisterHotKey(
+                0,
+                hotkey.id as i32,
+                modifiers_bits(hotkey.modifiers),
+                hotkey.virtual_key,
+            )
+        };
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            return Err(PlatformError::Platform(format!(
+                "thread RegisterHotKey failed: {err}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(super) fn unregister_thread_hotkey(hotkey_id: u32) -> Result<(), PlatformError> {
+        // SAFETY: NULL HWND and id identify the registration made on this same UI thread.
+        unsafe { SetLastError(0) };
+        let ok = unsafe { UnregisterHotKey(0, hotkey_id as i32) };
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            return Err(PlatformError::Platform(format!(
+                "thread UnregisterHotKey failed: {err}"
             )));
         }
         Ok(())
